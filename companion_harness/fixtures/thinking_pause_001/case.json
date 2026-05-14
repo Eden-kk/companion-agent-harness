@@ -1,0 +1,31 @@
+{
+  "case_id": "thinking_pause_001",
+  "stage": 1,
+  "scenario": "audio_turn_taking",
+  "modalities": ["audio"],
+  "fixture_ref": "companion_harness/fixtures/thinking_pause_001/",
+  "sensitivity": "safe_eval_fixture",
+  "expected_events": [
+    "user_speech_start",
+    "silence_1500ms",
+    "no_full_response",
+    "user_speech_continuation"
+  ],
+  "expected_metrics": {
+    "thinking_pause_false_positive_rate": "= 0"
+  },
+  "consent_class": "synthetic_eval",
+  "description": "User says 'I think...' then pauses ~1.5s then continues. System must not emit full_response during the pause.",
+  "signal_trace": [
+    {"t_ms": 0,    "event_type": "user_speech_start",        "vad_speech": true,  "notes": "user begins: 'I think...'"},
+    {"t_ms": 400,  "event_type": "user_speech_active",       "vad_speech": true,  "notes": "mid-utterance"},
+    {"t_ms": 800,  "event_type": "vad_silence_candidate",    "vad_speech": false, "notes": "trailing silence begins after 'I think...'"},
+    {"t_ms": 1000, "event_type": "vad_silence_active",       "vad_speech": false, "notes": "silence at 200ms — VAD may fire EOU candidate"},
+    {"t_ms": 1500, "event_type": "vad_silence_active",       "vad_speech": false, "notes": "silence at 700ms"},
+    {"t_ms": 2000, "event_type": "vad_silence_active",       "vad_speech": false, "notes": "silence at 1200ms"},
+    {"t_ms": 2300, "event_type": "vad_silence_active",       "vad_speech": false, "notes": "silence at 1500ms — full thinking pause duration"},
+    {"t_ms": 2300, "event_type": "assert_no_full_response",  "vad_speech": false, "notes": "GATE: no full_response action must have been emitted by now"},
+    {"t_ms": 2400, "event_type": "user_speech_continuation", "vad_speech": true,  "notes": "user resumes: '...we should go'"},
+    {"t_ms": 2800, "event_type": "user_speech_end",          "vad_speech": false, "notes": "user completes turn"}
+  ]
+}
