@@ -1,0 +1,49 @@
+{
+  "case_id": "explicit_turn_handoff_001",
+  "stage": 1,
+  "scenario": "explicit_turn_handoff",
+  "modalities": ["audio"],
+  "fixture_ref": "companion_harness/fixtures/explicit_turn_handoff_001/",
+  "sensitivity": "safe_eval_fixture",
+  "expected_events": [
+    "user_speech_start",
+    "user_speech_end",
+    "eou_confirmed",
+    "full_response_decision"
+  ],
+  "expected_metrics": {
+    "action_type": "full_response",
+    "primary_reason_code": "EOU_CONFIRMED",
+    "supporting_reason_codes": ["USER_ADDRESSED_AGENT"]
+  },
+  "consent_class": "synthetic_eval",
+  "description": "User says 'what do you think?' — an explicit turn handoff to the agent. Policy must decide full_response, not silence.",
+  "signal_trace": [
+    {
+      "t_ms": 0,
+      "event_type": "user_speech_start",
+      "user_speaking": true,
+      "eou_probability": 0.1,
+      "user_addressed_agent": false,
+      "notes": "user begins utterance"
+    },
+    {
+      "t_ms": 1200,
+      "event_type": "user_speech_end",
+      "user_speaking": false,
+      "eou_probability": 0.92,
+      "user_addressed_agent": true,
+      "notes": "user finishes 'what do you think?' — explicit agent address, EOU confirmed"
+    }
+  ],
+  "contrast_trace": [
+    {
+      "t_ms": 0,
+      "event_type": "user_speech_end",
+      "user_speaking": false,
+      "eou_probability": 0.88,
+      "user_addressed_agent": false,
+      "notes": "user finishes speaking to someone else — EOU confirmed but agent not addressed"
+    }
+  ]
+}
