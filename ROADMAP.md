@@ -1,100 +1,52 @@
 # Roadmap
 
-## CURRENT MILESTONE: v0.1a
+## SHIPPED MILESTONES
 
-The v0.1a MVP is the **VAD-only baseline**. It exists to prove the substrate: every utterance has a cause, every policy decision is replayable, barge-in stops the assistant, thinking pauses do not trigger premature responses (thinking-pause capability deferred to v0.1b — see issue #10), and direct questions get answered promptly. The texture work (Stage 6) does not start until v0.1a passes.
+### v0.1a — COMPLETE (tagged `v0.1a`)
 
-### Adapters enabled
+The v0.1a MVP was the **VAD-only baseline**: every utterance has a cause, every policy decision is replayable, barge-in stops the assistant, and direct questions are answered promptly. All 8 required contract tests passed; all 9 numeric gates met. Stage 0 (causal graph + replay privacy) and Stage 1 (VAD-only) were enabled.
 
-- `EventLogger` (with `ReplayPrivacyPolicy`)
-- `TurnDetectorSuite` (one detector: `VADDetector`)
-- `SpeakPolicy` (output set restricted to: `silence`, `full_response`)
-- `ForegroundModel` (one instantiation; see `docs/implementation-config.yaml`)
+### v0.1b — COMPLETE (tagged `v0.1b`)
 
-### Stages enabled
-
-- Stage 0 — fully (causal graph + replay privacy)
-- Stage 1 — VAD-only, minimal
-- Stage 3 — two-action subset `{silence, full_response}`
-
-### Stages NOT enabled
-
-- Stage 2 (vision) — disabled
-- Stage 4 (memory) — session-only, no persistence
-- Stage 5 (tools) — disabled
-- Stage 6 (texture) — disabled
-
-### Required contract tests
-
-- `test_thinking_pause` [DEFERRED to v0.1b — see issue #10]
-- `test_barge_in`
-- `test_false_interruption_rate`
-- `test_direct_question_latency` (positive responsiveness — prevents "passes by being sluggish")
-- `test_explicit_turn_handoff` ("what do you think?" must respond promptly)
-- `test_policy_replay_exact`
-- `test_decision_provenance`
-- `test_causal_graph_completeness`
-
-Deferred to v0.1b (NOT required at v0.1a): `test_backchannel_survival`, `test_detector_ablation`. VAD alone cannot reliably distinguish backchannel from interruption; do not gate v0.1a on a capability v0.1a intentionally lacks.
-
-### v0.1a numeric acceptance gates (hard pass/fail)
-
-| Metric | Gate |
-|---|---|
-| `policy_replay_match_rate` | = 100% |
-| `orphan_action_count` | = 0 |
-| `assistant_audio_start_with_cause` | = 100% |
-| `thinking_pause_false_positive_rate` | = 0 on fixture set [v0.1b-gated — see issue #10] |
-| `direct_question_latency_p50` | < 800 ms |
-| `direct_question_latency_p95` | < 1500 ms |
-| `vad_detected_user_speech_to_stop_ms_p95` | < 200 ms |
-| `physical_user_speech_onset_to_stop_ms_p95` | < 350 ms (tightens to <250 ms by v0.1b) |
-| `false_interruption_count_per_10_min` | < 1 |
-
-Both barge-in latencies must be gated separately. `physical_user_speech_onset_to_stop_ms` is what the user actually feels (product truth, loose at v0.1a because VAD-only adds detection lag). `vad_detected_user_speech_to_stop_ms` is the system-internal stop path — strictly gated because it measures the `AudioOutputController`.
-
-> **v0.1a succeeds when the system can explain every utterance, replay every policy decision, stop when interrupted, wait through thinking pauses (v0.1b-gated — see issue #10), and answer direct questions promptly.**
+Added backchannel-aware EOU: `SmartTurnDetector` + `BackchannelClassifier` (both required per spec amendment in issue #20), the `backchannel` action type in `SpeakPolicy`, and the `test_thinking_pause`, `test_backchannel_survival`, `test_detector_ablation` contract tests. All v0.1a tests still pass. 45 tests green in the canonical venv (`/raid/yid042/venvs/companion-harness/bin/python3 -m pytest tests/ -q`). Stages 0–1 contract tests green. Full task breakdown: `docs/roadmap-v0.1b-draft.md`.
 
 ---
 
-## NEXT TASKS (ordered)
+## CURRENT MILESTONE: v0.1c (DRAFT — awaiting project-lead sign-off)
 
-Each task is one PR. Each PR turns exactly one `pytest.skip` into a passing test, OR adds a stub for a downstream capability, OR is a docs update. Mixing is not allowed (see `CLAUDE.md`).
+Stage 2 — **Audio-video grounding.** Full task breakdown and open questions: [`docs/roadmap-v0.1c-draft.md`](docs/roadmap-v0.1c-draft.md) (currently DRAFT).
 
-1. **Implement `schemas.py` from spec §Part 5.** Concrete dataclasses / enums for `Event`, `ReasonCode`, `DecisionTrace`, `TurnSignal`, `PolicyInputs`, `SpeakDecision`, `ThinkerProposal`, `MemoryItem`, `EvaluationCase`, `ReplayRun`, plus `SensitiveField`. No behavior, just types. Verify: schemas import cleanly; type checks pass.
-2. **Implement `event_logger.py`** with async non-blocking discipline (invariant #10). On backpressure, emit `log_drop_or_degrade` rather than blocking the realtime path. Verify: a synthetic high-rate event stream does not block on a slow sink in a unit test.
-3. **Implement `causal_graph.py`** — offline DAG reconstruction from `caused_by[]` edges. Verify: orphan detector unit test passes on a synthetic trace.
-4. **Implement `AudioOutputController`** — playback lifecycle, stop-on-barge-in, generation cancel. Emits the Part 5 event_types (`assistant_generation_start`, `assistant_audio_buffer_queued/flushed`, `assistant_audio_stop_requested/completed`). Verify: unit test exercises the stop path with mocked TTS.
-5. **Wire `VADDetector`** (`turn_detector_vad.py`) — Silero VAD per `docs/implementation-config.yaml`. Emits `TurnSignal` per §Part 5. Verify: detector emits on a recorded speech/silence sample.
-6. **Implement `SpeakPolicy`** restricted to `{silence, full_response}`. Every `SpeakDecision` carries a `primary_reason_code` from `ReasonCode`. Verify: deterministic given recorded signals (Tier B replay precondition).
-7. **Wire `ForegroundModel` adapter.** One adapter interface, one concrete instantiation behind it. Verify: adapter interface importable from `speak_policy.py` without leaking the SDK.
-8. **Write fixture `thinking_pause_001`** (per spec §Part 6c). Audio + expected events. Verify: fixture loads in a pytest collection.
-9. **Implement and pass `test_thinking_pause`.** First green test. Verify: `pytest -k thinking_pause` passes. [DEFERRED to v0.1b — see issue #10]
-10. **Implement and pass `test_barge_in`.** Verify: VAD-to-stop p95 < 200ms on the fixture.
-11. **Implement and pass `test_direct_question_latency`.** Verify: p50 < 800ms / p95 < 1500ms.
-12. **Implement and pass `test_explicit_turn_handoff`.** Verify: companion responds promptly to "what do you think?".
-13. **Implement and pass `test_false_interruption_rate`.** Verify: <1 false interruption per 10 minutes of scripted fillers.
-14. **Implement and pass `test_policy_replay_exact`** (Stage 0 Tier B). Verify: 100% bit-identical replay on recorded signal traces.
-15. **Implement and pass `test_decision_provenance`.** Verify: every `assistant_audio_start` has non-empty `caused_by[]`.
-16. **Implement and pass `test_causal_graph_completeness`.** Verify: zero orphan actions on synthetic + recorded traces.
-17. **First v0.1a ReplayRun report.** All 8 tests green; all 9 numeric gates met. Tag the repo `v0.1a`.
+### v0.1c pinned success criterion
 
----
+> **v0.1c succeeds when the system can ground a deictic reference ("what is this?" / "what about that one?") to the correct frame in the `raw_video` causal chain, refuse to guess when the reference is ambiguous or the camera is blocked, surface audio-visual conflicts instead of papering over them, and order recent visual events correctly — while every utterance stays explainable, every policy decision bit-identically replayable, and the deictic detector independently ablatable. Whether the visual answer content is correct is measured on b200 against ProactiveVideoQA / EgoLifeQA and reported as advisory only — it is not a release gate.**
 
-## v0.1b
+### Scope delta from v0.1b
 
-Unlocks when v0.1a is green. Adds backchannel-aware EOU:
+- `VisionSidecar`: enable the vision path, adapter-first (`raw_video` frame ingest, recent-visual-memory ring buffer, scene-change scoring).
+- New adapter — `DeicticDetector` (`deictic_detector.py`): gates the explicit grounding pass; adapter-first behind a `DeicticModel` Protocol.
+- `ForegroundModel` adapter: extend `DuplexModel` Protocol for optional `video_frame` input.
+- `SpeakPolicy`: new `ReasonCode` members (`DEICTIC_AMBIGUOUS`, `VISUAL_LOW_CONFIDENCE`, `AUDIO_VISUAL_CONFLICT`); `clarification` wiring TBD per open question 1.
+- Stages: 0 + 1 carried (regression gates); **Stage 2 enabled**. Stages 4 / 5 / 6 remain disabled.
 
-- `TurnDetectorSuite`: enable `SmartTurnDetector` OR a lightweight backchannel classifier.
-- `SpeakPolicy`: add the `backchannel` action type.
-- New required tests: `test_backchannel_survival`, `test_detector_ablation`.
-- Acceptance: all v0.1a tests still pass + new tests pass. `physical_user_speech_onset_to_stop_ms_p95` tightens from <350 ms to <250 ms.
+### New contract tests (7)
+
+`test_current_frame_grounding`, `test_deictic_continuity`, `test_recent_visual_memory`, `test_hallucination_resistance`, `test_ambiguous_deictic_refusal`, `test_audio_visual_conflict`, `test_temporal_event_order`
+
+See `docs/roadmap-v0.1c-draft.md` §NEXT TASKS for the full ordered task list (20 tasks).
 
 ---
 
-## Later stages (2-6) — deferred until v0.1 substrate passes
+## PARALLEL TRACK: Live-Loop Integration (EXTRA-SPEC — DRAFT, awaiting sign-off)
 
-- **Stage 2 — Audio-video grounding.** `VisionSidecar` adapter, deictic detector, scene-change scoring, recent-visual-memory ring buffer. Contract tests cover deictic continuity, ambiguous-reference refusal, audio-visual conflict handling, temporal ordering, hallucination resistance. Eval datasets: ProactiveVideoQA (PAUC), EgoLifeQA.
+A product-integration track that runs alongside the spec milestones. Goal: a human can speak to the harness through a live microphone and hear a synthesized voice reply — every spoken utterance policy-approved, the full path `caused_by[]`-closed and replayable, barge-in within the spec latency budget, `EventLogger` non-blocking on the realtime path. This is **not a spec stage** and does not modify the frozen architecture. Full plan: [`docs/milestone-live-loop-integration-draft.md`](docs/milestone-live-loop-integration-draft.md).
+
+Can run **fully parallel to v0.1c** — no dependency on v0.1c outputs. One coordination point: the `DuplexModel` Protocol extension must be sequenced between the two tracks (one owns the change, the other consumes it).
+
+---
+
+## Later stages (3-6) — deferred until v0.1c substrate passes
+
+- **Stage 2 — Audio-video grounding.** Active in v0.1c (see above).
 
 - **Stage 3 — Speak / silence policy (full).** Expands the action set beyond `{silence, full_response}` to include `short_reaction`, `clarification`, `alert`, `tool_status`, `aesthetic_reaction`, `backchannel`. EOU thresholds remain isolated from speak-policy thresholds — they are tuned separately. Per-mode proactivity budgets are enforced.
 
