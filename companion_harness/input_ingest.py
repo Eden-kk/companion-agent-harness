@@ -53,7 +53,7 @@ class InputIngest:
 
     Lifecycle:
       ingest = InputIngest(logger, blob_dir)
-      session = await ingest.open_session(client_id)
+      session = ingest.open_session(client_id)
       await ingest.ingest_chunk(session, pcm_bytes, metadata)
       # repeat for each chunk
     """
@@ -203,7 +203,7 @@ async def run_ws_server(
     The EventLogger drain loop is an independent asyncio task started by the
     caller before invoking this function (invariant #10).
     """
-    import websockets  # type: ignore[import-untyped]
+    import websockets  # type: ignore[import-untyped]  # lazy: same reason as _handle_ws_client
 
     async def handler(ws: object) -> None:
         await _handle_ws_client(ws, ingest)
