@@ -109,26 +109,7 @@ def test_causal_graph_completeness_recorded_fixture():
     assert fixture["case_id"] == "causal_graph_001"
     assert fixture["expected_metrics"]["orphan_action_count"] == 0
 
-    events = [
-        Event(
-            event_id=e["event_id"],
-            session_id=e["session_id"],
-            schema_version=e["schema_version"],
-            seq_no=e["seq_no"],
-            event_type=e["event_type"],
-            timestamp_mono_ms=e["timestamp_mono_ms"],
-            timestamp_wall=e["timestamp_wall"],
-            source=e["source"],
-            caused_by=e["caused_by"],
-            payload_hash=e["payload_hash"],
-            payload_ref=e["payload_ref"],
-            payload_kind=e["payload_kind"],
-            subject_class=e["subject_class"],
-            sensitivity=e["sensitivity"],
-            retention_policy_id=e["retention_policy_id"],
-        )
-        for e in fixture["events"]
-    ]
+    events = [Event(**e) for e in fixture["events"]]
 
     assert len(events) >= 6, f"fixture too small ({len(events)} events) to cover all DAG patterns"
 

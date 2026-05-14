@@ -18,6 +18,9 @@
   },
   "consent_class": "synthetic_eval",
   "description": "A well-formed causal DAG representing one assistant turn: user speech triggers VAD signal, VAD triggers policy decision, policy decision triggers generation start and audio queue. Also includes a log_drop_or_degrade event with the _dropped_before_enqueue sentinel — valid DAG root, not an orphan.",
+  "fixture_conventions": {
+    "expected_events_markers": "The values 'user_speech_onset', 'vad_signal', and 'policy_decision' in expected_events are fixture-internal expectation markers documenting the DAG topology this fixture exercises. They are not Part 5 canonical event_types emitted by any adapter. 'assistant_generation_start', 'assistant_audio_buffer_queued', and 'log_drop_or_degrade' are real event_type values also present in the events array."
+  },
   "events": [
     {
       "event_id": "evt-user-speech-001",
