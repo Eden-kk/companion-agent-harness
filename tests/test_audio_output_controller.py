@@ -68,8 +68,8 @@ async def test_stop_path_with_mocked_tts():
     await controller.play(chunks, generation_event_id=gen_event_id)
 
     assert not controller.is_playing
-    # At most some chunks delivered before stop
-    assert len(audio_sink_calls) < len(chunks) or True  # stop may fire before first chunk
+    # request_stop() fired before play() — sink must never be called
+    assert audio_sink_calls == []
 
     await logger.stop()
 
@@ -157,3 +157,31 @@ async def test_cancel_generation():
 
     event_types = [e.event_type for e in received]
     assert "assistant_generation_cancel_requested" in event_types
+
+
+@pytest.mark.asyncio
+async def test_set_generation_task_cancel():
+    """set_generation_task() + cancel_generation() actually cancels the registered task."""
+    logger, received = _make_logger()
+    await logger.start()
+
+    async def mock_sink(chunk: bytes) -> None:
+        pass
+
+    controller = AudioOutputController(
+        session_id="test-session-4",
+        logger=logger,
+        sink=mock_sink,
+    )
+
+    async def long_running() -> None:
+        await asyncio.sleep(60)
+
+    task = asyncio.create_task(long_running())
+    gen_id = controller.start_generation(caused_by=["policy-evt-002"])
+    controller.set_generation_task(task)
+    controller.cancel_generation(caused_by=[gen_id])
+
+    assert task.cancelled() or task.cancelling() > 0
+
+    await logger.stop()

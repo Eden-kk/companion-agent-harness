@@ -2,8 +2,8 @@
 
 See docs/architecture-v0.1.md §Part 3 (adapter interfaces) and §Part 5 for the
 new event_types this adapter emits (assistant_generation_start,
-assistant_audio_buffer_queued/flushed, assistant_audio_stop_requested/completed,
-log_drop_or_degrade). Stop path is gated by §Part 8 v0.1a barge-in latencies.
+assistant_audio_buffer_queued/flushed, assistant_audio_stop_requested/completed).
+Stop path is gated by §Part 8 v0.1a barge-in latencies.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ class AudioOutputController:
     receives raw audio bytes.  This keeps the controller adapter-pure (no SDK imports).
 
     Lifecycle per utterance:
-      start_generation() → queue_buffer() × N → flush() → [stop_requested() if barged]
+      start_generation() → queue_buffer() × N → play() → [stop_requested() if barged]
     """
 
     SOURCE = "audio_output_controller"
@@ -49,7 +49,6 @@ class AudioOutputController:
         self._playing = False
         self._stop_event = asyncio.Event()
         self._generation_task: asyncio.Task[None] | None = None
-        self._current_generation_event_id: str | None = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -58,7 +57,6 @@ class AudioOutputController:
     def start_generation(self, caused_by: list[str]) -> str:
         """Signal that TTS generation has started. Returns the generation event_id."""
         evt = self._emit("assistant_generation_start", caused_by, payload_kind="model_output")
-        self._current_generation_event_id = evt.event_id
         self._playing = True
         self._stop_event.clear()
         return evt.event_id
@@ -68,7 +66,7 @@ class AudioOutputController:
         self._emit("assistant_audio_buffer_queued", caused_by, payload_kind="raw_audio",
                    sensitivity="sensitive")
 
-    def flush(self, caused_by: list[str]) -> None:
+    def _flush(self, caused_by: list[str]) -> None:
         """Log that the audio buffer has been fully flushed (utterance complete)."""
         self._emit("assistant_audio_buffer_flushed", caused_by, payload_kind="model_output")
         self._playing = False
@@ -82,6 +80,10 @@ class AudioOutputController:
         evt = self._emit("assistant_audio_stop_requested", caused_by, payload_kind="signal")
         self._stop_event.set()
         return evt.event_id
+
+    def set_generation_task(self, task: asyncio.Task[None]) -> None:
+        """Register the running asyncio generation Task so cancel_generation() can cancel it."""
+        self._generation_task = task
 
     def cancel_generation(self, caused_by: list[str]) -> None:
         """Cancel any in-flight generation task and log it."""
@@ -108,7 +110,7 @@ class AudioOutputController:
                 return
             await self._sink(chunk)
 
-        self.flush([generation_event_id])
+        self._flush([generation_event_id])
 
     @property
     def is_playing(self) -> bool:
