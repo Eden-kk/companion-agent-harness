@@ -5,8 +5,6 @@ See docs/architecture-v0.1.md §Part 6 Stage 1, fixture thinking_pause_001 in
 (thinking_pause_false_positive_rate = 0 on fixture set).
 """
 
-import asyncio
-
 from companion_harness.fixtures.loader import load_fixture
 from companion_harness.event_logger import EventLogger
 from companion_harness.turn_detector_vad import VADDetector
@@ -30,7 +28,7 @@ def _default_inputs(user_speaking: bool, eou_probability: float) -> PolicyInputs
         assistant_speaking=False,
         scene_change_score=0.0,
         deictic_reference=False,
-        user_addressed_agent=False,   # thinking pause: mid-thought, not handing off
+        user_addressed_agent=True,   # user IS addressing agent; paused mid-thought
         urgency_score=0.0,
         proactivity_budget_remaining={},
         privacy_mode="default",
@@ -58,32 +56,43 @@ def _replay(signal_trace: list[dict]) -> list[dict]:
     session_id = "test-session"
     seed_event_id = "seed-0"
 
+    # One persistent detector so _silence_ms accumulates across frames.
+    # Model is updated per frame via a mutable wrapper.
+    class _MutableVAD:
+        def __init__(self) -> None:
+            self._p: float = 0.0
+
+        def __call__(self, frame: bytes) -> float:
+            return self._p
+
+    mutable_model = _MutableVAD()
+    detector = VADDetector(
+        model=mutable_model,
+        session_id=session_id,
+        logger=logger,
+        silence_onset_ms=300,
+        frame_duration_ms=32,
+    )
+
     for frame_data in signal_trace:
+        # The assert_no_full_response marker must not enter the event stream.
+        if frame_data["event_type"] == "assert_no_full_response":
+            continue
+
         t_ms: int = frame_data["t_ms"]
         vad_speech: bool = frame_data["vad_speech"]
 
-        p = 1.0 if vad_speech else 0.0
-        model = _ScriptedVAD(p)
-
-        # Fresh detector per frame so each scripted probability is applied
-        # discretely — the fixture encodes logical state, not a continuous stream.
-        detector = VADDetector(
-            model=model,
-            session_id=session_id,
-            logger=logger,
-            silence_onset_ms=300,
-            frame_duration_ms=32,
-        )
+        mutable_model._p = 1.0 if vad_speech else 0.0
 
         signal = detector.process_frame(b"\x00" * 32, caused_by=[seed_event_id])
 
-        # p_done from the TurnSignal (if emitted), else derive from VAD probability.
+        # Derive eou_probability honestly from the TurnSignal the detector emits.
+        # When no signal is emitted, EOU is not confirmed (probability = 0.0).
         if signal is not None:
             eou_prob = signal.p_done
             evidence = signal.evidence_event_ids
         else:
-            # No EOU signal — treat as ongoing speech / silence below threshold.
-            eou_prob = p  # 1.0 if speech active, 0.0 if silence but not yet onset
+            eou_prob = 0.0
             evidence = [seed_event_id]
 
         inputs = _default_inputs(user_speaking=vad_speech, eou_probability=eou_prob)
