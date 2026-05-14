@@ -67,3 +67,26 @@ def test_empty_signal_event_ids_raises():
     """Empty signal_event_ids must raise ValueError — orphan decisions fail Stage 0."""
     with pytest.raises(ValueError):
         decide(_inputs(), [])
+
+
+def test_backchannel_high_p_backchannel():
+    """EOU confirmed + p_backchannel >= 0.7 → backchannel with BACKCHANNEL_DETECTED."""
+    result = decide(_inputs(eou_probability=0.9, user_addressed_agent=True), ["sig-1"], p_backchannel=0.7)
+    assert result.action_type == "backchannel"
+    assert result.primary_reason_code == ReasonCode.BACKCHANNEL_DETECTED
+
+
+def test_backchannel_below_threshold_still_full_response():
+    """p_backchannel=0.69 is below threshold — full_response path is not suppressed."""
+    result = decide(_inputs(eou_probability=0.9, user_addressed_agent=True), ["sig-1"], p_backchannel=0.69)
+    assert result.action_type == "full_response"
+    assert result.primary_reason_code == ReasonCode.EOU_CONFIRMED
+
+
+def test_backchannel_determinism():
+    """Identical inputs + p_backchannel → bit-identical SpeakDecision (invariant #5)."""
+    inputs = _inputs(eou_probability=0.9, user_addressed_agent=True)
+    d1 = decide(inputs, ["sig-1"], p_backchannel=0.85)
+    d2 = decide(inputs, ["sig-1"], p_backchannel=0.85)
+    assert d1 == d2
+    assert d1.action_type == "backchannel"

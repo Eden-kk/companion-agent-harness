@@ -1,7 +1,8 @@
-"""SpeakPolicy — action-type decision from signals; v0.1a output = {silence, full_response}.
+"""SpeakPolicy — action-type decision from signals; v0.1b output = {silence, backchannel, full_response}.
 
 See docs/architecture-v0.1.md §Part 6 Stage 3 (speak/silence policy, rules-first,
-silence wins ties) and §Part 8 (v0.1a restricts the action set to two values).
+silence wins ties) and §Part 8 (v0.1a restricts the action set to two values;
+v0.1b adds the backchannel action type).
 Every SpeakDecision must carry a primary_reason_code from ReasonCode — no
 free-text reasoning on the policy path (invariant #5 / Stage 0 Tier B replay).
 """
@@ -19,8 +20,14 @@ _BLOCKING_SOCIAL_MODES = frozenset({
     "background_presence",
 })
 
+_BACKCHANNEL_THRESHOLD = 0.7
 
-def decide(inputs: PolicyInputs, signal_event_ids: list[str]) -> SpeakDecision:
+
+def decide(
+    inputs: PolicyInputs,
+    signal_event_ids: list[str],
+    p_backchannel: float = 0.0,
+) -> SpeakDecision:
     """Return a SpeakDecision for the given PolicyInputs.
 
     Determinism guarantees (invariant #5):
@@ -55,7 +62,20 @@ def decide(inputs: PolicyInputs, signal_event_ids: list[str]) -> SpeakDecision:
     if inputs.eou_probability <= 0.5:
         return _silence(ReasonCode.NOT_ADDRESSED_TO_AGENT, caused_by)
 
-    # 4. EOU confirmed.  Respond only when the agent was addressed.
+    # 4. EOU confirmed + high backchannel probability — user is just acknowledging.
+    if p_backchannel >= _BACKCHANNEL_THRESHOLD:
+        return SpeakDecision(
+            action_type="backchannel",
+            primary_reason_code=ReasonCode.BACKCHANNEL_DETECTED,
+            supporting_reason_codes=[],
+            redacted_explanation=None,
+            caused_by=caused_by,
+            budget_bucket="backchannel",
+            allowed_prosody_tags=[],
+            max_duration_ms=None,
+        )
+
+    # 5. EOU confirmed.  Respond only when the agent was addressed.
     if inputs.user_addressed_agent:
         return SpeakDecision(
             action_type="full_response",
@@ -69,7 +89,7 @@ def decide(inputs: PolicyInputs, signal_event_ids: list[str]) -> SpeakDecision:
             max_duration_ms=None,
         )
 
-    # 5. EOU confirmed but agent not explicitly addressed — silence wins ties.
+    # 6. EOU confirmed but agent not explicitly addressed — silence wins ties.
     return _silence(ReasonCode.NOT_ADDRESSED_TO_AGENT, caused_by)
 
 
