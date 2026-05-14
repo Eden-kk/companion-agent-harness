@@ -5,6 +5,7 @@ correct event emission, and causal-edge repair for proposals returned with
 empty caused_by.
 """
 
+import subprocess
 import sys
 
 import pytest
@@ -48,8 +49,20 @@ class _FakeModel:
 
 
 def test_no_torch_import():
-    """torch must not be present in sys.modules after importing foreground_model."""
-    assert "torch" not in sys.modules
+    """Importing foreground_model must not transitively pull in torch.
+
+    Checked in a fresh subprocess so the result is independent of what other
+    tests (or their fixtures) may have already imported in the current process.
+    """
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import companion_harness.foreground_model, sys; sys.exit('torch' in sys.modules)",
+        ],
+        capture_output=True,
+    )
+    assert result.returncode == 0, "importing foreground_model pulled in torch"
 
 
 @pytest.mark.asyncio
