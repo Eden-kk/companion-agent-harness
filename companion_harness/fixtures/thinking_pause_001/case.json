@@ -15,9 +15,9 @@
     "thinking_pause_false_positive_rate": "= 0"
   },
   "consent_class": "synthetic_eval",
-  "description": "User says 'I think...' then pauses ~1.5s then continues. System must not emit full_response during the pause. Rehabilitated in v0.1b Task 4: signal_trace rebuilt at 32ms frame grid so the pause window is a faithful 1500ms (47 frames, t=800..2272ms). Each frame carries scripted p_done/p_continue/p_backchannel for stub SmartTurnModel replay.",
+  "description": "User says 'I think...' then pauses ~1.5s then continues. System must not emit full_response during the pause.",
   "fixture_conventions": {
-    "assert_no_full_response": "Replay-gate marker at t_ms=2300. Not a real event that enters the event stream. Asserts that no full_response SpeakDecision occurs at or before its timestamp.",
+    "assert_no_full_response": "Replay-gate marker at t_ms=2300. Not a real event that enters the event stream; NOT fed to SmartTurnDetector. Asserts that no full_response SpeakDecision occurs at or before its timestamp.",
     "frame_duration_ms": "32 — matches SmartTurnDetector default. All signal_trace entries are on the 32ms grid except the gate marker (t_ms=2300) and final speech-end (t_ms=2944).",
     "p_done": "Scripted SmartTurnModel output probability: likelihood the user has finished their turn.",
     "p_continue": "Scripted SmartTurnModel output probability: likelihood the user is mid-thought and will continue (thinking pause).",
@@ -99,7 +99,7 @@
     {"t_ms": 2208, "frame_id": "frame-069", "event_type": "vad_silence_active",     "vad_speech": false, "p_done": 0.15, "p_continue": 0.80, "p_backchannel": 0.0, "notes": "pause window; p_continue > p_done"},
     {"t_ms": 2240, "frame_id": "frame-070", "event_type": "vad_silence_active",     "vad_speech": false, "p_done": 0.15, "p_continue": 0.80, "p_backchannel": 0.0, "notes": "pause window; p_continue > p_done"},
     {"t_ms": 2272, "frame_id": "frame-071", "event_type": "vad_silence_active",     "vad_speech": false, "p_done": 0.15, "p_continue": 0.80, "p_backchannel": 0.0, "notes": "PAUSE WINDOW END: 1504ms of silence elapsed (frames 025-071 = 47 frames x 32ms); p_continue > p_done throughout"},
-    {"t_ms": 2300, "frame_id": "gate-000", "event_type": "assert_no_full_response",  "vad_speech": false, "p_done": 0.15, "p_continue": 0.80, "p_backchannel": 0.0, "notes": "GATE: no full_response action must have been emitted at or before this timestamp"},
+    {"t_ms": 2300, "frame_id": "gate-000", "event_type": "assert_no_full_response",  "vad_speech": false, "notes": "GATE: no full_response action must have been emitted at or before this timestamp"},
     {"t_ms": 2304, "frame_id": "frame-072", "event_type": "user_speech_continuation","vad_speech": true,  "p_done": 0.10, "p_continue": 0.85, "p_backchannel": 0.0, "notes": "user resumes: '...we should go'"},
     {"t_ms": 2336, "frame_id": "frame-073", "event_type": "user_speech_active",      "vad_speech": true,  "p_done": 0.15, "p_continue": 0.80, "p_backchannel": 0.0, "notes": "continuation active"},
     {"t_ms": 2368, "frame_id": "frame-074", "event_type": "user_speech_active",      "vad_speech": true,  "p_done": 0.20, "p_continue": 0.75, "p_backchannel": 0.0, "notes": "continuation active"},
