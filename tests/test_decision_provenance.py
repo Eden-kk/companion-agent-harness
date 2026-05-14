@@ -65,6 +65,9 @@ async def test_decision_provenance():
     ]
 
     for utt in utterances:
+        # caused_by here uses synthetic sentinel ids — this test checks structural
+        # non-emptiness of provenance only; full DAG closure is verified in
+        # test_causal_graph_completeness.
         gen_id = controller.start_generation(caused_by=[utt["policy_event"]])
         for chunk in utt["chunks"]:
             controller.queue_buffer(chunk, caused_by=[gen_id])
@@ -83,13 +86,6 @@ async def test_decision_provenance():
     # Gate: every audio-start event must have a non-empty caused_by[].
     missing_cause = [e.event_id for e in audio_start_events if not e.caused_by]
     assert not missing_cause, (
-        f"assistant_audio_start_with_cause gate FAILED: "
-        f"{len(missing_cause)}/{len(audio_start_events)} events missing caused_by[]: "
-        f"{missing_cause}"
-    )
-
-    with_cause = len(audio_start_events) - len(missing_cause)
-    rate = with_cause / len(audio_start_events)
-    assert rate == 1.0, (
-        f"assistant_audio_start_with_cause = {rate:.0%}; gate = 100%"
+        f"assistant_audio_start_with_cause gate violated: "
+        f"events missing caused_by: {missing_cause}"
     )
