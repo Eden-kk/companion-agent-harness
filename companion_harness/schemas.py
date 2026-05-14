@@ -72,7 +72,6 @@ class DecisionTrace:
     policy_version:          str
     config_version:          str
     model_adapter_versions:  dict[str, str]
-    detector_id:             str = ""
 
 
 @dataclass

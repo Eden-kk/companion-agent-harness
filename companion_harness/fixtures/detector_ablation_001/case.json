@@ -11,15 +11,15 @@
     "user_speech_end"
   ],
   "expected_metrics": {
-    "detector_id_attributable": "per_path"
+    "detector_attributable_per_path": "per_path"
   },
   "consent_class": "synthetic_eval",
-  "description": "User speaks a short utterance then falls silent (genuine end-of-turn). Same scripted trace replayed through VADDetector (uses vad_speech) and SmartTurnDetector (uses p_done/p_continue at silence-candidate). Each path produces a TurnSignal attributable to its detector via detector_id. Scenario is chosen so the two detectors would plausibly differ: VAD fires on silence duration alone; SmartTurn fires only when its model confirms p_done > p_continue.",
+  "description": "User speaks a short utterance then falls silent (genuine end-of-turn). Same scripted trace replayed through VADDetector (uses vad_speech) and SmartTurnDetector (uses p_done/p_continue at silence-candidate). Each path produces a TurnSignal attributable to its detector via TurnSignal.detector. Scenario is chosen so the two detectors would plausibly differ: VAD fires on silence duration alone; SmartTurn fires only when its model confirms p_done > p_continue.",
   "fixture_conventions": {
     "dual_path": "Every frame carries BOTH vad_speech (for the VAD path) AND p_done/p_continue/p_backchannel (for the smart_turn path). Task 13 drives each path from the same signal_trace by reading only the fields that path needs.",
     "vad_path": "VADDetector stubs the VADModel to return p_speech derived from vad_speech: when vad_speech=true the stub returns 0.9; when vad_speech=false the stub returns 0.1. The detector fires when silence accumulates >= silence_onset_ms (300ms, ~10 frames at 32ms). At silence-candidate it emits a TurnSignal with detector='vad'.",
     "smart_turn_path": "SmartTurnDetector stubs the SmartTurnModel to return (p_done, p_continue) from the frame's scripted values AT the silence-candidate moment. Because the SmartTurnDetector fires at the first frame crossing silence_onset_ms, Task 13 looks up the scripted values at that frame. The emitted TurnSignal carries detector='smart_turn'.",
-    "divergence_design": "At the silence-candidate moment (frame-034, t_ms=1088), VAD fires immediately on silence duration alone. SmartTurnDetector fires at the same moment but returns p_done=0.85/p_continue=0.10 (end-of-turn confirmed). Both fire — but each TurnSignal.detector is different, which is what Task 13 asserts. The scenario is not one where only one detector fires; the ablation tests that each fired signal carries the correct detector_id.",
+    "divergence_design": "At the silence-candidate moment (frame-034, t_ms=1088), VAD fires immediately on silence duration alone. SmartTurnDetector fires at the same moment but returns p_done=0.85/p_continue=0.10 (end-of-turn confirmed). Both fire — but each TurnSignal.detector is different, which is what Task 13 asserts. The scenario is not one where only one detector fires; the ablation tests that each fired signal carries the correct TurnSignal.detector value.",
     "frame_duration_ms": "32 — matches SmartTurnDetector and VADDetector defaults. 10 silence frames × 32ms = 320ms >= silence_onset_ms (300ms), so the candidate fires at frame-034.",
     "p_done": "Scripted SmartTurnModel output probability: likelihood user has finished their turn.",
     "p_continue": "Scripted SmartTurnModel output probability: likelihood user is mid-thought.",
