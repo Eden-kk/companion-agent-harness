@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 import uuid
@@ -141,15 +142,18 @@ _GATES: list[dict] = [
     },
 ]
 
-# Additional non-gated tests included in scope
-_ADDITIONAL_TESTS: list[dict] = [
+# Required contract tests that are not tied to a numeric gate (per ROADMAP §"Required contract tests").
+# test_explicit_turn_handoff is ROADMAP-required; it is listed here (not in _ADDITIONAL_TESTS)
+# because it maps to no numeric gate but IS a required contract test per ROADMAP §"Required contract tests".
+_REQUIRED_NON_GATED_TESTS: list[dict] = [
     {
         "test": "test_explicit_turn_handoff",
         "stage": 1,
         "status": "PASS",
         "notes": (
             "Explicit address ('what do you think?') → full_response; "
-            "non-address EOU → silence. Proves user_addressed_agent is the gate-4 discriminator."
+            "non-address EOU → silence. Proves user_addressed_agent is the gate-4 discriminator. "
+            "No numeric gate, but required by ROADMAP §'Required contract tests'."
         ),
     },
 ]
@@ -166,7 +170,6 @@ def _run_pytest() -> dict:
     passed = failed = skipped = 0
     for line in output.splitlines():
         if " passed" in line:
-            import re
             m = re.search(r"(\d+) passed", line)
             if m:
                 passed = int(m.group(1))
@@ -180,6 +183,11 @@ def _run_pytest() -> dict:
 
 
 def _build_replay_run(pytest_result: dict) -> dict:
+    # NOTE: This dict is ReplayRun-INSPIRED, not a strict schemas.ReplayRun instance.
+    # Intentional divergences for milestone-report readability:
+    #   - `pytest_summary` is an extra field absent from schemas.ReplayRun.
+    #   - `results` is a nested object, not the flat metric_name->value dict that ReplayRun expects.
+    # These divergences are deliberate; a future reader should not treat them as bugs.
     now = datetime.now(timezone.utc).isoformat()
     met = [g for g in _GATES if g["status"] == "MET"]
     deferred = [g for g in _GATES if g["status"] == "DEFERRED"]
@@ -208,7 +216,7 @@ def _build_replay_run(pytest_result: dict) -> dict:
             "gates_deferred": len(deferred),
             "gates_not_measured": len(not_measured),
             "gates": _GATES,
-            "additional_tests": _ADDITIONAL_TESTS,
+            "required_non_gated_tests": _REQUIRED_NON_GATED_TESTS,
         },
         "failures": failures,
     }
@@ -251,10 +259,10 @@ def _gate_summary(report: dict) -> str:
         )
         lines.append("")
     lines += [
-        "  Additional tests (non-gated):",
+        "  Required contract tests (no numeric gate):",
         "-" * 68,
     ]
-    for t in r["additional_tests"]:
+    for t in r["required_non_gated_tests"]:
         lines.append(f"  [{t['status']:<12}]  {t['test']}  (Stage {t['stage']})")
         lines.append(f"               note: {t['notes']}")
         lines.append("")
