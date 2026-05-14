@@ -65,7 +65,10 @@ class EventLogger:
                 self._queue.task_done()
             if self._dropped > 0:
                 count, self._dropped = self._dropped, 0
-                await self._sink(self._make_degrade_event(count))
+                try:
+                    await self._sink(self._make_degrade_event(count))
+                except Exception:
+                    pass
 
     def _make_degrade_event(self, dropped_count: int) -> Event:
         self._seq += 1
@@ -79,7 +82,7 @@ class EventLogger:
             timestamp_mono_ms=now_ms,
             timestamp_wall="",
             source="event_logger",
-            caused_by=[],
+            caused_by=["_dropped_before_enqueue"],
             payload_hash="",
             payload_ref=None,
             payload_kind="signal",
