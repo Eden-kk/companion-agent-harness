@@ -1,15 +1,14 @@
-"""BackchannelClassifier — short-vocalization backchannel detector stub (v0.1b Task 8).
+"""BackchannelClassifier — short-vocalization backchannel detector (v0.1b Task 9).
 
-Classifies short user vocalizations ("yeah", "mm-hmm") during assistant speech
-as backchannels vs genuine interruptions. Emits a TurnSignal with a real
-`p_backchannel` value (and low `p_done`).
+Classifies short user vocalizations ("yeah", "mm-hmm") occurring during
+assistant speech as backchannels vs genuine interruptions. Emits a TurnSignal
+with `p_backchannel` populated from the injected model on every frame.
 
 ## Adapter-first design
 
 The real lightweight model is injected via the `BackchannelModel` Protocol —
 this module never imports torch, onnxruntime, or pipecat. Tests inject a fake
-that returns scripted probabilities. The full implementation (v0.1b Task 9)
-slots the real model behind this Protocol seam without changing callers.
+that returns scripted probabilities.
 
 ## Interface semantics
 
@@ -17,8 +16,27 @@ slots the real model behind this Protocol seam without changing callers.
 — the same interface as `VADDetector` and `SmartTurnDetector` — so
 `TurnDetectorSuite` can fan frames to all detectors uniformly.
 
-`p_done` and `p_continue` are 0.0 stub placeholders; Task 9 populates them
-independently. This detector's sole output is `p_backchannel`.
+## Invocation cadence (WI-19)
+
+The model is invoked on **every frame** — not energy-gated. Backchannels
+("yeah", "mm-hmm") are 1–2 frames (32–64 ms) of speech energy. An
+energy gate fires on silence; backchannel vocalizations are the opposite
+— brief bursts of energy during assistant speech. Gating on silence would
+miss them entirely. SmartTurnDetector uses silence-candidate gating because
+it needs turn-context; BackchannelClassifier needs the vocalization frame
+itself, so every-frame is the correct cadence.
+
+## p_done / p_continue values (WI-18)
+
+`p_done` and `p_continue` are set to independent, defensible constants:
+- `p_done = 0.05`: a backchannel is not an end-of-turn signal. The near-zero
+  value acknowledges that the vocalization has negligible turn-completion
+  probability; it is not forced to 0.0 because we cannot rule out that any
+  brief vocalization carries trace EOU signal.
+- `p_continue = 0.10`: slightly above `p_done` because the user is mid-stream
+  (actively deferring the floor back to the assistant), but still low — they
+  are not asserting an intent to continue speaking. These values are NOT
+  derived from `p_backchannel`; they represent the EOU state orthogonally.
 """
 
 from __future__ import annotations
@@ -47,12 +65,15 @@ class BackchannelModel(Protocol):
     def __call__(self, frame: bytes) -> float: ...
 
 
+_P_DONE: float = 0.05  # backchannel is not an EOU signal; see module docstring WI-18
+_P_CONTINUE: float = 0.10  # user is deferring floor, not asserting intent to hold it
+
+
 class BackchannelClassifier:
     """Classifies short user vocalizations as backchannels.
 
-    On each frame: calls the injected BackchannelModel, logs the invocation
-    (invariant #1), and returns a TurnSignal populated with p_backchannel.
-    Full implementation in v0.1b Task 9.
+    On each frame: calls the injected BackchannelModel, logs the classification
+    event (invariant #1), and returns a TurnSignal populated with p_backchannel.
     """
 
     SOURCE = "backchannel_classifier"
@@ -73,19 +94,18 @@ class BackchannelClassifier:
         self._seq = 0
 
     def process_frame(self, frame: bytes, caused_by: list[str]) -> TurnSignal | None:
-        """Feed one audio frame through the backchannel model.
+        """Feed one audio frame through the backchannel model (every frame).
 
-        Logs a backchannel_frame event for every frame (invariant #1).
-        Returns a TurnSignal with p_backchannel populated on every frame.
+        Logs a backchannel_classification event (invariant #1) and returns a
+        TurnSignal with p_backchannel from the model and independent p_done /
+        p_continue constants (see module docstring for rationale).
         """
         p_backchannel = self._model(frame)
-        frame_evt = self._emit("backchannel_frame", caused_by, p_backchannel)
-        # p_done and p_continue are stub placeholders; Task 9 populates them
-        # independently — p_backchannel is orthogonal to EOU probability.
+        frame_evt = self._emit("backchannel_classification", caused_by, p_backchannel)
         return TurnSignal(
             detector="backchannel",
-            p_done=0.0,
-            p_continue=0.0,
+            p_done=_P_DONE,
+            p_continue=_P_CONTINUE,
             p_backchannel=p_backchannel,
             confidence=p_backchannel,
             evidence_event_ids=[frame_evt.event_id],
