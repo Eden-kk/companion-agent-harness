@@ -17,13 +17,16 @@
   },
   "consent_class": "synthetic_eval",
   "description": "Assistant is speaking; user starts speaking (VAD detects onset). System must request stop within 200ms p95 of VAD detection.",
+  "fixture_conventions": {
+    "assistant_audio_stop_requested": "Fixture-internal convention marker (t_ms=201) indicating the gate deadline, not a real logged event_type; offset by 1ms from user_speech_onset to establish unambiguous ordering within the signal_trace."
+  },
   "signal_trace": [
-    {"t_ms": 0,    "event_type": "assistant_generation_start", "assistant_speaking": true,  "vad_speech": false, "notes": "assistant begins speaking"},
+    {"t_ms": 0,    "event_type": "assistant_generation_start",    "assistant_speaking": true,  "vad_speech": false, "notes": "assistant begins speaking"},
     {"t_ms": 50,   "event_type": "assistant_audio_buffer_queued", "assistant_speaking": true,  "vad_speech": false, "notes": "first audio chunk queued"},
     {"t_ms": 100,  "event_type": "assistant_audio_buffer_queued", "assistant_speaking": true,  "vad_speech": false, "notes": "second audio chunk queued"},
     {"t_ms": 150,  "event_type": "assistant_audio_buffer_queued", "assistant_speaking": true,  "vad_speech": false, "notes": "third audio chunk queued"},
-    {"t_ms": 200,  "event_type": "user_speech_onset",           "assistant_speaking": true,  "vad_speech": true,  "notes": "user starts speaking — VAD detects speech onset"},
-    {"t_ms": 200,  "event_type": "assistant_audio_stop_requested", "assistant_speaking": true,  "vad_speech": true,  "notes": "GATE: stop must be requested within 200ms of vad detection"},
-    {"t_ms": 250,  "event_type": "assistant_audio_stop_completed", "assistant_speaking": false, "vad_speech": true,  "notes": "playback halted"}
+    {"t_ms": 200,  "event_type": "user_speech_onset",             "assistant_speaking": true,  "vad_speech": true,  "notes": "user starts speaking — VAD detects speech onset"},
+    {"t_ms": 201,  "event_type": "assistant_audio_stop_requested","assistant_speaking": true,  "vad_speech": true,  "notes": "GATE: stop must be requested within 200ms of vad detection"},
+    {"t_ms": 250,  "event_type": "assistant_audio_stop_completed","assistant_speaking": false, "vad_speech": true,  "notes": "playback halted"}
   ]
 }

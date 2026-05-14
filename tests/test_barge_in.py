@@ -4,6 +4,12 @@ See docs/architecture-v0.1.md §Part 6 Stage 1, §Part 8 v0.1a acceptance gates:
   vad_detected_user_speech_to_stop_ms_p95   < 200 ms (system-internal, strict)
   physical_user_speech_onset_to_stop_ms_p95 < 350 ms (product-felt, v0.1a loose)
 Fixture: barge_in_001 in §Part 6c.
+
+This test covers the vad_detected_user_speech_to_stop_ms_p95 < 200ms gate
+(the AudioOutputController stop path, per spec Part 8). The distinct
+physical_user_speech_onset_to_stop_ms_p95 < 350ms gate requires real-audio
+integration measurement (b200 / Task 17 end-to-end ReplayRun) and is
+intentionally out of scope for this fixture-driven contract test.
 """
 
 import asyncio
@@ -49,13 +55,10 @@ async def test_barge_in():
         logger, received = _make_logger()
         await logger.start()
 
-        sink_delays: list[float] = []
-
-        async def audio_sink(chunk: bytes, _delays: list[float] = sink_delays) -> None:
+        async def audio_sink(chunk: bytes) -> None:
             # Simulate ~10ms per chunk to represent real-time audio delivery.
             # This ensures play() is genuinely in-flight when stop fires.
             await asyncio.sleep(0.01)
-            _delays.append(0.01)
 
         controller = AudioOutputController(
             session_id=f"barge-in-trial-{trial}",
@@ -108,7 +111,7 @@ async def test_barge_in():
             f"trial {trial}: stop_requested not caused by VAD event"
         )
 
-        # No orphan events (invariant #1)
+        # Verify caused_by is non-empty (structural check; full DAG closure verified in test_causal_graph_completeness)
         for evt in received:
             assert evt.caused_by, (
                 f"trial {trial}: orphan event {evt.event_id!r} ({evt.event_type})"
@@ -116,7 +119,7 @@ async def test_barge_in():
 
     # Gate: vad_detected_user_speech_to_stop_ms_p95 < 200 ms
     latencies_ms.sort()
-    p95_idx = int(0.95 * len(latencies_ms))
+    p95_idx = min(int(0.95 * len(latencies_ms)), len(latencies_ms) - 1)
     p95_ms = latencies_ms[p95_idx]
     p50_ms = statistics.median(latencies_ms)
 
