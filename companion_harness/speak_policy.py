@@ -12,7 +12,7 @@ from __future__ import annotations
 from companion_harness.reason_codes import ReasonCode
 from companion_harness.schemas import PolicyInputs, SpeakDecision
 
-POLICY_VERSION = "v0.1b"
+POLICY_VERSION = "v0.1a"
 
 _BLOCKING_SOCIAL_MODES = frozenset({
     "user_addressing_other",
