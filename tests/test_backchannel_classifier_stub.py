@@ -30,4 +30,4 @@ def test_backchannel_classifier_construction():
         session_id="test-session",
         logger=logger,
     )
-    assert classifier is not None
+    assert isinstance(classifier, BackchannelClassifier)

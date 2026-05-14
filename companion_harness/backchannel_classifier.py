@@ -17,8 +17,8 @@ slots the real model behind this Protocol seam without changing callers.
 — the same interface as `VADDetector` and `SmartTurnDetector` — so
 `TurnDetectorSuite` can fan frames to all detectors uniformly.
 
-`p_done` is populated as `1.0 - p_backchannel`; `p_continue` is 0.0 (this
-detector does not classify end-of-turn — that is SmartTurnDetector's job).
+`p_done` and `p_continue` are 0.0 stub placeholders; Task 9 populates them
+independently. This detector's sole output is `p_backchannel`.
 """
 
 from __future__ import annotations
@@ -80,9 +80,11 @@ class BackchannelClassifier:
         """
         p_backchannel = self._model(frame)
         frame_evt = self._emit("backchannel_frame", caused_by, p_backchannel)
+        # p_done and p_continue are stub placeholders; Task 9 populates them
+        # independently — p_backchannel is orthogonal to EOU probability.
         return TurnSignal(
             detector="backchannel",
-            p_done=1.0 - p_backchannel,
+            p_done=0.0,
             p_continue=0.0,
             p_backchannel=p_backchannel,
             confidence=p_backchannel,
