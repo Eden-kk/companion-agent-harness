@@ -42,6 +42,7 @@ from companion_harness.schemas import Event, TurnSignal
 
 __all__ = ["SmartTurnModel", "SmartTurnDetector"]
 
+# Module-level defaults; override via constructor keyword args.
 _SILENCE_ONSET_MS: int = 300
 _SILENCE_RMS_THRESHOLD: int = 100  # int16 RMS below which a frame counts as silence
 
@@ -65,7 +66,8 @@ class SmartTurnDetector:
     On each frame: buffer is extended. A silence-candidate fires when frame
     RMS energy stays below `silence_rms_threshold` for >= `silence_onset_ms`
     of continuous silence. At that moment the injected SmartTurnModel is called
-    on the full buffer and a TurnSignal is returned if p_done > _DONE_THRESHOLD.
+    on the full buffer and a TurnSignal is always returned; if `p_done > p_continue`
+    the buffer resets (end-of-turn confirmed), otherwise it is retained (thinking pause).
 
     The model is invoked ONLY at silence-candidate moments — never on every
     frame (watch-item 17). Non-candidate frames emit no event.

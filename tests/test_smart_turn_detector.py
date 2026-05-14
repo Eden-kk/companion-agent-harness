@@ -72,7 +72,7 @@ async def test_thinking_pause_emits_p_continue_greater_than_p_done():
     )
 
     # 10 speech frames then 10 silence frames
-    # ceil(300/32) = 10 silence frames needed to fire the candidate
+    # 10 silence frames: 10 × 32 ms = 320 ms >= silence_onset_ms=300 ms -> candidate fires
     signals: list[TurnSignal] = []
     for _ in range(10):
         result = detector.process_frame(_speech_frame(), caused_by=["audio-001"])
