@@ -13,11 +13,9 @@ from companion_harness.schemas import PolicyInputs, SpeakDecision
 
 POLICY_VERSION = "v0.1a"
 
-_BLOCKING_PRIVACY_MODES = frozenset({
-    "no_memory",
-    "sensitive_conversation",
-    "quiet_mode",
-})
+# Spec Part 7 defines valid privacy_mode values; none are explicitly designated
+# as speech-blocking for v0.1a — only memory/logging behavior differs per mode.
+_BLOCKING_PRIVACY_MODES: frozenset[str] = frozenset()
 
 _BLOCKING_SOCIAL_MODES = frozenset({
     "user_addressing_other",
@@ -41,22 +39,28 @@ def decide(inputs: PolicyInputs, signal_event_ids: list[str]) -> SpeakDecision:
     Silence wins ties (invariant #8): every branch that is not an explicit
     full_response condition falls through to silence.
     """
+    if not signal_event_ids:
+        raise ValueError("signal_event_ids must be non-empty; orphan decisions fail Stage 0")
+
     caused_by: list[str] = list(signal_event_ids)
 
     # 1. Hard blocks — silence immediately, no further evaluation.
     if inputs.privacy_mode in _BLOCKING_PRIVACY_MODES:
-        return _silence(ReasonCode.QUIET_MODE_BLOCKED, caused_by)
+        return _silence(ReasonCode.PRIVACY_MODE_BLOCKED, caused_by)
 
     if inputs.social_mode in _BLOCKING_SOCIAL_MODES:
         return _silence(ReasonCode.NOT_ADDRESSED_TO_AGENT, caused_by)
 
     # 2. User is still speaking — wait.
+    # NOTE: ReasonCode lacks a precise "EOU not confirmed / turn not handed off" code;
+    # NOT_ADDRESSED_TO_AGENT is the least-wrong available value.
     if inputs.user_speaking:
-        return _silence(ReasonCode.COOLDOWN_BLOCKED, caused_by)
+        return _silence(ReasonCode.NOT_ADDRESSED_TO_AGENT, caused_by)
 
     # 3. EOU not confirmed — silence wins ties (invariant #8: tie goes to silence).
+    # NOTE: same gap — no dedicated EOU-threshold code in ReasonCode enum.
     if inputs.eou_probability <= 0.5:
-        return _silence(ReasonCode.COOLDOWN_BLOCKED, caused_by)
+        return _silence(ReasonCode.NOT_ADDRESSED_TO_AGENT, caused_by)
 
     # 4. EOU confirmed.  Respond only when the agent was addressed.
     if inputs.user_addressed_agent:
@@ -66,6 +70,7 @@ def decide(inputs: PolicyInputs, signal_event_ids: list[str]) -> SpeakDecision:
             supporting_reason_codes=[ReasonCode.USER_ADDRESSED_AGENT],
             redacted_explanation=None,
             caused_by=caused_by,
+            # budget_bucket selects the per-action latency budget from speak_policy config
             budget_bucket="full_response",
             allowed_prosody_tags=[],
             max_duration_ms=None,
