@@ -10,8 +10,15 @@ Unlike `VADDetector` (which may emit a TurnSignal on any frame where silence
 has persisted long enough), `SmartTurnDetector` has different internal behavior:
 - It accumulates the current-turn audio into an internal buffer on every frame.
 - It only invokes the model and potentially emits a `TurnSignal` at
-  silence-candidate moments (i.e., when VAD indicates a pause onset).
+  silence-candidate moments (i.e., when frame energy stays below the RMS
+  silence threshold for >= silence_onset_ms of continuous silence).
 - Between silence candidates the method returns None without touching the model.
+
+"Silence-candidate" detection is self-contained: each frame's RMS energy is
+compared against `silence_rms_threshold` (default 100 on int16 scale). When
+accumulated silence exceeds `silence_onset_ms` (default 300 ms) this module
+fires the Smart Turn model on the buffered audio — exactly once per candidate
+window, not on every frame (watch-item 17).
 
 This "accumulate-internally, emit-at-silence-candidate" design is required
 because the Smart Turn v3 model classifies full-turn context (not single frames).
@@ -24,6 +31,7 @@ pipecat — the Protocol is the seam where the real model plugs in (v0.1b Task 3
 
 from __future__ import annotations
 
+import array
 import hashlib
 import time
 from datetime import datetime, timezone
@@ -33,6 +41,9 @@ from companion_harness.event_logger import EventLogger
 from companion_harness.schemas import Event, TurnSignal
 
 __all__ = ["SmartTurnModel", "SmartTurnDetector"]
+
+_SILENCE_ONSET_MS: int = 300
+_SILENCE_RMS_THRESHOLD: int = 100  # int16 RMS below which a frame counts as silence
 
 
 @runtime_checkable
@@ -51,10 +62,13 @@ class SmartTurnModel(Protocol):
 class SmartTurnDetector:
     """Accumulates turn audio and emits TurnSignals at silence-candidate moments.
 
-    On each frame: buffer is extended. At a silence-candidate moment the
-    injected SmartTurnModel is called on the full buffer and a TurnSignal
-    is returned if p_done exceeds threshold. Every model invocation is
-    logged (invariant #1).
+    On each frame: buffer is extended. A silence-candidate fires when frame
+    RMS energy stays below `silence_rms_threshold` for >= `silence_onset_ms`
+    of continuous silence. At that moment the injected SmartTurnModel is called
+    on the full buffer and a TurnSignal is returned if p_done > _DONE_THRESHOLD.
+
+    The model is invoked ONLY at silence-candidate moments — never on every
+    frame (watch-item 17). Non-candidate frames emit no event.
 
     p_backchannel is always 0.0; BackchannelClassifier owns that field.
     """
@@ -68,38 +82,55 @@ class SmartTurnDetector:
         session_id: str,
         logger: EventLogger,
         *,
-        silence_candidate_threshold: float = 0.5,
+        silence_onset_ms: int = _SILENCE_ONSET_MS,
+        silence_rms_threshold: int = _SILENCE_RMS_THRESHOLD,
         frame_duration_ms: int = 32,
     ) -> None:
         self._model = model
         self._session_id = session_id
         self._logger = logger
-        self._silence_candidate_threshold = silence_candidate_threshold
+        self._silence_onset_ms = silence_onset_ms
+        self._silence_rms_threshold = silence_rms_threshold
         self._frame_duration_ms = frame_duration_ms
 
         self._seq = 0
         self._audio_buffer: bytes = b""
+        self._in_speech = False
+        self._silence_ms = 0
+        self._candidate_fired = False  # True once the model fires for current silence window
+
+    # ------------------------------------------------------------------
 
     def process_frame(self, frame: bytes, caused_by: list[str]) -> TurnSignal | None:
         """Feed one audio frame; return a TurnSignal at silence-candidate moments.
 
-        The caller (TurnDetectorSuite) signals a silence candidate by passing
-        a frame whose VAD probability is below threshold — the same frame bytes
-        used by VADDetector. Stub: silence-candidate detection is a placeholder
-        (always treats every frame as a candidate) until Task 3 wires real VAD
-        coordination. The accumulation buffer and emission path are present.
+        Non-candidate frames: buffer is extended, no event is emitted, None returned.
+        Silence-candidate moment (first frame after silence_onset_ms of continuous
+        silence): model is invoked, invocation event is logged, TurnSignal returned
+        if p_done > threshold (buffer reset on end-of-turn).
         """
         self._audio_buffer += frame
 
-        # TODO (Task 3): receive an explicit silence_candidate flag from
-        # TurnDetectorSuite rather than treating every frame as a candidate.
-        # Note: logging cadence mirrors invocation cadence — once invocation moves to
-        # silence-candidate-only, non-invoked frames must emit no event.
+        if _frame_rms(frame) >= self._silence_rms_threshold:
+            self._in_speech = True
+            self._silence_ms = 0
+            self._candidate_fired = False
+            return None
+
+        if not self._in_speech:
+            # Haven't entered speech yet; no candidate to fire.
+            return None
+
+        self._silence_ms += self._frame_duration_ms
+
+        if self._silence_ms < self._silence_onset_ms or self._candidate_fired:
+            return None
+
+        # First frame that crosses the silence_onset_ms threshold: silence candidate.
+        self._candidate_fired = True
+
         p_done, p_continue = self._model(self._audio_buffer)
         invocation_evt = self._emit("smart_turn_invocation", caused_by, p_done, p_continue)
-
-        if p_done < self._silence_candidate_threshold:
-            return None
 
         signal = TurnSignal(
             detector="smart_turn",
@@ -110,7 +141,12 @@ class SmartTurnDetector:
             evidence_event_ids=[invocation_evt.event_id],
         )
         self._emit("smart_turn_signal", [invocation_evt.event_id], p_done, p_continue)
-        self._audio_buffer = b""
+        if p_done > p_continue:
+            # End-of-turn confirmed: reset buffer for next utterance.
+            self._audio_buffer = b""
+            self._in_speech = False
+            self._silence_ms = 0
+            self._candidate_fired = False
         return signal
 
     # ------------------------------------------------------------------
@@ -147,3 +183,11 @@ class SmartTurnDetector:
         )
         self._logger.log(evt)
         return evt
+
+
+def _frame_rms(frame: bytes) -> float:
+    """Return RMS of frame interpreted as little-endian int16 PCM."""
+    if len(frame) < 2:
+        return 0.0
+    samples = array.array("h", frame[: len(frame) - len(frame) % 2])
+    return (sum(s * s for s in samples) / len(samples)) ** 0.5
