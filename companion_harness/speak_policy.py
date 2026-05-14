@@ -5,3 +5,84 @@ silence wins ties) and §Part 8 (v0.1a restricts the action set to two values).
 Every SpeakDecision must carry a primary_reason_code from ReasonCode — no
 free-text reasoning on the policy path (invariant #5 / Stage 0 Tier B replay).
 """
+
+from __future__ import annotations
+
+from companion_harness.reason_codes import ReasonCode
+from companion_harness.schemas import PolicyInputs, SpeakDecision
+
+POLICY_VERSION = "v0.1a"
+
+_BLOCKING_PRIVACY_MODES = frozenset({
+    "no_memory",
+    "sensitive_conversation",
+    "quiet_mode",
+})
+
+_BLOCKING_SOCIAL_MODES = frozenset({
+    "user_addressing_other",
+    "group_conversation",
+    "background_presence",
+})
+
+
+def decide(inputs: PolicyInputs, signal_event_ids: list[str]) -> SpeakDecision:
+    """Return a SpeakDecision for the given PolicyInputs.
+
+    Determinism guarantees (invariant #5):
+      - No wall-clock reads.
+      - No random calls.
+      - All comparisons are on the PolicyInputs fields directly.
+      - dict iteration (cooldown_state, proactivity_budget_remaining) is never
+        used to produce the decision — only keyed lookups and boolean tests.
+      - Float comparisons use only the values present in PolicyInputs; no
+        floating-point accumulation that could diverge across runs.
+
+    Silence wins ties (invariant #8): every branch that is not an explicit
+    full_response condition falls through to silence.
+    """
+    caused_by: list[str] = list(signal_event_ids)
+
+    # 1. Hard blocks — silence immediately, no further evaluation.
+    if inputs.privacy_mode in _BLOCKING_PRIVACY_MODES:
+        return _silence(ReasonCode.QUIET_MODE_BLOCKED, caused_by)
+
+    if inputs.social_mode in _BLOCKING_SOCIAL_MODES:
+        return _silence(ReasonCode.NOT_ADDRESSED_TO_AGENT, caused_by)
+
+    # 2. User is still speaking — wait.
+    if inputs.user_speaking:
+        return _silence(ReasonCode.COOLDOWN_BLOCKED, caused_by)
+
+    # 3. EOU not confirmed — silence wins ties (invariant #8: tie goes to silence).
+    if inputs.eou_probability <= 0.5:
+        return _silence(ReasonCode.COOLDOWN_BLOCKED, caused_by)
+
+    # 4. EOU confirmed.  Respond only when the agent was addressed.
+    if inputs.user_addressed_agent:
+        return SpeakDecision(
+            action_type="full_response",
+            primary_reason_code=ReasonCode.EOU_CONFIRMED,
+            supporting_reason_codes=[ReasonCode.USER_ADDRESSED_AGENT],
+            redacted_explanation=None,
+            caused_by=caused_by,
+            budget_bucket="full_response",
+            allowed_prosody_tags=[],
+            max_duration_ms=None,
+        )
+
+    # 5. EOU confirmed but agent not explicitly addressed — silence wins ties.
+    return _silence(ReasonCode.NOT_ADDRESSED_TO_AGENT, caused_by)
+
+
+def _silence(reason: ReasonCode, caused_by: list[str]) -> SpeakDecision:
+    return SpeakDecision(
+        action_type="silence",
+        primary_reason_code=reason,
+        supporting_reason_codes=[],
+        redacted_explanation=None,
+        caused_by=caused_by,
+        budget_bucket=None,
+        allowed_prosody_tags=[],
+        max_duration_ms=None,
+    )
