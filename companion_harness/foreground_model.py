@@ -13,6 +13,19 @@ never calls into SpeakPolicy and never produces a SpeakDecision.
 The real model (MiniCPM-o 4.5) requires torch and lives on b200.
 This module never imports torch — the model is injected via the DuplexModel
 Protocol so the adapter is locally importable without GPU dependencies.
+
+# SPEC AMBIGUITY (Part 3): Part 3 lists both ForegroundModel ("full-duplex
+# multimodal speech/text") and ThinkerProposalGen ("proposal-only, no direct
+# speech path") as distinct adapters, but gives neither a concrete API shape.
+# At the call-site level, both take input and emit ThinkerProposal candidates.
+# Part 9 assigns MiniCPM-o 4.5 (as_duplex) to ForegroundModel and the Inner
+# Thoughts loop to ThinkerProposalGen — so the distinction is the underlying
+# model/mode, not the adapter API.  This module is ForegroundModel (per ROADMAP
+# Task 7 and Part 9).  If the spec ever differentiates the two APIs (e.g.,
+# ForegroundModel also handles barge-in or TTS), this module must be updated.
+#
+# Event types: foreground_frame and foreground_proposal extend the Part 5 list
+# (which covers AudioOutputController only and is explicitly "not exhaustive").
 """
 
 from __future__ import annotations
@@ -70,11 +83,13 @@ class ForegroundModel:
         Returns a ThinkerProposal when the model produces a candidate, else None.
         The returned proposal must pass through SpeakPolicy before becoming speech.
         """
-        frame_evt = self._emit("foreground_frame", caused_by)
+        frame_evt = self._emit("foreground_frame", caused_by, "raw_audio")
         proposal = self._model.infer(audio_frame)
         if proposal is None:
             return None
-        self._emit("foreground_proposal", [frame_evt.event_id])
+        if not proposal.caused_by:
+            proposal.caused_by = [frame_evt.event_id]
+        self._emit("foreground_proposal", [frame_evt.event_id], "model_output")
         return proposal
 
     # ------------------------------------------------------------------
@@ -83,7 +98,7 @@ class ForegroundModel:
         self._seq += 1
         return self._seq
 
-    def _emit(self, event_type: str, caused_by: list[str]) -> Event:
+    def _emit(self, event_type: str, caused_by: list[str], payload_kind: str = "model_output") -> Event:
         now_ms = int(time.monotonic() * 1000)
         seq = self._next_seq()
         event_id = f"{self._session_id}-fm-{seq}-{now_ms}"
@@ -102,7 +117,7 @@ class ForegroundModel:
             caused_by=caused_by,
             payload_hash=payload_hash,
             payload_ref=None,
-            payload_kind="model_output",
+            payload_kind=payload_kind,  # type: ignore[arg-type]
             subject_class="self",
             sensitivity="safe",
             retention_policy_id="default",
