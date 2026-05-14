@@ -8,6 +8,7 @@ scheduled trigger.
 import pytest
 
 from companion_harness.causal_graph import CausalGraph, OrphanReport
+from companion_harness.fixtures.loader import load_fixture
 from companion_harness.schemas import Event
 
 
@@ -94,3 +95,48 @@ def test_duplicate_event_id_raises():
     evt = _evt("evt-1", [])
     with pytest.raises(ValueError, match="evt-1"):
         CausalGraph([evt, evt])
+
+
+def test_causal_graph_completeness_recorded_fixture():
+    """orphan_action_count = 0 gate on the causal_graph_001 recorded fixture.
+
+    Fixture encodes a real assistant turn: user speech → VAD signal →
+    policy decision → generation start → audio queued, plus a
+    log_drop_or_degrade event with _dropped_before_enqueue sentinel.
+    All events must resolve; the gate is orphan_count == 0.
+    """
+    fixture = load_fixture("causal_graph_001")
+    assert fixture["case_id"] == "causal_graph_001"
+    assert fixture["expected_metrics"]["orphan_action_count"] == 0
+
+    events = [
+        Event(
+            event_id=e["event_id"],
+            session_id=e["session_id"],
+            schema_version=e["schema_version"],
+            seq_no=e["seq_no"],
+            event_type=e["event_type"],
+            timestamp_mono_ms=e["timestamp_mono_ms"],
+            timestamp_wall=e["timestamp_wall"],
+            source=e["source"],
+            caused_by=e["caused_by"],
+            payload_hash=e["payload_hash"],
+            payload_ref=e["payload_ref"],
+            payload_kind=e["payload_kind"],
+            subject_class=e["subject_class"],
+            sensitivity=e["sensitivity"],
+            retention_policy_id=e["retention_policy_id"],
+        )
+        for e in fixture["events"]
+    ]
+
+    assert len(events) >= 6, f"fixture too small ({len(events)} events) to cover all DAG patterns"
+
+    graph = CausalGraph(events)
+    report = graph.find_orphans()
+
+    assert report.orphan_count == fixture["expected_metrics"]["orphan_action_count"], (
+        f"orphan_action_count = {report.orphan_count}; gate = 0\n"
+        f"  orphans: {report.orphan_event_ids}\n"
+        f"  dangling: {report.dangling_refs}"
+    )
