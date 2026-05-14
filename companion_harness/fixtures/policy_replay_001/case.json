@@ -1,0 +1,130 @@
+{
+  "case_id": "policy_replay_001",
+  "stage": 0,
+  "scenario": "policy_tier_b_replay",
+  "modalities": ["audio"],
+  "fixture_ref": "companion_harness/fixtures/policy_replay_001/",
+  "sensitivity": "safe_eval_fixture",
+  "expected_events": [
+    "policy_decision"
+  ],
+  "expected_metrics": {
+    "policy_replay_match_rate": "100%"
+  },
+  "consent_class": "synthetic_eval",
+  "description": "Recorded signal trace spanning all five SpeakPolicy decision branches. Tier B replay: each frame is replayed twice; every SpeakDecision must be bit-identical to the recorded baseline and to itself across runs.",
+  "fixture_conventions": {
+    "policy_replay_safe": "All fields are policy_replay_safe per the spec replay privacy policy (stable enums + numeric thresholds; no free-text PII).",
+    "baseline_decisions": "Recorded expected SpeakDecision fields (action_type, primary_reason_code, supporting_reason_codes) for each signal_trace frame. Test asserts exact match — these are the Tier B baseline.",
+    "frame_coverage": "7 frames covering all 5 decision branches: (1) blocking social mode → NOT_ADDRESSED; (2) user_speaking → NOT_ADDRESSED; (3) low EOU → NOT_ADDRESSED; (4) EOU+addressed → full_response; (5) EOU+not addressed → NOT_ADDRESSED; plus two boundary frames near the EOU threshold to ensure determinism holds at the boundary."
+  },
+  "signal_trace": [
+    {
+      "t_ms": 0,
+      "frame_id": "frame-000",
+      "social_mode": "background_presence",
+      "user_speaking": false,
+      "eou_probability": 0.95,
+      "user_addressed_agent": true,
+      "notes": "branch 1: blocking social mode → silence regardless of EOU/address"
+    },
+    {
+      "t_ms": 500,
+      "frame_id": "frame-001",
+      "social_mode": "user_addressing_agent",
+      "user_speaking": true,
+      "eou_probability": 0.85,
+      "user_addressed_agent": true,
+      "notes": "branch 2: user still speaking → silence"
+    },
+    {
+      "t_ms": 1000,
+      "frame_id": "frame-002",
+      "social_mode": "user_addressing_agent",
+      "user_speaking": false,
+      "eou_probability": 0.45,
+      "user_addressed_agent": true,
+      "notes": "branch 3: EOU sub-threshold (0.45 < 0.5) → silence; near-boundary determinism check"
+    },
+    {
+      "t_ms": 1500,
+      "frame_id": "frame-003",
+      "social_mode": "user_addressing_agent",
+      "user_speaking": false,
+      "eou_probability": 0.50,
+      "user_addressed_agent": true,
+      "notes": "branch 3: EOU exactly at threshold (0.50 <= 0.5) → silence; boundary determinism"
+    },
+    {
+      "t_ms": 2000,
+      "frame_id": "frame-004",
+      "social_mode": "user_addressing_agent",
+      "user_speaking": false,
+      "eou_probability": 0.51,
+      "user_addressed_agent": false,
+      "notes": "branch 5: EOU confirmed but agent not addressed → silence"
+    },
+    {
+      "t_ms": 2500,
+      "frame_id": "frame-005",
+      "social_mode": "user_addressing_agent",
+      "user_speaking": false,
+      "eou_probability": 0.92,
+      "user_addressed_agent": true,
+      "notes": "branch 4: EOU confirmed + addressed → full_response"
+    },
+    {
+      "t_ms": 3000,
+      "frame_id": "frame-006",
+      "social_mode": "user_addressing_agent",
+      "user_speaking": false,
+      "eou_probability": 0.75,
+      "user_addressed_agent": true,
+      "notes": "branch 4 again: different EOU value, still full_response; verifies determinism across varied inputs"
+    }
+  ],
+  "baseline_decisions": [
+    {
+      "frame_id": "frame-000",
+      "action_type": "silence",
+      "primary_reason_code": "NOT_ADDRESSED_TO_AGENT",
+      "supporting_reason_codes": []
+    },
+    {
+      "frame_id": "frame-001",
+      "action_type": "silence",
+      "primary_reason_code": "NOT_ADDRESSED_TO_AGENT",
+      "supporting_reason_codes": []
+    },
+    {
+      "frame_id": "frame-002",
+      "action_type": "silence",
+      "primary_reason_code": "NOT_ADDRESSED_TO_AGENT",
+      "supporting_reason_codes": []
+    },
+    {
+      "frame_id": "frame-003",
+      "action_type": "silence",
+      "primary_reason_code": "NOT_ADDRESSED_TO_AGENT",
+      "supporting_reason_codes": []
+    },
+    {
+      "frame_id": "frame-004",
+      "action_type": "silence",
+      "primary_reason_code": "NOT_ADDRESSED_TO_AGENT",
+      "supporting_reason_codes": []
+    },
+    {
+      "frame_id": "frame-005",
+      "action_type": "full_response",
+      "primary_reason_code": "EOU_CONFIRMED",
+      "supporting_reason_codes": ["USER_ADDRESSED_AGENT"]
+    },
+    {
+      "frame_id": "frame-006",
+      "action_type": "full_response",
+      "primary_reason_code": "EOU_CONFIRMED",
+      "supporting_reason_codes": ["USER_ADDRESSED_AGENT"]
+    }
+  ]
+}
