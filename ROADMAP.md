@@ -2,7 +2,7 @@
 
 ## CURRENT MILESTONE: v0.1a
 
-The v0.1a MVP is the **VAD-only baseline**. It exists to prove the substrate: every utterance has a cause, every policy decision is replayable, barge-in stops the assistant, thinking pauses do not trigger premature responses, and direct questions get answered promptly. The texture work (Stage 6) does not start until v0.1a passes.
+The v0.1a MVP is the **VAD-only baseline**. It exists to prove the substrate: every utterance has a cause, every policy decision is replayable, barge-in stops the assistant, thinking pauses do not trigger premature responses (thinking-pause capability deferred to v0.1b — see issue #10), and direct questions get answered promptly. The texture work (Stage 6) does not start until v0.1a passes.
 
 ### Adapters enabled
 
@@ -26,7 +26,7 @@ The v0.1a MVP is the **VAD-only baseline**. It exists to prove the substrate: ev
 
 ### Required contract tests
 
-- `test_thinking_pause`
+- `test_thinking_pause` [DEFERRED to v0.1b — see issue #10]
 - `test_barge_in`
 - `test_false_interruption_rate`
 - `test_direct_question_latency` (positive responsiveness — prevents "passes by being sluggish")
@@ -44,7 +44,7 @@ Deferred to v0.1b (NOT required at v0.1a): `test_backchannel_survival`, `test_de
 | `policy_replay_match_rate` | = 100% |
 | `orphan_action_count` | = 0 |
 | `assistant_audio_start_with_cause` | = 100% |
-| `thinking_pause_false_positive_rate` | = 0 on fixture set |
+| `thinking_pause_false_positive_rate` | = 0 on fixture set [v0.1b-gated — see issue #10] |
 | `direct_question_latency_p50` | < 800 ms |
 | `direct_question_latency_p95` | < 1500 ms |
 | `vad_detected_user_speech_to_stop_ms_p95` | < 200 ms |
@@ -53,7 +53,7 @@ Deferred to v0.1b (NOT required at v0.1a): `test_backchannel_survival`, `test_de
 
 Both barge-in latencies must be gated separately. `physical_user_speech_onset_to_stop_ms` is what the user actually feels (product truth, loose at v0.1a because VAD-only adds detection lag). `vad_detected_user_speech_to_stop_ms` is the system-internal stop path — strictly gated because it measures the `AudioOutputController`.
 
-> **v0.1a succeeds when the system can explain every utterance, replay every policy decision, stop when interrupted, wait through thinking pauses, and answer direct questions promptly.**
+> **v0.1a succeeds when the system can explain every utterance, replay every policy decision, stop when interrupted, wait through thinking pauses (v0.1b-gated — see issue #10), and answer direct questions promptly.**
 
 ---
 
@@ -69,7 +69,7 @@ Each task is one PR. Each PR turns exactly one `pytest.skip` into a passing test
 6. **Implement `SpeakPolicy`** restricted to `{silence, full_response}`. Every `SpeakDecision` carries a `primary_reason_code` from `ReasonCode`. Verify: deterministic given recorded signals (Tier B replay precondition).
 7. **Wire `ForegroundModel` adapter.** One adapter interface, one concrete instantiation behind it. Verify: adapter interface importable from `speak_policy.py` without leaking the SDK.
 8. **Write fixture `thinking_pause_001`** (per spec §Part 6c). Audio + expected events. Verify: fixture loads in a pytest collection.
-9. **Implement and pass `test_thinking_pause`.** First green test. Verify: `pytest -k thinking_pause` passes.
+9. **Implement and pass `test_thinking_pause`.** First green test. Verify: `pytest -k thinking_pause` passes. [DEFERRED to v0.1b — see issue #10]
 10. **Implement and pass `test_barge_in`.** Verify: VAD-to-stop p95 < 200ms on the fixture.
 11. **Implement and pass `test_direct_question_latency`.** Verify: p50 < 800ms / p95 < 1500ms.
 12. **Implement and pass `test_explicit_turn_handoff`.** Verify: companion responds promptly to "what do you think?".
