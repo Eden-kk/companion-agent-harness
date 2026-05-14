@@ -1,0 +1,29 @@
+{
+  "case_id": "barge_in_001",
+  "stage": 1,
+  "scenario": "assistant_interrupted",
+  "modalities": ["audio"],
+  "fixture_ref": "companion_harness/fixtures/barge_in_001/",
+  "sensitivity": "safe_eval_fixture",
+  "expected_events": [
+    "assistant_generation_start",
+    "assistant_audio_buffer_queued",
+    "user_speech_onset",
+    "assistant_audio_stop_requested",
+    "assistant_audio_stop_completed"
+  ],
+  "expected_metrics": {
+    "assistant_stop_latency_ms_p95": "<200"
+  },
+  "consent_class": "synthetic_eval",
+  "description": "Assistant is speaking; user starts speaking (VAD detects onset). System must request stop within 200ms p95 of VAD detection.",
+  "signal_trace": [
+    {"t_ms": 0,    "event_type": "assistant_generation_start", "assistant_speaking": true,  "vad_speech": false, "notes": "assistant begins speaking"},
+    {"t_ms": 50,   "event_type": "assistant_audio_buffer_queued", "assistant_speaking": true,  "vad_speech": false, "notes": "first audio chunk queued"},
+    {"t_ms": 100,  "event_type": "assistant_audio_buffer_queued", "assistant_speaking": true,  "vad_speech": false, "notes": "second audio chunk queued"},
+    {"t_ms": 150,  "event_type": "assistant_audio_buffer_queued", "assistant_speaking": true,  "vad_speech": false, "notes": "third audio chunk queued"},
+    {"t_ms": 200,  "event_type": "user_speech_onset",           "assistant_speaking": true,  "vad_speech": true,  "notes": "user starts speaking — VAD detects speech onset"},
+    {"t_ms": 200,  "event_type": "assistant_audio_stop_requested", "assistant_speaking": true,  "vad_speech": true,  "notes": "GATE: stop must be requested within 200ms of vad detection"},
+    {"t_ms": 250,  "event_type": "assistant_audio_stop_completed", "assistant_speaking": false, "vad_speech": true,  "notes": "playback halted"}
+  ]
+}
