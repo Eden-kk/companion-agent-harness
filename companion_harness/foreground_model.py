@@ -26,6 +26,27 @@ Protocol so the adapter is locally importable without GPU dependencies.
 #
 # Event types: foreground_frame and foreground_proposal extend the Part 5 list
 # (which covers AudioOutputController only and is explicitly "not exhaustive").
+
+## Protocol structure (ADR note)
+
+Two Protocols are defined here:
+
+`DuplexModel` — base one-shot interface: `infer(audio_frame, video_frame=None)`.
+  The optional `video_frame` parameter is additive; existing audio-only fakes
+  still satisfy this Protocol unchanged because `@runtime_checkable` only checks
+  method *existence*, not signature.  Audio-only fakes can ignore the parameter.
+
+`StreamingDuplexModel` — extends `DuplexModel` with an async-generator method
+  `infer_stream(frame_iter, caused_by)` that yields `ThinkerProposal` candidates
+  incrementally from a frame stream.  This is a *separate* Protocol rather than
+  a new required method on `DuplexModel`, so that audio-only fakes continue to
+  satisfy `isinstance(fake, DuplexModel)`.  Only streaming-capable models
+  implement `StreamingDuplexModel`.  Both Protocols are `@runtime_checkable`.
+
+`ForegroundModel` gains `process_stream()` which drives an injected
+  `StreamingDuplexModel` and logs `foreground_frame` / `foreground_proposal`
+  events for every yielded proposal (invariant #1, every event carries
+  `caused_by[]`).
 """
 
 from __future__ import annotations
@@ -33,12 +54,12 @@ from __future__ import annotations
 import hashlib
 import time
 from datetime import datetime, timezone
-from typing import Protocol, runtime_checkable
+from typing import AsyncGenerator, AsyncIterator, Protocol, runtime_checkable
 
 from companion_harness.event_logger import EventLogger
 from companion_harness.schemas import Event, ThinkerProposal
 
-__all__ = ["DuplexModel", "ForegroundModel"]
+__all__ = ["DuplexModel", "StreamingDuplexModel", "ForegroundModel"]
 
 
 @runtime_checkable
@@ -49,7 +70,26 @@ class DuplexModel(Protocol):
     (requires torch + CUDA). Tests inject a fake that returns scripted proposals.
     """
 
-    def infer(self, audio_frame: bytes) -> ThinkerProposal | None: ...
+    def infer(
+        self, audio_frame: bytes, video_frame: bytes | None = None
+    ) -> ThinkerProposal | None: ...
+
+
+@runtime_checkable
+class StreamingDuplexModel(DuplexModel, Protocol):
+    """Extension of DuplexModel for models that support streaming (incremental) inference.
+
+    Consuming models call `infer_stream` with an async iterator of (audio, video)
+    frame pairs and iterate over the yielded ThinkerProposal candidates.
+    Only models that implement this method satisfy `isinstance(m, StreamingDuplexModel)`.
+    Audio-only one-shot fakes satisfy `DuplexModel` but NOT `StreamingDuplexModel`.
+    """
+
+    async def infer_stream(
+        self,
+        frame_iter: AsyncIterator[tuple[bytes, bytes | None]],
+        caused_by: list[str],
+    ) -> AsyncGenerator[ThinkerProposal, None]: ...
 
 
 class ForegroundModel:
@@ -75,22 +115,45 @@ class ForegroundModel:
         self._seq = 0
 
     def process_frame(
-        self, audio_frame: bytes, caused_by: list[str]
+        self,
+        audio_frame: bytes,
+        caused_by: list[str],
+        video_frame: bytes | None = None,
     ) -> ThinkerProposal | None:
-        """Feed one audio frame to the model.
+        """Feed one audio (and optional video) frame to the model.
 
         Logs a foreground_frame event for every frame (invariant #1).
         Returns a ThinkerProposal when the model produces a candidate, else None.
         The returned proposal must pass through SpeakPolicy before becoming speech.
         """
         frame_evt = self._emit("foreground_frame", caused_by, "raw_audio")
-        proposal = self._model.infer(audio_frame)
+        proposal = self._model.infer(audio_frame, video_frame)
         if proposal is None:
             return None
         if not proposal.caused_by:
             proposal.caused_by = [frame_evt.event_id]
         self._emit("foreground_proposal", [frame_evt.event_id], "model_output")
         return proposal
+
+    async def process_stream(
+        self,
+        frame_iter: AsyncIterator[tuple[bytes, bytes | None]],
+        caused_by: list[str],
+    ) -> AsyncGenerator[ThinkerProposal, None]:
+        """Drive a StreamingDuplexModel and yield logged ThinkerProposal candidates.
+
+        Logs a foreground_frame event before invoking the model, and a
+        foreground_proposal event for each yielded proposal (invariant #1).
+        The injected model must satisfy StreamingDuplexModel.
+        """
+        frame_evt = self._emit("foreground_frame", caused_by, "raw_audio")
+        async for proposal in await self._model.infer_stream(  # type: ignore[attr-defined]
+            frame_iter, [frame_evt.event_id]
+        ):
+            if not proposal.caused_by:
+                proposal.caused_by = [frame_evt.event_id]
+            self._emit("foreground_proposal", [frame_evt.event_id], "model_output")
+            yield proposal
 
     # ------------------------------------------------------------------
 
