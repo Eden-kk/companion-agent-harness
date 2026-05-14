@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-from companion_harness.reason_codes import ReasonCode
+from companion_harness.reason_codes import ReasonCode  # intentionally not re-exported; import from reason_codes
 
 __all__ = [
     "SensitiveField",
@@ -30,12 +30,12 @@ __all__ = [
 
 @dataclass
 class SensitiveField:
+    retention_policy_id: str
     value:               str | None = None
     value_ref:           str | None = None
     redacted_value:      str | None = None
     sensitivity:         Literal["safe", "sensitive", "highly_sensitive"] = "sensitive"
     source_event_ids:    list[str] = field(default_factory=list)
-    retention_policy_id: str = ""
 
 
 @dataclass
@@ -66,7 +66,7 @@ class DecisionTrace:
     threshold_path:          list[str]
     primary_reason_code:     ReasonCode
     supporting_reason_codes: list[ReasonCode]
-    counterfactuals:         dict[str, bool | str]
+    counterfactuals:         dict
     redacted_explanation:    str | None
     sensitive_explanation_ref: str | None
     policy_version:          str
@@ -169,4 +169,4 @@ class ReplayRun:
     started_at:                   str
     finished_at:                  str | None
     results:                      dict
-    failures:                     list[dict[str, str]]
+    failures:                     list[dict]
