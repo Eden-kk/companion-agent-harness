@@ -1,7 +1,8 @@
 """Minimal fixture loader for EvaluationCase fixtures.
 
 Each fixture lives in companion_harness/fixtures/<case_id>/case.json.
-Returns the raw dict; callers may construct an EvaluationCase from it.
+Returns the raw fixture dict. Callers should access keys directly; the dict
+may contain extra keys beyond EvaluationCase fields (e.g. signal_trace).
 """
 
 import json
