@@ -93,6 +93,8 @@ class SmartTurnDetector:
 
         # TODO (Task 3): receive an explicit silence_candidate flag from
         # TurnDetectorSuite rather than treating every frame as a candidate.
+        # Note: logging cadence mirrors invocation cadence — once invocation moves to
+        # silence-candidate-only, non-invoked frames must emit no event.
         p_done, p_continue = self._model(self._audio_buffer)
         invocation_evt = self._emit("smart_turn_invocation", caused_by, p_done, p_continue)
 
