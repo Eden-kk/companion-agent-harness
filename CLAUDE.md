@@ -4,7 +4,7 @@
 
 A flight-recorder harness for a realtime multimodal companion agent. The architecture spec is frozen at v0.1 in [`docs/architecture-v0.1.md`](docs/architecture-v0.1.md). The current milestone is **v0.1a** (see [`ROADMAP.md`](ROADMAP.md) for adapter scope, contract tests, and numeric gates). The pinned success criterion for v0.1a is:
 
-> v0.1a succeeds when the system can explain every utterance, replay every policy decision, stop when interrupted, wait through thinking pauses, and answer direct questions promptly.
+> v0.1a succeeds when the system can explain every utterance, replay every policy decision, stop when interrupted, wait through thinking pauses (deferred to v0.1b — see issue #10), and answer direct questions promptly.
 
 Read the spec before writing code. Notes referenced below cite section numbers in `architecture-v0.1.md`.
 
