@@ -62,7 +62,9 @@ def test_explicit_turn_handoff():
     assert ReasonCode.USER_ADDRESSED_AGENT in decision.supporting_reason_codes
     assert decision.caused_by == ["eou-signal-001"]
 
-    # ── Contrast case: EOU confirmed but agent NOT addressed → silence ────────
+    # ── Contrast case: EOU confirmed, social_mode still user_addressing_agent,
+    #    but user_addressed_agent=False → silence.  Proves user_addressed_agent
+    #    is the gate-4 discriminator, not social_mode or EOU alone. ────────────
     contrast_inputs = _base_inputs(
         user_speaking=contrast_frame["user_speaking"],
         eou_probability=contrast_frame["eou_probability"],

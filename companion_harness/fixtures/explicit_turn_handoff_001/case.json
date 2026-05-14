@@ -18,6 +18,10 @@
   },
   "consent_class": "synthetic_eval",
   "description": "User says 'what do you think?' — an explicit turn handoff to the agent. Policy must decide full_response, not silence.",
+  "fixture_conventions": {
+    "contrast_trace": "A fixture-internal second signal trace used by the test for the contrast/discriminator case. Not part of the standard EvaluationCase schema; present only in fixtures that need a paired negative example.",
+    "expected_events_markers": "The values 'eou_confirmed' and 'full_response_decision' in expected_events are fixture-internal expectation markers, not real event-stream event_types emitted by any adapter. They document the logical outcome the test verifies."
+  },
   "signal_trace": [
     {
       "t_ms": 0,
@@ -43,7 +47,7 @@
       "user_speaking": false,
       "eou_probability": 0.88,
       "user_addressed_agent": false,
-      "notes": "user finishes speaking to someone else — EOU confirmed but agent not addressed"
+      "notes": "EOU confirmed, social_mode stays user_addressing_agent, but user_addressed_agent=False — tests gate-4 discriminator"
     }
   ]
 }
