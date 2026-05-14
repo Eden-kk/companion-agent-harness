@@ -5,6 +5,8 @@ See docs/architecture-v0.1.md §Part 6 Stage 0 and §Part 8 v0.1a acceptance gat
 scheduled trigger.
 """
 
+import pytest
+
 from companion_harness.causal_graph import CausalGraph, OrphanReport
 from companion_harness.schemas import Event
 
@@ -81,6 +83,14 @@ def test_sentinel_in_non_root_event_type_is_not_an_orphan():
 
 
 def test_empty_trace_has_no_orphans():
+    """An empty event list produces an OrphanReport with zero orphans."""
     graph = CausalGraph([])
     report = graph.find_orphans()
     assert report.orphan_count == 0
+
+
+def test_duplicate_event_id_raises():
+    """CausalGraph raises ValueError when two events share the same event_id."""
+    evt = _evt("evt-1", [])
+    with pytest.raises(ValueError, match="evt-1"):
+        CausalGraph([evt, evt])

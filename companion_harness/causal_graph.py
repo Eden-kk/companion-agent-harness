@@ -16,7 +16,7 @@ __all__ = ["CausalGraph", "OrphanReport"]
 # Sentinel values that are valid in caused_by[] but are not real event_ids.
 _KNOWN_SENTINELS: frozenset[str] = frozenset({"_dropped_before_enqueue"})
 
-# event_types that are legitimate DAG roots even when caused_by is non-empty.
+# event_types that are legitimate DAG roots regardless of caused_by contents.
 _ROOT_EVENT_TYPES: frozenset[str] = frozenset({"log_drop_or_degrade"})
 
 
@@ -34,6 +34,11 @@ class CausalGraph:
     """Reconstruct a session's causal DAG from a flat list of Events."""
 
     def __init__(self, events: list[Event]) -> None:
+        seen: set[str] = set()
+        for e in events:
+            if e.event_id in seen:
+                raise ValueError(f"duplicate event_id: {e.event_id!r}")
+            seen.add(e.event_id)
         self._by_id: dict[str, Event] = {e.event_id: e for e in events}
 
     def find_orphans(self) -> OrphanReport:
