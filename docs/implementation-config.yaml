@@ -1,0 +1,51 @@
+# implementation-config.yaml
+#
+# Current best instantiations of the adapter interfaces defined in
+# docs/architecture-v0.1.md §Part 3. Extracted from §Part 9 of that document.
+#
+# Per §Part 9: "These are the current best instantiations. They are not part
+# of the architecture. Swap them whenever a better candidate appears. Updates
+# to this section do not require a v0.X bump. The architecture is in Parts 1-8."
+
+ForegroundModel:
+  primary:    MiniCPM-o 4.5 (as_duplex mode)
+  baseline:   GPT-Realtime 2 (voice comparator only)
+
+VoiceBaselineModel:
+  GPT-Realtime 2
+
+TurnDetectorSuite:
+  VADDetector:             Silero VAD
+  SmartTurnDetector:       Pipecat Smart Turn v3
+  SemanticEOUDetector:     LiveKit Qwen2.5-0.5B fine-tune
+  NativeDuplexPolicyProbe: MiniCPM-o internal speak-or-not gate
+
+VisionSidecar:
+  pattern:           Flash-VStream
+  scene_change:      CLIP cosine
+  keyframe_buffer:   30-120 sec ring
+  deictic_detector:  XLLM 2025 lightweight
+
+ProsodyController:
+  CosyVoice2 expressive tag set
+
+MemoryManager:
+  hybrid_retrieval: Mem0
+  graph_store:      Zep / Graphiti (bi-temporal)
+
+BackgroundReasoner:
+  Nemotron-3 Nano Omni
+
+SleepTimeAgent:
+  Qwen3-1.7B running Mem0-style Extract->Update
+
+ThinkerProposalGen:
+  Inner Thoughts five-stage loop (CHI 2025)
+  Hosted on small distilled MiniCPM-o instance
+
+ToolDispatcher:
+  Fast path:   in-process MCP client
+  Smart path:  background reasoner with MCP tools
+
+EventLogger:
+  structured JSONL + causal graph reconstruction harness

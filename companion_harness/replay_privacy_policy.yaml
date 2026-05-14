@@ -1,0 +1,8 @@
+# replay_privacy_policy.yaml
+#
+# See docs/architecture-v0.1.md §Part 6 Stage 0b ("Replay privacy policy")
+# for the canonical structure. Reconciles invariant #1 (no unlogged behavior)
+# with privacy_mode by separating policy-replay-safe artifacts from
+# retention-governed sensitive artifacts.
+#
+# Filled in during Stage 0 implementation; empty stub at v0.1a-bootstrap.

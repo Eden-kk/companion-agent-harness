@@ -1,0 +1,97 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+*.egg
+.eggs/
+build/
+dist/
+develop-eggs/
+downloads/
+eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# Environment variables / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# Type checkers
+.mypy_cache/
+.pyre/
+.pytype/
+.ruff_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Model weights / large artifacts (live on b200, not in repo)
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.onnx
+*.gguf
+*.pkl
+*.pickle
+*.h5
+*.npz
+*.npy
+
+# Audio / video media (only fixtures committed live under companion_harness/fixtures/)
+*.wav
+*.mp3
+*.flac
+*.ogg
+*.m4a
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
+
+# Logs / replay artifacts (generated locally; not committed)
+*.log
+*.jsonl
+logs/
+replay_runs/
+events/
