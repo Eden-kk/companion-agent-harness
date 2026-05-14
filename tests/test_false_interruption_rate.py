@@ -13,7 +13,7 @@ from companion_harness.schemas import PolicyInputs
 from companion_harness import speak_policy
 
 
-def _inputs_from_frame(frame: dict, idx: int) -> PolicyInputs:
+def _inputs_from_frame(frame: dict) -> PolicyInputs:
     return PolicyInputs(
         user_speaking=frame["user_speaking"],
         eou_probability=frame["eou_probability"],
@@ -35,14 +35,17 @@ def _inputs_from_frame(frame: dict, idx: int) -> PolicyInputs:
 def test_false_interruption_rate():
     """Feed 200 scripted filler frames through SpeakPolicy; assert <1 false interruption.
 
-    Each frame has user_speaking=True and eou_probability <= 0.45 — the user is
-    mid-utterance.  Any full_response decision counts as a false interruption.
-    The gate is false_interruption_count_per_10_min < 1 (i.e. == 0 for a single
-    10-minute replay run).
+    The fixture mixes two frame types, both with eou_probability <= 0.49:
+      - user_speaking=True frames: suppressed by gate 2 (VAD still active).
+      - user_speaking=False + user_addressed_agent=True frames: gate 2 does NOT fire,
+        so suppression falls entirely on gate 3 (eou_probability <= 0.5). These frames
+        are the load-bearing case — they verify that gate 3 alone prevents false
+        interruptions when VAD goes quiet mid-utterance.
 
-    The test can fail: if SpeakPolicy ever returned full_response on a frame where
-    user_speaking=True, or relaxed its eou_probability threshold, false_interruptions
-    would be > 0 and the assertion would trip.
+    The gate is false_interruption_count_per_10_min < 1 (== 0 for this 10-min run).
+    The test can fail: if gate 3's threshold were raised above 0.49, the
+    user_speaking=False+user_addressed_agent=True frames near the boundary (0.45-0.49)
+    would produce full_response and trip the assertion.
     """
     fixture = load_fixture("false_interruption_001")
     assert fixture["case_id"] == "false_interruption_001"
@@ -62,7 +65,7 @@ def test_false_interruption_rate():
     false_interruptions: list[int] = []
 
     for idx, frame in enumerate(signal_trace):
-        inputs = _inputs_from_frame(frame, idx)
+        inputs = _inputs_from_frame(frame)
         decision = speak_policy.decide(inputs, signal_event_ids=[f"filler-signal-{idx:04d}"])
 
         if decision.action_type == "full_response":
