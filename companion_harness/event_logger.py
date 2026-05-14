@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Callable, Awaitable
-from typing import Any
 
 from companion_harness.schemas import Event
 
@@ -34,20 +33,17 @@ class EventLogger:
         self._queue: asyncio.Queue[Event] = asyncio.Queue(maxsize=maxsize)
         self._task: asyncio.Task[None] | None = None
         self._seq = 0
+        self._dropped = 0
 
     def log(self, event: Event) -> None:
-        """Enqueue event without blocking. Emits log_drop_or_degrade on backpressure."""
+        """Enqueue event without blocking. Counts drops for degrade flushing by drain loop."""
         try:
             self._queue.put_nowait(event)
         except asyncio.QueueFull:
-            degrade = self._make_degrade_event(event)
-            try:
-                self._queue.put_nowait(degrade)
-            except asyncio.QueueFull:
-                pass  # queue full even for the degrade notice — silently lose only this notice
+            self._dropped += 1
 
     async def start(self) -> None:
-        self._task = asyncio.get_event_loop().create_task(self._drain())
+        self._task = asyncio.get_running_loop().create_task(self._drain())
 
     async def stop(self) -> None:
         if self._task is None:
@@ -67,20 +63,23 @@ class EventLogger:
                 await self._sink(event)
             finally:
                 self._queue.task_done()
+            if self._dropped > 0:
+                count, self._dropped = self._dropped, 0
+                await self._sink(self._make_degrade_event(count))
 
-    def _make_degrade_event(self, dropped: Event) -> Event:
+    def _make_degrade_event(self, dropped_count: int) -> Event:
         self._seq += 1
         now_ms = int(time.monotonic() * 1000)
         return Event(
             event_id=f"degrade-{now_ms}-{self._seq}",
-            session_id=dropped.session_id,
-            schema_version=dropped.schema_version,
-            seq_no=-1,
+            session_id="",
+            schema_version="0.1",
+            seq_no=self._seq,
             event_type="log_drop_or_degrade",
             timestamp_mono_ms=now_ms,
             timestamp_wall="",
             source="event_logger",
-            caused_by=[dropped.event_id],
+            caused_by=[],
             payload_hash="",
             payload_ref=None,
             payload_kind="signal",

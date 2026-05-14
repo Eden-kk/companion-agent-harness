@@ -58,12 +58,8 @@ async def test_high_rate_stream_does_not_block_on_slow_sink():
     # Enqueuing 2000 events must take well under 1 second even with a 50ms sink
     assert elapsed < 1.0, f"log() calls blocked: {elapsed:.3f}s for {n} events"
 
-    # Some events must have been accepted (queue not entirely full at start)
-    assert len(received) >= 0  # sink drains async; just confirm no crash
+    await logger.stop()
 
     # The log_drop_or_degrade path is exercised: queue (64) << burst (2000)
     degrade_count = sum(1 for t in received if t == "log_drop_or_degrade")
-    # We don't assert an exact count — just confirm no blocking occurred (elapsed check above)
-    _ = degrade_count
-
-    await logger.stop()
+    assert degrade_count > 0, "expected degrade events when burst >> queue capacity"
