@@ -13,10 +13,6 @@ from companion_harness.schemas import PolicyInputs, SpeakDecision
 
 POLICY_VERSION = "v0.1a"
 
-# Spec Part 7 defines valid privacy_mode values; none are explicitly designated
-# as speech-blocking for v0.1a — only memory/logging behavior differs per mode.
-_BLOCKING_PRIVACY_MODES: frozenset[str] = frozenset()
-
 _BLOCKING_SOCIAL_MODES = frozenset({
     "user_addressing_other",
     "group_conversation",
@@ -45,9 +41,6 @@ def decide(inputs: PolicyInputs, signal_event_ids: list[str]) -> SpeakDecision:
     caused_by: list[str] = list(signal_event_ids)
 
     # 1. Hard blocks — silence immediately, no further evaluation.
-    if inputs.privacy_mode in _BLOCKING_PRIVACY_MODES:
-        return _silence(ReasonCode.PRIVACY_MODE_BLOCKED, caused_by)
-
     if inputs.social_mode in _BLOCKING_SOCIAL_MODES:
         return _silence(ReasonCode.NOT_ADDRESSED_TO_AGENT, caused_by)
 
