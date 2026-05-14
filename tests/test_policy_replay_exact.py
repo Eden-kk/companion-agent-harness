@@ -6,6 +6,8 @@ See docs/architecture-v0.1.md §Part 6 Stage 0 and §Part 8 v0.1a acceptance gat
 Methodology (spec §Part 6 Stage 0):
   input: recorded signal trace (policy_replay_001)
   expected: identical action_type, reason_code per frame
+  boundary frame: eou_probability=0.50 (equality → silence; gate 3 is <= 0.5);
+    eou_probability=0.45 is sub-threshold (below the boundary, not a boundary value).
 
 Two checks, both required for a non-vacuous test:
   1. Baseline match — each frame's SpeakDecision matches the recorded baseline

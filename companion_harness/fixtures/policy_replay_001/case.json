@@ -16,7 +16,8 @@
   "fixture_conventions": {
     "policy_replay_safe": "All fields are policy_replay_safe per the spec replay privacy policy (stable enums + numeric thresholds; no free-text PII).",
     "baseline_decisions": "Recorded expected SpeakDecision fields (action_type, primary_reason_code, supporting_reason_codes) for each signal_trace frame. Test asserts exact match — these are the Tier B baseline.",
-    "frame_coverage": "7 frames covering all 5 decision branches: (1) blocking social mode → NOT_ADDRESSED; (2) user_speaking → NOT_ADDRESSED; (3) low EOU → NOT_ADDRESSED; (4) EOU+addressed → full_response; (5) EOU+not addressed → NOT_ADDRESSED; plus two boundary frames near the EOU threshold to ensure determinism holds at the boundary."
+    "frame_coverage": "7 frames covering all 5 decision branches: (1) blocking social mode → NOT_ADDRESSED; (2) user_speaking → NOT_ADDRESSED; (3) low EOU → NOT_ADDRESSED; (4) EOU+addressed → full_response; (5) EOU+not addressed → NOT_ADDRESSED; plus two boundary frames near the EOU threshold to ensure determinism holds at the boundary.",
+    "policy_decision": "Fixture-internal expectation marker in expected_events. Not a Part 5 spec-defined adapter-emitted event_type; indicates that this fixture exercises the policy decision path and that each frame's SpeakDecision is verified against baseline_decisions."
   },
   "signal_trace": [
     {
