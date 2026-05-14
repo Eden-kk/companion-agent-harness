@@ -8,6 +8,7 @@ scheduled trigger.
 import pytest
 
 from companion_harness.causal_graph import CausalGraph, OrphanReport
+from companion_harness.fixtures.loader import load_fixture
 from companion_harness.schemas import Event
 
 
@@ -94,3 +95,29 @@ def test_duplicate_event_id_raises():
     evt = _evt("evt-1", [])
     with pytest.raises(ValueError, match="evt-1"):
         CausalGraph([evt, evt])
+
+
+def test_causal_graph_completeness_recorded_fixture():
+    """orphan_action_count = 0 gate on the causal_graph_001 recorded fixture.
+
+    Fixture encodes a real assistant turn: user speech → VAD signal →
+    policy decision → generation start → audio queued, plus a
+    log_drop_or_degrade event with _dropped_before_enqueue sentinel.
+    All events must resolve; the gate is orphan_count == 0.
+    """
+    fixture = load_fixture("causal_graph_001")
+    assert fixture["case_id"] == "causal_graph_001"
+    assert fixture["expected_metrics"]["orphan_action_count"] == 0
+
+    events = [Event(**e) for e in fixture["events"]]
+
+    assert len(events) >= 6, f"fixture too small ({len(events)} events) to cover all DAG patterns"
+
+    graph = CausalGraph(events)
+    report = graph.find_orphans()
+
+    assert report.orphan_count == fixture["expected_metrics"]["orphan_action_count"], (
+        f"orphan_action_count = {report.orphan_count}; gate = 0\n"
+        f"  orphans: {report.orphan_event_ids}\n"
+        f"  dangling: {report.dangling_refs}"
+    )
