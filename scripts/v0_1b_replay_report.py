@@ -273,8 +273,14 @@ def _gate_summary(report: dict) -> str:
         f"  pytest suite: {report['pytest_summary']['passed']} passed, "
         f"{report['pytest_summary']['skipped']} skipped, "
         f"{report['pytest_summary']['failed']} failed",
-        f"  (1 skip = test_direct_question_latency, no torch/CUDA locally — "
-        f"passes on b200, carried from v0.1a)",
+        *(
+            [
+                f"  (1 skip = test_direct_question_latency, no torch/CUDA locally — "
+                f"passes on b200, carried from v0.1a)"
+            ]
+            if report["pytest_summary"]["skipped"] > 0
+            else []
+        ),
         "",
         "  Gate detail:",
         "-" * 68,
