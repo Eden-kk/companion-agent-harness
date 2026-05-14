@@ -12,11 +12,12 @@
     "policy_replay_match_rate": "100%"
   },
   "consent_class": "synthetic_eval",
-  "description": "Recorded signal trace spanning all five SpeakPolicy decision branches. Tier B replay: each frame is replayed twice; every SpeakDecision must be bit-identical to the recorded baseline and to itself across runs.",
+  "description": "Recorded signal trace spanning all six SpeakPolicy decision branches. Tier B replay: each frame is replayed twice; every SpeakDecision must be bit-identical to the recorded baseline and to itself across runs.",
   "fixture_conventions": {
     "policy_replay_safe": "All fields are policy_replay_safe per the spec replay privacy policy (stable enums + numeric thresholds; no free-text PII).",
     "baseline_decisions": "Recorded expected SpeakDecision fields (action_type, primary_reason_code, supporting_reason_codes) for each signal_trace frame. Test asserts exact match — these are the Tier B baseline.",
-    "frame_coverage": "7 frames covering all 5 decision branches: (1) blocking social mode → NOT_ADDRESSED; (2) user_speaking → NOT_ADDRESSED; (3) low EOU → NOT_ADDRESSED; (4) EOU+addressed → full_response; (5) EOU+not addressed → NOT_ADDRESSED; plus two boundary frames near the EOU threshold to ensure determinism holds at the boundary.",
+    "frame_coverage": "8 frames covering all 6 decision branches: (1) blocking social mode → NOT_ADDRESSED; (2) user_speaking → NOT_ADDRESSED; (3) low EOU → NOT_ADDRESSED; (4) EOU+addressed → full_response; (5) EOU+not addressed → NOT_ADDRESSED; two boundary frames near the EOU threshold; (6) EOU+high p_backchannel → backchannel (v0.1b Task 7).",
+    "p_backchannel": "Optional field on signal_trace frames (default 0.0). When >= 0.7, SpeakPolicy returns action_type=backchannel with BACKCHANNEL_DETECTED. Manually injected — no BackchannelClassifier is constructed.",
     "policy_decision": "Fixture-internal expectation marker in expected_events. Not a Part 5 spec-defined adapter-emitted event_type; indicates that this fixture exercises the policy decision path and that each frame's SpeakDecision is verified against baseline_decisions."
   },
   "signal_trace": [
@@ -82,6 +83,16 @@
       "eou_probability": 0.75,
       "user_addressed_agent": true,
       "notes": "branch 4 again: different EOU value, still full_response; verifies determinism across varied inputs"
+    },
+    {
+      "t_ms": 3500,
+      "frame_id": "frame-007",
+      "social_mode": "user_addressing_agent",
+      "user_speaking": false,
+      "eou_probability": 0.88,
+      "user_addressed_agent": true,
+      "p_backchannel": 0.85,
+      "notes": "branch 6 (v0.1b): EOU confirmed + high p_backchannel → backchannel; manually injected, no BackchannelClassifier"
     }
   ],
   "baseline_decisions": [
@@ -126,6 +137,12 @@
       "action_type": "full_response",
       "primary_reason_code": "EOU_CONFIRMED",
       "supporting_reason_codes": ["USER_ADDRESSED_AGENT"]
+    },
+    {
+      "frame_id": "frame-007",
+      "action_type": "backchannel",
+      "primary_reason_code": "BACKCHANNEL_DETECTED",
+      "supporting_reason_codes": []
     }
   ]
 }

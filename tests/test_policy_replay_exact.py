@@ -47,7 +47,11 @@ def _inputs_from_frame(frame: dict) -> PolicyInputs:
 
 def _run_trace(signal_trace: list[dict]) -> list[SpeakDecision]:
     return [
-        speak_policy.decide(_inputs_from_frame(frame), signal_event_ids=[frame["frame_id"]])
+        speak_policy.decide(
+            _inputs_from_frame(frame),
+            signal_event_ids=[frame["frame_id"]],
+            p_backchannel=frame.get("p_backchannel", 0.0),
+        )
         for frame in signal_trace
     ]
 
@@ -55,7 +59,8 @@ def _run_trace(signal_trace: list[dict]) -> list[SpeakDecision]:
 def test_policy_replay_exact():
     """Tier B: 100% bit-identical replay on recorded signal traces.
 
-    Uses fixture policy_replay_001 — 7 frames spanning all 5 decision branches.
+    Uses fixture policy_replay_001 — 8 frames spanning all 6 decision branches,
+    including the v0.1b backchannel branch (frame-007, manually injected p_backchannel=0.85).
     """
     fixture = load_fixture("policy_replay_001")
     assert fixture["case_id"] == "policy_replay_001"
@@ -64,8 +69,14 @@ def test_policy_replay_exact():
     signal_trace = fixture["signal_trace"]
     baseline_decisions = fixture["baseline_decisions"]
 
-    assert len(signal_trace) >= 5, (
+    assert len(signal_trace) >= 6, (
         f"fixture too small ({len(signal_trace)} frames) to cover all decision branches"
+    )
+
+    # Verify the backchannel frame is present and will exercise the new branch.
+    backchannel_frames = [f for f in signal_trace if f.get("p_backchannel", 0.0) >= 0.7]
+    assert len(backchannel_frames) >= 1, (
+        "fixture must contain at least one frame with p_backchannel >= 0.7 to cover the backchannel branch"
     )
     assert len(signal_trace) == len(baseline_decisions)
 
