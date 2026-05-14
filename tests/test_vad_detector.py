@@ -4,8 +4,6 @@ Success criterion (ROADMAP Task 5): detector emits a TurnSignal on a recorded
 speech/silence sample without importing torch or any GPU dependency.
 """
 
-import asyncio
-
 import pytest
 
 from companion_harness.event_logger import EventLogger

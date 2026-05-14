@@ -21,7 +21,8 @@ from companion_harness.schemas import Event, TurnSignal
 
 __all__ = ["VADModel", "VADDetector"]
 
-# Silero VAD v5 recommended defaults for 16 kHz audio.
+# Module-level defaults; override via constructor keyword args.
+# (implementation-config.yaml names the Silero model but does not yet specify numeric VAD thresholds.)
 _SPEECH_THRESHOLD: float = 0.5
 _SILENCE_ONSET_MS: int = 300
 
