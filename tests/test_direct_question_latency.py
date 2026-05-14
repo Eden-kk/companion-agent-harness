@@ -42,12 +42,12 @@ def test_direct_question_latency():
         t0 = time.monotonic()
         response = model.chat(prompt)
         t1 = time.monotonic()
-        assert response, f"empty response for prompt: {prompt!r}"
+        assert response, f"empty response for prompt: {prompt!r}"  # non-emptiness suffices: fixture is closed yes/no; any non-empty reply is complete; this is a latency gate, not a quality gate
         latencies_ms.append((t1 - t0) * 1000)
 
     latencies_ms.sort()
     p50_ms = statistics.median(latencies_ms)
-    p95_idx = min(int(0.95 * len(latencies_ms)), len(latencies_ms) - 1)
+    p95_idx = min(int(0.95 * len(latencies_ms)), len(latencies_ms) - 1)  # at n=20, idx=19 (the max element); gate has ample margin so this is fine
     p95_ms = latencies_ms[p95_idx]
 
     assert p50_ms < 800, (

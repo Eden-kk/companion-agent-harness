@@ -1,0 +1,22 @@
+# GPU dependencies for the b200 environment only.
+# These are NOT installed locally — the local environment uses requirements-dev.txt.
+# Install with:
+#   pip install --index-url https://download.pytorch.org/whl/cu128 torch==2.11.0+cu128
+#   pip install -r requirements-b200.txt
+#
+# Pinned from the b200 venv (/raid/yid042/venvs/companion-harness) as of 2026-05-14.
+
+# --index-url https://download.pytorch.org/whl/cu128
+torch==2.11.0+cu128
+
+transformers==4.51.0
+tokenizers==0.21.4
+accelerate==1.13.0
+safetensors==0.7.0
+huggingface-hub==0.36.2
+numpy==1.26.4
+sentencepiece==0.2.1
+scipy==1.17.1
+numba==0.65.1
+minicpmo-utils==1.0.6
+soundfile==0.13.1

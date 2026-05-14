@@ -4,6 +4,10 @@ This module lives on b200 only — it imports torch and transformers.
 Import it only when running under the b200 venv (CUDA available).
 The ForegroundModel adapter in foreground_model.py stays SDK-free.
 
+Loads text-only (init_vision=False, init_audio=False, init_tts=False).
+Vision, audio, and TTS towers are disabled to save GPU memory; the
+v0.1a test path only exercises text inference.
+
 Usage:
     from companion_harness.foreground_model_minicpm import MiniCPMDuplexModel
     model = MiniCPMDuplexModel()
@@ -42,7 +46,7 @@ class MiniCPMDuplexModel:
             trust_remote_code=True,
             attn_implementation="sdpa",
             torch_dtype=torch.bfloat16,
-            init_vision=True,
+            init_vision=False,
             init_audio=False,
             init_tts=False,
         ).eval().cuda()
@@ -52,7 +56,7 @@ class MiniCPMDuplexModel:
         for _q in ("Ready?", "Is the sky blue?", "What is the color of the sky today?"):
             self.chat(_q, max_new_tokens=4)
 
-    def chat(self, text: str, max_new_tokens: int = 8) -> str:
+    def chat(self, text: str, max_new_tokens: int = 8) -> str:  # 8 tokens fits direct_question_001 closed yes/no answers; revisit if fixture gains open-ended questions
         """Send a text question and return the model's text response."""
         with torch.no_grad():
             return self._model.chat(
