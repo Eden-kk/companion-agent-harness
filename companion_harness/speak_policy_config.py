@@ -107,3 +107,11 @@ SPEC_EOU_POLICY = EouPolicyConfig(
     interruption_cost="high",
     mode_adjustment="minimal",
 )
+
+# Maps AlertThresholdConfig string levels to numeric urgency_score thresholds used
+# by the policy layer.  v0.1d initial values — empirical calibration is Stage 3 refinement work.
+_LEVEL_TO_FLOAT_THRESHOLD: dict[str, float] = {
+    "low": 0.3,
+    "medium": 0.6,
+    "high": 0.85,
+}
