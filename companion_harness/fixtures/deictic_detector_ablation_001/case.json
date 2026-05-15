@@ -1,0 +1,92 @@
+{
+  "case_id": "deictic_detector_ablation_001",
+  "stage": 2,
+  "scenario": "deictic_detector_ablation",
+  "modalities": ["audio", "raw_video"],
+  "fixture_ref": "companion_harness/fixtures/deictic_detector_ablation_001/",
+  "sensitivity": "safe_eval_fixture",
+  "expected_events": [
+    "raw_video_frame",
+    "deictic_classification",
+    "deictic_grounding",
+    "policy_decision"
+  ],
+  "expected_metrics": {
+    "detector_attributable_per_path": "per_path"
+  },
+  "consent_class": "synthetic_eval",
+  "description": "Same scripted input replayed through two paths: (1) DeicticDetector ENABLED — deictic gate fires (deictic_p=0.91 => deictic_reference=True), grounding pass runs, deictic_grounding event is emitted with caused_by referencing both the raw_video_frame and the deictic_classification event; (2) DeicticDetector DISABLED (ablated) — deictic gate does not fire regardless of deictic_p, no grounding pass runs, no deictic_grounding event emitted. Task 17 asserts per-path attribution is genuine: the test fails if the deictic gate's effect is not observable in the decision trace. Distinct from Stage 1 test_detector_ablation (which covers TurnDetectorSuite).",
+  "fixture_conventions": {
+    "frame_duration_ms": "33 — approximate 30fps",
+    "deictic_p": "Scripted DeicticModel probability. 0.91 on all frames — clearly deictic utterance ('what is this?'). When detector is ENABLED this fires; when DISABLED it is ignored.",
+    "scene_change_score": "Scripted. Low — static scene.",
+    "grounding_result": "Stub label: 'mug'. Only produced when detector is ENABLED.",
+    "grounding_confidence": "0.91. Only produced when detector is ENABLED.",
+    "enabled_path": "DeicticDetector enabled: deictic_p=0.91 => deictic_reference=True; grounding pass runs; deictic_grounding event emitted; TurnSignal.detector='deictic_detector'. Task 17 asserts this event exists and has proper caused_by.",
+    "disabled_path": "DeicticDetector disabled (ablated): deictic_reference is never set to True regardless of model output; grounding pass does NOT run; no deictic_grounding event emitted. Task 17 asserts no deictic_grounding events exist in this path's trace.",
+    "per_path_attribution": "Task 17 replays the same signal_trace through both paths. Each path's logged decisions must be attributable to its configuration. The test fails if both paths produce identical traces (the ablation had no effect) or if the enabled path emits no deictic_grounding event (the gate was not wired).",
+    "distinction_from_stage1_ablation": "Stage 1 test_detector_ablation compares VADDetector vs SmartTurnDetector paths via TurnSignal.detector. This fixture compares DeicticDetector-enabled vs DeicticDetector-disabled via presence/absence of the deictic_grounding event and the deictic_classification event in caused_by chains.",
+    "frame_bytes_synthesis": "raw_video frame blobs are minimal synthetic placeholders: b'\\x89VID\\x00' + 1 index byte.",
+    "expected_events_markers": "event_type strings are fixture-internal role labels."
+  },
+  "signal_trace": [
+    {
+      "t_ms": 0,
+      "frame_id": "frame-000",
+      "event_type": "raw_video_frame",
+      "timestamp_mono_ms": 0,
+      "seq_no": 0,
+      "frame_bytes_hex": "895649440000",
+      "deictic_p": 0.91,
+      "scene_change_score": 0.05,
+      "grounding_result": "mug",
+      "grounding_confidence": 0.91,
+      "notes": "shared frame: deictic_p=0.91; replayed through both enabled and disabled paths"
+    },
+    {
+      "t_ms": 33,
+      "frame_id": "frame-001",
+      "event_type": "raw_video_frame",
+      "timestamp_mono_ms": 33,
+      "seq_no": 1,
+      "frame_bytes_hex": "895649440001",
+      "deictic_p": 0.91,
+      "scene_change_score": 0.03,
+      "grounding_result": "mug",
+      "grounding_confidence": 0.91,
+      "notes": "shared frame 2"
+    },
+    {
+      "t_ms": 66,
+      "frame_id": "frame-002",
+      "event_type": "deictic_classification",
+      "timestamp_mono_ms": 66,
+      "seq_no": 2,
+      "frame_bytes_hex": "895649440002",
+      "deictic_p": 0.91,
+      "scene_change_score": 0.02,
+      "grounding_result": "mug",
+      "grounding_confidence": 0.91,
+      "resolution_frame": true,
+      "notes": "GATE FRAME: replayed through both paths. Enabled: deictic_reference=True, grounding fires, deictic_grounding event emitted. Disabled: deictic_reference never set, no grounding event."
+    }
+  ],
+  "ablation_paths": [
+    {
+      "path_id": "enabled",
+      "detector": "deictic_detector",
+      "deictic_detector_enabled": true,
+      "expected_deictic_grounding_events": 1,
+      "expected_deictic_reference": true,
+      "notes": "DeicticDetector enabled: gate fires on deictic_p=0.91; grounding pass runs; exactly one deictic_grounding event emitted with caused_by containing both frame-002 event_id and deictic_classification event_id"
+    },
+    {
+      "path_id": "disabled",
+      "detector": "none",
+      "deictic_detector_enabled": false,
+      "expected_deictic_grounding_events": 0,
+      "expected_deictic_reference": false,
+      "notes": "DeicticDetector disabled: deictic gate never fires; no grounding pass; zero deictic_grounding events in trace. Ablation effect must be observable."
+    }
+  ]
+}

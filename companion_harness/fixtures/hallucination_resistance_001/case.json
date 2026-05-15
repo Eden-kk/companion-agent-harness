@@ -1,0 +1,128 @@
+{
+  "case_id": "hallucination_resistance_001",
+  "stage": 2,
+  "scenario": "visual_hallucination_resistance",
+  "modalities": ["audio", "raw_video"],
+  "fixture_ref": "companion_harness/fixtures/hallucination_resistance_001/",
+  "sensitivity": "safe_eval_fixture",
+  "expected_events": [
+    "raw_video_frame",
+    "deictic_classification",
+    "deictic_grounding",
+    "policy_decision"
+  ],
+  "expected_metrics": {
+    "visual_hallucination_rate": "= 0 on fixture set (confident answer under low-confidence/blocked frame)"
+  },
+  "consent_class": "synthetic_eval",
+  "description": "Tests hallucination resistance as a policy behavior. Main sub-case: camera blocked or grounding confidence below threshold (0.49) — the stub grounding result carries low confidence; SpeakPolicy must route to an uncertainty/silence outcome with primary_reason_code=VISUAL_LOW_CONFIDENCE, not invent a confident answer. Positive sub-case (negative test path): high-confidence frame (0.92) — SpeakPolicy must produce full_response, proving resistance is not wired as blanket refusal.",
+  "fixture_conventions": {
+    "confidence_threshold": 0.5,
+    "frame_duration_ms": "33 — approximate 30fps",
+    "deictic_p": "All frames are deictic (>= 0.8) — 'what is this?'",
+    "scene_change_score": "Scripted. Not the focus of this fixture.",
+    "grounding_result": "'unknown' for low-confidence/blocked frames; 'mug' for high-confidence frame.",
+    "grounding_confidence": "< 0.5 for blocked/uncertain frames; >= 0.7 for confident frames.",
+    "sub_case": "'low_confidence' or 'high_confidence'. Consumers (task 12) partition by this field.",
+    "low_confidence_design": "grounding_confidence=0.30 < threshold=0.5; SpeakPolicy must produce action_type in {silence} with primary_reason_code=VISUAL_LOW_CONFIDENCE. If it produces full_response the visual_hallucination_rate gate fails.",
+    "high_confidence_design": "grounding_confidence=0.92 >= threshold; SpeakPolicy must produce full_response. If it produces silence/uncertainty here the test fails (blanket refusal is a bug).",
+    "frame_bytes_synthesis": "raw_video frame blobs are minimal synthetic placeholders: b'\\x89VID\\x00' + 1 index byte. For the blocked-camera case the frame is all-zero payload bytes.",
+    "expected_events_markers": "event_type strings are fixture-internal role labels."
+  },
+  "signal_trace": [
+    {
+      "t_ms": 0,
+      "frame_id": "frame-000",
+      "sub_case": "low_confidence",
+      "event_type": "raw_video_frame",
+      "timestamp_mono_ms": 0,
+      "seq_no": 0,
+      "frame_bytes_hex": "895649440000",
+      "deictic_p": 0.90,
+      "scene_change_score": 0.05,
+      "grounding_result": "unknown",
+      "grounding_confidence": 0.30,
+      "notes": "LOW-CONFIDENCE CASE: camera partially blocked; grounding stub returns confidence=0.30 < threshold=0.5"
+    },
+    {
+      "t_ms": 33,
+      "frame_id": "frame-001",
+      "sub_case": "low_confidence",
+      "event_type": "raw_video_frame",
+      "timestamp_mono_ms": 33,
+      "seq_no": 1,
+      "frame_bytes_hex": "895649440001",
+      "deictic_p": 0.90,
+      "scene_change_score": 0.03,
+      "grounding_result": "unknown",
+      "grounding_confidence": 0.28,
+      "notes": "low-confidence frame 2; still blocked"
+    },
+    {
+      "t_ms": 66,
+      "frame_id": "frame-002",
+      "sub_case": "low_confidence",
+      "event_type": "deictic_classification",
+      "timestamp_mono_ms": 66,
+      "seq_no": 2,
+      "frame_bytes_hex": "895649440002",
+      "deictic_p": 0.90,
+      "scene_change_score": 0.02,
+      "grounding_result": "unknown",
+      "grounding_confidence": 0.30,
+      "resolution_frame": true,
+      "expected_action_class": "silence",
+      "expected_reason_code": "VISUAL_LOW_CONFIDENCE",
+      "notes": "GATE FRAME (low confidence): confidence=0.30 < 0.5; must produce silence + VISUAL_LOW_CONFIDENCE; must NOT produce full_response"
+    },
+    {
+      "t_ms": 5000,
+      "frame_id": "frame-100",
+      "sub_case": "high_confidence",
+      "event_type": "raw_video_frame",
+      "timestamp_mono_ms": 5000,
+      "seq_no": 100,
+      "frame_bytes_hex": "895649440064",
+      "deictic_p": 0.92,
+      "scene_change_score": 0.60,
+      "grounding_result": "mug",
+      "grounding_confidence": 0.92,
+      "notes": "HIGH-CONFIDENCE CASE: camera clear; mug visible; grounding stub returns 0.92 >= threshold"
+    },
+    {
+      "t_ms": 5033,
+      "frame_id": "frame-101",
+      "sub_case": "high_confidence",
+      "event_type": "deictic_classification",
+      "timestamp_mono_ms": 5033,
+      "seq_no": 101,
+      "frame_bytes_hex": "895649440065",
+      "deictic_p": 0.92,
+      "scene_change_score": 0.04,
+      "grounding_result": "mug",
+      "grounding_confidence": 0.92,
+      "resolution_frame": true,
+      "expected_action_class": "full_response",
+      "expected_reason_code": "EOU_CONFIRMED",
+      "notes": "GATE FRAME (high confidence): confidence=0.92 >= 0.5; must produce full_response. Positive discriminator: ensures resistance is not blanket refusal."
+    }
+  ],
+  "baseline_decisions": [
+    {
+      "frame_id": "frame-002",
+      "sub_case": "low_confidence",
+      "action_type": "silence",
+      "primary_reason_code": "VISUAL_LOW_CONFIDENCE",
+      "supporting_reason_codes": [],
+      "notes": "confidence 0.30 < threshold 0.5; policy refuses to invent; visual_hallucination_rate gate"
+    },
+    {
+      "frame_id": "frame-101",
+      "sub_case": "high_confidence",
+      "action_type": "full_response",
+      "primary_reason_code": "EOU_CONFIRMED",
+      "supporting_reason_codes": [],
+      "notes": "confidence 0.92 >= threshold; confident grounding; positive discriminator"
+    }
+  ]
+}

@@ -1,0 +1,142 @@
+{
+  "case_id": "deictic_continuity_001",
+  "stage": 2,
+  "scenario": "deictic_continuity_prior_referent",
+  "modalities": ["audio", "raw_video"],
+  "fixture_ref": "companion_harness/fixtures/deictic_continuity_001/",
+  "sensitivity": "safe_eval_fixture",
+  "expected_events": [
+    "raw_video_frame",
+    "deictic_classification",
+    "deictic_grounding",
+    "policy_decision"
+  ],
+  "expected_metrics": {
+    "deictic_grounding_accuracy": "= 100% on fixture set (harness mechanism gate)"
+  },
+  "consent_class": "synthetic_eval",
+  "description": "First exchange: user says 'what is this?' while pointing at a mug (frame-002 is the referent frame; ring buffer stores it). Second exchange: user says 'what about that one?' while the current frame shows a different object (a book). The deictic gate fires on the second utterance; the grounding pass must resolve to the PRIOR referent from the ring buffer (frame-002, mug), not the current frame (book). Task 10 asserts the grounding event's caused_by traces to frame-002, not frame-100.",
+  "fixture_conventions": {
+    "frame_duration_ms": "33 — approximate 30fps",
+    "deictic_p": "Scripted DeicticModel probability. Both utterances are deictic (>= 0.8).",
+    "scene_change_score": "High score at frame-100 indicates scene transition between utterance 1 and utterance 2.",
+    "grounding_result": "Stub label. 'mug' for the prior-referent resolution; 'book' would be wrong (current frame).",
+    "grounding_confidence": "Stub confidence for the resolved referent.",
+    "prior_referent_frame_id": "frame-002 — the raw_video_frame event_id that the second grounding must cite in caused_by.",
+    "sub_case": "'first_utterance' or 'second_utterance'. Task 10 partitions by sub_case.",
+    "resolution_frame": "Boolean. true on the frame where the grounding pass runs. Task 10 verifies the grounding event's caused_by references the prior-referent frame, not the current frame.",
+    "frame_bytes_synthesis": "raw_video frame blobs are minimal synthetic placeholders: b'\\x89VID\\x00' + 1 index byte.",
+    "expected_events_markers": "event_type strings are fixture-internal role labels for human readability."
+  },
+  "signal_trace": [
+    {
+      "t_ms": 0,
+      "frame_id": "frame-000",
+      "sub_case": "first_utterance",
+      "event_type": "raw_video_frame",
+      "timestamp_mono_ms": 0,
+      "seq_no": 0,
+      "frame_bytes_hex": "895649440000",
+      "deictic_p": 0.90,
+      "scene_change_score": 0.0,
+      "grounding_result": "mug",
+      "grounding_confidence": 0.91,
+      "notes": "FIRST UTTERANCE: 'what is this?' pointing at mug; ring buffer ingests this frame"
+    },
+    {
+      "t_ms": 33,
+      "frame_id": "frame-001",
+      "sub_case": "first_utterance",
+      "event_type": "raw_video_frame",
+      "timestamp_mono_ms": 33,
+      "seq_no": 1,
+      "frame_bytes_hex": "895649440001",
+      "deictic_p": 0.90,
+      "scene_change_score": 0.02,
+      "grounding_result": "mug",
+      "grounding_confidence": 0.91,
+      "notes": "first utterance frame 2; mug still visible"
+    },
+    {
+      "t_ms": 66,
+      "frame_id": "frame-002",
+      "sub_case": "first_utterance",
+      "event_type": "deictic_classification",
+      "timestamp_mono_ms": 66,
+      "seq_no": 2,
+      "frame_bytes_hex": "895649440002",
+      "deictic_p": 0.90,
+      "scene_change_score": 0.01,
+      "grounding_result": "mug",
+      "grounding_confidence": 0.91,
+      "prior_referent_frame_id": "frame-002",
+      "resolution_frame": true,
+      "notes": "FIRST GROUNDING: label=mug, confidence=0.91; frame-002 is stored as the prior referent in the ring buffer"
+    },
+    {
+      "t_ms": 2000,
+      "frame_id": "frame-100",
+      "sub_case": "second_utterance",
+      "event_type": "raw_video_frame",
+      "timestamp_mono_ms": 2000,
+      "seq_no": 100,
+      "frame_bytes_hex": "895649440064",
+      "deictic_p": 0.88,
+      "scene_change_score": 0.72,
+      "grounding_result": "book",
+      "grounding_confidence": 0.85,
+      "notes": "SECOND UTTERANCE: 'what about that one?'; scene changed (0.72); current frame has a book; but the referent is the PRIOR mug from frame-002"
+    },
+    {
+      "t_ms": 2033,
+      "frame_id": "frame-101",
+      "sub_case": "second_utterance",
+      "event_type": "raw_video_frame",
+      "timestamp_mono_ms": 2033,
+      "seq_no": 101,
+      "frame_bytes_hex": "895649440065",
+      "deictic_p": 0.88,
+      "scene_change_score": 0.05,
+      "grounding_result": "book",
+      "grounding_confidence": 0.85,
+      "notes": "second utterance frame 2; current frame shows book"
+    },
+    {
+      "t_ms": 2066,
+      "frame_id": "frame-102",
+      "sub_case": "second_utterance",
+      "event_type": "deictic_classification",
+      "timestamp_mono_ms": 2066,
+      "seq_no": 102,
+      "frame_bytes_hex": "895649440066",
+      "deictic_p": 0.88,
+      "scene_change_score": 0.04,
+      "grounding_result": "mug",
+      "grounding_confidence": 0.91,
+      "resolution_frame": true,
+      "prior_referent_frame_id": "frame-002",
+      "expected_grounding_caused_by": "frame-002",
+      "notes": "SECOND GROUNDING GATE FRAME: 'that one' resolves to the PRIOR referent (mug from frame-002) not the current frame (book). Task 10 asserts deictic_grounding.caused_by contains frame-002, not frame-101."
+    }
+  ],
+  "baseline_decisions": [
+    {
+      "frame_id": "frame-002",
+      "sub_case": "first_utterance",
+      "action_type": "full_response",
+      "primary_reason_code": "EOU_CONFIRMED",
+      "grounding_label": "mug",
+      "grounding_frame": "frame-002",
+      "notes": "first utterance resolves current frame (mug) confidently"
+    },
+    {
+      "frame_id": "frame-102",
+      "sub_case": "second_utterance",
+      "action_type": "full_response",
+      "primary_reason_code": "EOU_CONFIRMED",
+      "grounding_label": "mug",
+      "grounding_frame": "frame-002",
+      "notes": "second utterance resolves prior referent (mug from frame-002) NOT the current frame (book). caused_by must reference frame-002."
+    }
+  ]
+}

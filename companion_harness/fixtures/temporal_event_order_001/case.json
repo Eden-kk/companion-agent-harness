@@ -1,0 +1,142 @@
+{
+  "case_id": "temporal_event_order_001",
+  "stage": 2,
+  "scenario": "temporal_event_ordering",
+  "modalities": ["audio", "raw_video"],
+  "fixture_ref": "companion_harness/fixtures/temporal_event_order_001/",
+  "sensitivity": "safe_eval_fixture",
+  "expected_events": [
+    "raw_video_frame",
+    "deictic_classification",
+    "policy_decision"
+  ],
+  "expected_metrics": {
+    "temporal_event_order_accuracy": "= 100% on fixture set (ordering from logged seq_no, not invented)"
+  },
+  "consent_class": "synthetic_eval",
+  "description": "User asks 'did I pick up the cup before or after the keys?'. The harness must derive the ordering from the raw_video_frame seq_no / timestamp_mono_ms chain in the ring buffer, not invent it. Main sub-case: both cup (seq_no=10, t=1000ms) and keys (seq_no=20, t=2000ms) are in the ring buffer — cup came first (lower seq_no/timestamp). Second sub-case: one referent (the cup) is out-of-window — harness must express explicit uncertainty rather than guess.",
+  "fixture_conventions": {
+    "window_ms": 60000,
+    "frame_duration_ms": "33 — approximate 30fps",
+    "deictic_p": "All query frames are deictic (>= 0.8).",
+    "scene_change_score": "Scripted. Marks object-pick-up transitions.",
+    "grounding_result": "Stub label for each event: 'cup' or 'keys'.",
+    "grounding_confidence": "High for both in-window referents.",
+    "seq_no": "Monotonically increasing across all frames. Ordering must be derived from seq_no/timestamp_mono_ms, not from position in the signal_trace array.",
+    "sub_case": "'in_window_ordered' or 'out_of_window_uncertain'. Consumers (task 16) partition by this field.",
+    "in_window_design": "cup at seq_no=10/t=1000ms; keys at seq_no=20/t=2000ms. Query at t=40000ms. Both in 60s window. cup.seq_no < keys.seq_no => cup came first. Harness must report this ordering.",
+    "out_of_window_design": "cup at t=0ms (evicted when query arrives at t=65000ms). keys at t=2000ms (in window). Cup is not resolvable; harness must express uncertainty rather than guess the ordering.",
+    "ordering_from_logged_seq": "Task 16 asserts the ordering is derived from logged raw_video_frame seq_no values stored in the ring buffer, not from the fixture array order. A replay with shuffled trace order must produce the same ordering decision.",
+    "frame_bytes_synthesis": "raw_video frame blobs are minimal synthetic placeholders: b'\\x89VID\\x00' + 1 index byte.",
+    "expected_events_markers": "event_type strings are fixture-internal role labels."
+  },
+  "signal_trace": [
+    {
+      "t_ms": 1000,
+      "frame_id": "frame-010",
+      "sub_case": "in_window_ordered",
+      "event_type": "raw_video_frame",
+      "timestamp_mono_ms": 1000,
+      "seq_no": 10,
+      "frame_bytes_hex": "89564944000A",
+      "deictic_p": 0.0,
+      "scene_change_score": 0.75,
+      "grounding_result": "cup",
+      "grounding_confidence": 0.91,
+      "notes": "CUP EVENT: seq_no=10, t=1000ms; scene change indicates pick-up of cup; earlier in time"
+    },
+    {
+      "t_ms": 2000,
+      "frame_id": "frame-020",
+      "sub_case": "in_window_ordered",
+      "event_type": "raw_video_frame",
+      "timestamp_mono_ms": 2000,
+      "seq_no": 20,
+      "frame_bytes_hex": "895649440014",
+      "deictic_p": 0.0,
+      "scene_change_score": 0.80,
+      "grounding_result": "keys",
+      "grounding_confidence": 0.88,
+      "notes": "KEYS EVENT: seq_no=20, t=2000ms; scene change indicates pick-up of keys; later in time"
+    },
+    {
+      "t_ms": 40000,
+      "frame_id": "frame-030",
+      "sub_case": "in_window_ordered",
+      "event_type": "deictic_classification",
+      "timestamp_mono_ms": 40000,
+      "seq_no": 30,
+      "frame_bytes_hex": "89564944001E",
+      "deictic_p": 0.90,
+      "scene_change_score": 0.05,
+      "grounding_result": null,
+      "grounding_confidence": null,
+      "resolution_frame": true,
+      "expected_ordering": "cup_before_keys",
+      "expected_resolvable": true,
+      "notes": "IN-WINDOW QUERY GATE FRAME: t=40000ms; both cup (seq=10) and keys (seq=20) in window; ordering: cup first. Harness derives from seq_no, not invention."
+    },
+    {
+      "t_ms": 0,
+      "frame_id": "frame-200",
+      "sub_case": "out_of_window_uncertain",
+      "event_type": "raw_video_frame",
+      "timestamp_mono_ms": 0,
+      "seq_no": 200,
+      "frame_bytes_hex": "895649440200",
+      "deictic_p": 0.0,
+      "scene_change_score": 0.78,
+      "grounding_result": "cup",
+      "grounding_confidence": 0.91,
+      "notes": "OUT-OF-WINDOW CUP EVENT: t=0ms; will be evicted when query arrives at t=65000ms"
+    },
+    {
+      "t_ms": 2000,
+      "frame_id": "frame-210",
+      "sub_case": "out_of_window_uncertain",
+      "event_type": "raw_video_frame",
+      "timestamp_mono_ms": 2000,
+      "seq_no": 210,
+      "frame_bytes_hex": "895649440210",
+      "deictic_p": 0.0,
+      "scene_change_score": 0.82,
+      "grounding_result": "keys",
+      "grounding_confidence": 0.88,
+      "notes": "IN-WINDOW KEYS EVENT: t=2000ms; will remain in window at query time"
+    },
+    {
+      "t_ms": 65000,
+      "frame_id": "frame-220",
+      "sub_case": "out_of_window_uncertain",
+      "event_type": "deictic_classification",
+      "timestamp_mono_ms": 65000,
+      "seq_no": 220,
+      "frame_bytes_hex": "895649440220",
+      "deictic_p": 0.90,
+      "scene_change_score": 0.05,
+      "grounding_result": null,
+      "grounding_confidence": null,
+      "resolution_frame": true,
+      "expected_ordering": "uncertain",
+      "expected_resolvable": false,
+      "notes": "OUT-OF-WINDOW QUERY GATE FRAME: t=65000ms; cup (t=0ms) evicted (65000ms > 60000ms window); keys in window but cup not resolvable; harness must express uncertainty rather than guess"
+    }
+  ],
+  "baseline_decisions": [
+    {
+      "frame_id": "frame-030",
+      "sub_case": "in_window_ordered",
+      "ordering_result": "cup_before_keys",
+      "derived_from": "seq_no: cup=10 < keys=20",
+      "resolvable": true,
+      "notes": "ordering derived from logged seq_no; cup (seq=10) before keys (seq=20)"
+    },
+    {
+      "frame_id": "frame-220",
+      "sub_case": "out_of_window_uncertain",
+      "ordering_result": "uncertain",
+      "resolvable": false,
+      "notes": "cup evicted from buffer; ordering cannot be determined; explicit uncertainty (not invention)"
+    }
+  ]
+}
