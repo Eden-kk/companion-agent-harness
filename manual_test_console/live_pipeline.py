@@ -26,7 +26,7 @@ from __future__ import annotations
 import array
 import asyncio
 import math
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -209,56 +209,93 @@ class WebSocketAudioSink:
 # ---------------------------------------------------------------------------
 
 
-def _live_policy_inputs_builder(
-    signal: TurnSignal, signal_history: list[TurnSignal]
-) -> PolicyInputs:
-    """Build PolicyInputs from a TurnSignal + sorted history.
+def _make_live_policy_inputs_builder(
+    is_playing_fn: Callable[[], bool] | None = None,
+) -> Callable[[TurnSignal, list[TurnSignal]], PolicyInputs]:
+    """Factory: return a builder closure with `assistant_speaking` bound to
+    `is_playing_fn` (typically `AudioOutputController.is_playing`).
 
-    No wall-clock reads, no jitter. Mirrors `realtime_loop._signals_to_policy_inputs`
-    but uses the current `signal` directly. Mode-field defaults follow the spec
-    enumerations (architecture-v0.1.md:793-803):
-      - `privacy_mode = "normal"` (spec default; not no_memory / no_camera_memory / etc.)
-      - `current_task_mode = "normal"` (spec default; not creative_focus / cooking / etc.)
-      - `social_mode = "user_addressing_agent"` (single-user manual-test default; multi-party
-        scenarios would set "user_addressing_other" / "group_conversation" / "background_presence"
-        and trip `_BLOCKING_SOCIAL_MODES` in speak_policy)
-      - `risk_mode = "normal"` (spec default)
-
-    `user_addressed_agent` is set to `False` here as a placeholder. The
-    orchestrator's `AddressingClassifier` (wired below in `build_live_pipeline`)
-    overrides this value after ASR using the 3-tier rule:
-        - explicit wake-word match  -> True
-        - multi-speaker detected    -> False (diarization not wired in v0.1f)
-        - implicit fallback         -> social_mode == "user_addressing_agent"
-    The builder runs BEFORE ASR/classifier, so `False` is safe: the classifier
-    is the authoritative source of `user_addressed_agent` on the live path.
-    See companion_harness/addressing_classifier.py and issue #139.
+    Closure approach (chosen over an orchestrator parameter change) keeps the
+    `Callable[[TurnSignal, list[TurnSignal]], PolicyInputs]` signature stable,
+    so existing test fakes for `policy_inputs_builder` continue to type-check.
+    When `is_playing_fn is None`, `assistant_speaking` falls back to `False`
+    (backward compat for tests that call `_live_policy_inputs_builder` directly).
     """
-    max_p_done = max((s.p_done for s in signal_history), default=signal.p_done)
-    max_p_continue = max((s.p_continue for s in signal_history), default=signal.p_continue)
-    user_speaking = max_p_done <= max_p_continue
 
-    social_mode = "user_addressing_agent"
+    def _builder(signal: TurnSignal, signal_history: list[TurnSignal]) -> PolicyInputs:
+        """Build PolicyInputs from a TurnSignal + sorted history.
 
-    return PolicyInputs(
-        user_speaking=user_speaking,
-        eou_probability=max_p_done,
-        assistant_speaking=False,
-        scene_change_score=0.0,
-        deictic_reference=False,
-        user_addressed_agent=False,  # placeholder; AddressingClassifier overrides post-ASR.
-        urgency_score=0.0,
-        proactivity_budget_remaining={},
-        privacy_mode="normal",
-        current_task_mode="normal",
-        social_mode=social_mode,
-        risk_mode="normal",
-        cooldown_state={},
-        attachment_risk_level=0.0,
-        audio_visual_conflict_score=0.0,
-        grounding_confidence=1.0,
-        deictic_ambiguous=False,
-    )
+        No wall-clock reads, no jitter. Mirrors `realtime_loop._signals_to_policy_inputs`
+        but uses the current `signal` directly. Mode-field defaults follow the spec
+        enumerations (architecture-v0.1.md:793-803):
+          - `privacy_mode = "normal"` (spec default; not no_memory / no_camera_memory / etc.)
+          - `current_task_mode = "normal"` (spec default; not creative_focus / cooking / etc.)
+          - `social_mode = "user_addressing_agent"` (single-user manual-test default; multi-party
+            scenarios would set "user_addressing_other" / "group_conversation" / "background_presence"
+            and trip `_BLOCKING_SOCIAL_MODES` in speak_policy)
+          - `risk_mode = "normal"` (spec default)
+
+        `user_addressed_agent` is set to `False` here as a placeholder. The
+        orchestrator's `AddressingClassifier` (wired below in `build_live_pipeline`)
+        overrides this value after ASR using the 3-tier rule:
+            - explicit wake-word match  -> True
+            - multi-speaker detected    -> False (diarization not wired in v0.1f)
+            - implicit fallback         -> social_mode == "user_addressing_agent"
+        The builder runs BEFORE ASR/classifier, so `False` is safe: the classifier
+        is the authoritative source of `user_addressed_agent` on the live path.
+        See companion_harness/addressing_classifier.py and issue #139.
+
+        `assistant_speaking` reflects `AudioOutputController.is_playing` when
+        `is_playing_fn` was bound by the factory; otherwise `False`. The policy
+        gate at `speak_policy.decide()` uses this to avoid talking over itself.
+
+        `grounding_confidence = 0.0` (NOT `1.0`) because no grounding model is
+        wired in v0.1f. Defaulting to `1.0` would SUPPRESS the policy gate
+        `inputs.deictic_reference and inputs.grounding_confidence < 0.5`
+        (VISUAL_LOW_CONFIDENCE silence) even when "no vision" is the truth.
+        With `0.0`, the gate fires correctly once a future visual scene scorer
+        sets `deictic_reference=True`. Today `deictic_reference` is hardcoded
+        `False` so the gate is not reached — the change is forward-safety.
+        Follow-up (cleaner): add `grounding_available: bool` to PolicyInputs
+        so the policy can distinguish "no vision" from "vision low-confidence".
+        """
+        max_p_done = max((s.p_done for s in signal_history), default=signal.p_done)
+        max_p_continue = max((s.p_continue for s in signal_history), default=signal.p_continue)
+        user_speaking = max_p_done <= max_p_continue
+
+        assistant_speaking = bool(is_playing_fn()) if is_playing_fn is not None else False
+
+        social_mode = "user_addressing_agent"
+
+        return PolicyInputs(
+            user_speaking=user_speaking,
+            eou_probability=max_p_done,
+            assistant_speaking=assistant_speaking,
+            scene_change_score=0.0,
+            deictic_reference=False,
+            user_addressed_agent=False,  # placeholder; AddressingClassifier overrides post-ASR.
+            urgency_score=0.0,
+            proactivity_budget_remaining={},
+            privacy_mode="normal",
+            current_task_mode="normal",
+            social_mode=social_mode,
+            risk_mode="normal",
+            cooldown_state={},
+            attachment_risk_level=0.0,
+            audio_visual_conflict_score=0.0,
+            grounding_confidence=0.0,
+            deictic_ambiguous=False,
+        )
+
+    return _builder
+
+
+# Module-level builder bound to no audio_output (assistant_speaking always
+# False). Preserved for backward compatibility with tests that import the
+# builder by name (e.g. tests/test_live_policy_inputs_builder_spec_aligned.py).
+# Live runs always go through `_make_live_policy_inputs_builder(...)` in
+# `build_live_pipeline` below with `is_playing_fn=audio_output.is_playing`.
+_live_policy_inputs_builder = _make_live_policy_inputs_builder()
 
 
 # ---------------------------------------------------------------------------
@@ -408,6 +445,13 @@ def build_live_pipeline(
     # count placeholder / mechanical fallback) over the ASR transcript on EOU.
     addressing_classifier = WakeWordAddressingClassifier()
 
+    # Bind the audio_output.is_playing callback into the builder closure so
+    # `PolicyInputs.assistant_speaking` reflects live playback state. The
+    # orchestrator-side signature is unchanged (closure approach).
+    policy_inputs_builder = _make_live_policy_inputs_builder(
+        is_playing_fn=lambda: audio_output.is_playing,
+    )
+
     orch = StreamingRealtimeOrchestrator(
         session_id=session_id,
         logger=shielded_logger,  # type: ignore[arg-type]
@@ -416,7 +460,7 @@ def build_live_pipeline(
         vad_detector=vad,
         smart_turn_detector=smart_turn,
         backchannel_classifier=backchannel,
-        policy_inputs_builder=_live_policy_inputs_builder,
+        policy_inputs_builder=policy_inputs_builder,
         foreground_model=foreground,
         audio_output=audio_output,
         tts_adapter=tts_adapter,
