@@ -17,3 +17,10 @@ manual_test_console = ["aiohttp>=3.9"]
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["companion_harness*", "manual_test_console*"]
+
+[tool.pytest.ini_options]
+# Skip GPU-only / real-model tests by default so `pytest tests/` works on
+# CI (ubuntu-latest) and other machines without GPU / model weights. The
+# canonical venv on b200 can still run them via explicit invocation, e.g.
+# `pytest tests/test_minicpm_streaming_duplex.py`.
+addopts = "--ignore=tests/test_minicpm_streaming_duplex.py --ignore=tests/test_direct_question_latency.py --ignore=tests/test_tts_kokoro_real.py --ignore=tests/test_real_detectors.py"
