@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import time
-from collections.abc import Callable, Awaitable
+from collections.abc import AsyncIterable, Callable, Awaitable
 from datetime import datetime, timezone
 
 from companion_harness.event_logger import EventLogger
@@ -93,13 +93,15 @@ class AudioOutputController:
             self._generation_task = None
         self._playing = False
 
-    async def play(self, chunks: list[bytes], generation_event_id: str) -> None:
-        """Drain buffered chunks to sink, stopping early if request_stop() fires.
+    async def play(self, chunks: AsyncIterable[bytes], generation_event_id: str) -> None:
+        """Drain chunks to sink as they arrive, stopping early if request_stop() fires.
 
-        Emits assistant_audio_stop_completed if stopped mid-stream,
+        Accepts an async generator or any AsyncIterable[bytes] so each chunk is
+        forwarded to the sink as it arrives without waiting for the full utterance
+        to buffer. Emits assistant_audio_stop_completed if stopped mid-stream,
         or assistant_audio_buffer_flushed when the stream runs to completion.
         """
-        for chunk in chunks:
+        async for chunk in chunks:
             if self._stop_event.is_set():
                 self._emit(
                     "assistant_audio_stop_completed",

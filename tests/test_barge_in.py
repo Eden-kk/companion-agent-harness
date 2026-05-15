@@ -15,6 +15,7 @@ intentionally out of scope for this fixture-driven contract test.
 import asyncio
 import statistics
 import time
+from collections.abc import AsyncIterator
 
 import pytest
 
@@ -22,6 +23,11 @@ from companion_harness.audio_output_controller import AudioOutputController
 from companion_harness.event_logger import EventLogger
 from companion_harness.fixtures.loader import load_fixture
 from companion_harness.schemas import Event
+
+
+async def _agen(chunks: list[bytes]) -> AsyncIterator[bytes]:
+    for chunk in chunks:
+        yield chunk
 
 
 def _make_logger() -> tuple[EventLogger, list[Event]]:
@@ -78,7 +84,7 @@ async def test_barge_in():
 
         # Launch play() as a background task — it will block on the sink calls
         play_task = asyncio.create_task(
-            controller.play(chunks, generation_event_id=gen_event_id)
+            controller.play(_agen(chunks), generation_event_id=gen_event_id)
         )
 
         # Give play() time to enter its first sink await (chunk-a delivery in-flight)

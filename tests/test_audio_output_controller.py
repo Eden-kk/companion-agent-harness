@@ -9,12 +9,18 @@ mocked TTS — verifying:
 
 import asyncio
 import time
+from collections.abc import AsyncIterator
 
 import pytest
 
 from companion_harness.audio_output_controller import AudioOutputController
 from companion_harness.event_logger import EventLogger
 from companion_harness.schemas import Event
+
+
+async def _agen(chunks: list[bytes]) -> AsyncIterator[bytes]:
+    for chunk in chunks:
+        yield chunk
 
 
 def _make_logger() -> tuple[EventLogger, list[Event]]:
@@ -65,7 +71,7 @@ async def test_stop_path_with_mocked_tts():
     assert elapsed_ms < 50, f"request_stop() blocked for {elapsed_ms:.1f}ms"
 
     # play() drains but stops early due to stop_event
-    await controller.play(chunks, generation_event_id=gen_event_id)
+    await controller.play(_agen(chunks), generation_event_id=gen_event_id)
 
     assert not controller.is_playing
     # request_stop() fired before play() — sink must never be called
@@ -121,7 +127,7 @@ async def test_full_playback_without_barge_in():
     for chunk in chunks:
         controller.queue_buffer(chunk, caused_by=[gen_id])
 
-    await controller.play(chunks, generation_event_id=gen_id)
+    await controller.play(_agen(chunks), generation_event_id=gen_id)
 
     assert not controller.is_playing
     assert delivered == chunks
@@ -185,3 +191,53 @@ async def test_set_generation_task_cancel():
     assert task.cancelled() or task.cancelling() > 0
 
     await logger.stop()
+
+
+@pytest.mark.asyncio
+async def test_play_async_gen_no_full_collection():
+    """play() with an async generator forwards first chunk before generator is exhausted.
+
+    Success criterion (Task 4b): first-chunk playback begins BEFORE the generator
+    is exhausted — i.e. no full-collection buffering occurs.
+    """
+    logger, received = _make_logger()
+    await logger.start()
+
+    # Track when each chunk is delivered to the sink and when generator yields it.
+    sink_times: list[float] = []
+    yield_times: list[float] = []
+
+    async def mock_sink(chunk: bytes) -> None:
+        sink_times.append(asyncio.get_event_loop().time())
+
+    async def slow_gen() -> AsyncIterator[bytes]:
+        for chunk in [b"first", b"second", b"third"]:
+            yield_times.append(asyncio.get_event_loop().time())
+            yield chunk
+            # Pause between yields to make "generator exhausted" distinguishable
+            # from "first chunk delivered".
+            await asyncio.sleep(0.02)
+
+    controller = AudioOutputController(
+        session_id="test-session-async-gen",
+        logger=logger,
+        sink=mock_sink,
+    )
+
+    gen_id = controller.start_generation(caused_by=["policy-async-gen-001"])
+    await controller.play(slow_gen(), generation_event_id=gen_id)
+
+    await logger.stop()
+
+    # First chunk must have been delivered before the generator finished yielding all chunks.
+    # yield_times[-1] is when the last yield was entered; sink_times[0] is first delivery.
+    assert len(sink_times) == 3
+    assert len(yield_times) == 3
+    # First sink call happens before the last generator yield — proves no full buffering.
+    assert sink_times[0] < yield_times[-1], (
+        "First chunk was not delivered until after generator was exhausted — "
+        "play() is buffering the full list before forwarding to sink."
+    )
+
+    event_types = [e.event_type for e in received]
+    assert "assistant_audio_buffer_flushed" in event_types
