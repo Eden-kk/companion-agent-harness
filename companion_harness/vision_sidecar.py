@@ -29,10 +29,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Protocol, runtime_checkable
 
+from companion_harness.av_conflict_scorer import AudioVisualConflictScorer, _NullAudioVisualConflictScorer
 from companion_harness.event_logger import EventLogger
 from companion_harness.schemas import Event
 
-__all__ = ["SceneScorer", "GroundingModel", "FrameRef", "GroundingResult", "VisionSidecar"]
+__all__ = ["SceneScorer", "GroundingModel", "_NullGroundingModel", "FrameRef", "GroundingResult", "VisionSidecar", "_NullSceneScorer"]
 
 _WINDOW_MS: int = 60_000  # 60-second ring-buffer window
 
@@ -48,6 +49,11 @@ class SceneScorer(Protocol):
     def __call__(self, prev_frame: bytes, curr_frame: bytes) -> float: ...
 
 
+class _NullSceneScorer:
+    def __call__(self, prev_frame: bytes, curr_frame: bytes) -> float:
+        return 0.0  # UNAVAILABLE: #166 — real CLIP cosine scorer pending model wiring
+
+
 @runtime_checkable
 class GroundingModel(Protocol):
     """Injected interface for deictic-grounding inference.
@@ -58,6 +64,11 @@ class GroundingModel(Protocol):
     """
 
     def __call__(self, frame: bytes, query: str) -> tuple[str, float]: ...
+
+
+class _NullGroundingModel:
+    def __call__(self, frame: bytes, query: str) -> tuple[str, float]:
+        return "", 0.0  # UNAVAILABLE: #161 — real grounding model pending model wiring
 
 
 @dataclass
@@ -100,6 +111,7 @@ class VisionSidecar:
         scene_scorer: SceneScorer,
         grounding_model: GroundingModel,
         *,
+        av_conflict_scorer: AudioVisualConflictScorer | None = None,
         session_id: str = "",
         logger: EventLogger | None = None,
         privacy_mode: str = "default",
@@ -107,12 +119,17 @@ class VisionSidecar:
     ) -> None:
         self._scene_scorer = scene_scorer
         self._grounding_model = grounding_model
+        self._av_conflict_scorer: AudioVisualConflictScorer = (
+            av_conflict_scorer if av_conflict_scorer is not None else _NullAudioVisualConflictScorer()
+        )
         self._session_id = session_id
         self._logger = logger
         self._privacy_mode = privacy_mode
         self._window_ms = window_ms
         self._buffer: deque[FrameRef] = deque()
         self._last_frame: bytes | None = None
+        self._last_scene_change_score: float = 0.0
+        self._last_grounding_confidence: float = 0.0
         self._seq = 0
         # Live-loop pairing buffer: single most-recent frame, consumed by
         # StreamingRealtimeOrchestrator._bounded_frame_gen on the next audio
@@ -137,6 +154,7 @@ class VisionSidecar:
         if self._last_frame is not None:
             score = self._scene_scorer(self._last_frame, ref.frame_bytes)
         self._last_frame = ref.frame_bytes
+        self._last_scene_change_score = score
 
         self._buffer.append(ref)
         self._evict(ref.timestamp_mono_ms)
@@ -214,11 +232,23 @@ class VisionSidecar:
         """Event id of the most recently logged vision_frame, or None."""
         return self._last_frame_event_id
 
+    def last_scene_change_score(self) -> float:
+        """Most recently computed scene-change score, or 0.0 if no pair seen yet."""
+        return self._last_scene_change_score
+
+    def grounding_confidence(self) -> float:
+        """Most recently resolved grounding confidence, or 0.0 if no resolve call yet."""
+        return self._last_grounding_confidence
+
     def on_privacy_mode_change(self, new_mode: str) -> None:
         """Update privacy mode; clear pending frame on transition to no_camera_memory."""
         self._privacy_mode = new_mode
         if new_mode == "no_camera_memory":
             self._pending_frame = None
+
+    def audio_visual_conflict_score(self, audio: bytes, frame: bytes | None = None) -> float:
+        """Return AV conflict score via the injected scorer (default: _NullAudioVisualConflictScorer)."""
+        return self._av_conflict_scorer.score(audio, frame)
 
     # ------------------------------------------------------------------
     # Grounding pass (gated by deictic_reference)
@@ -257,6 +287,7 @@ class VisionSidecar:
         else:
             frame_ref = self._buffer[-1]
         label, confidence = self._grounding_model(frame_ref.frame_bytes, query)
+        self._last_grounding_confidence = confidence
         result = GroundingResult(
             label=label,
             confidence=confidence,

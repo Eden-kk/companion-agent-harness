@@ -33,6 +33,7 @@ from typing import Any, Protocol
 
 from companion_harness.addressing_classifier import WakeWordAddressingClassifier
 from companion_harness.audio_output_controller import AudioOutputController
+from companion_harness.av_conflict_scorer import AudioVisualConflictScorer, _NullAudioVisualConflictScorer
 from companion_harness.backchannel_classifier import BackchannelClassifier
 from companion_harness.event_logger import EventLogger
 from companion_harness.foreground_model import ForegroundModel
@@ -245,6 +246,8 @@ class WebSocketAudioSink:
 
 def _make_live_policy_inputs_builder(
     is_playing_fn: Callable[[], bool] | None = None,
+    vision_sidecar: Any = None,
+    av_scorer: AudioVisualConflictScorer | None = None,
 ) -> Callable[[TurnSignal, list[TurnSignal]], PolicyInputs]:
     """Factory: return a builder closure with `assistant_speaking` bound to
     `is_playing_fn` (typically `AudioOutputController.is_playing`).
@@ -254,7 +257,16 @@ def _make_live_policy_inputs_builder(
     so existing test fakes for `policy_inputs_builder` continue to type-check.
     When `is_playing_fn is None`, `assistant_speaking` falls back to `False`
     (backward compat for tests that call `_live_policy_inputs_builder` directly).
+
+    `vision_sidecar` (optional): when provided, the builder reads
+    `scene_change_score` and `grounding_confidence` from the sidecar's
+    accessors; otherwise both default to `0.0`.
+
+    `av_scorer` (optional): the `AudioVisualConflictScorer` used to source
+    `audio_visual_conflict_score`. Defaults to `_NullAudioVisualConflictScorer`
+    (returns 0.0; UNAVAILABLE: #168).
     """
+    _av: AudioVisualConflictScorer = av_scorer if av_scorer is not None else _NullAudioVisualConflictScorer()
 
     def _builder(signal: TurnSignal, signal_history: list[TurnSignal]) -> PolicyInputs:
         """Build PolicyInputs from a TurnSignal + sorted history.
@@ -301,11 +313,17 @@ def _make_live_policy_inputs_builder(
 
         social_mode = "user_addressing_agent"
 
+        scene_score = (
+            vision_sidecar.last_scene_change_score()
+            if vision_sidecar is not None
+            else 0.0  # UNAVAILABLE: #166 — real CLIP cosine scorer pending model wiring
+        )
+
         return PolicyInputs(
             user_speaking=user_speaking,
             eou_probability=max_p_done,
             assistant_speaking=assistant_speaking,
-            scene_change_score=0.0,
+            scene_change_score=scene_score,
             deictic_reference=False,
             user_addressed_agent=False,  # placeholder; AddressingClassifier overrides post-ASR.
             urgency_score=0.0,
@@ -316,12 +334,31 @@ def _make_live_policy_inputs_builder(
             risk_mode="normal",
             cooldown_state={},
             attachment_risk_level=0.0,
-            audio_visual_conflict_score=0.0,
-            grounding_confidence=0.0,
+            audio_visual_conflict_score=_av.score(b"", None),  # UNAVAILABLE: #168
+            grounding_confidence=(
+                vision_sidecar.grounding_confidence()
+                if vision_sidecar is not None
+                else 0.0  # UNAVAILABLE: #161 — real grounding model pending model wiring
+            ),
             deictic_ambiguous=False,
         )
 
     return _builder
+
+
+def _make_policy_inputs_builder(
+    vision_sidecar: Any,
+    av_scorer: AudioVisualConflictScorer | None = None,
+) -> Callable[[TurnSignal, list[TurnSignal]], PolicyInputs]:
+    """Backward-compatible factory: same as `_make_live_policy_inputs_builder`
+    but without an `is_playing_fn` binding (assistant_speaking always False).
+
+    Kept for the AV-conflict seam tests which exercise the builder in isolation
+    without wiring an AudioOutputController.
+    """
+    return _make_live_policy_inputs_builder(
+        is_playing_fn=None, vision_sidecar=vision_sidecar, av_scorer=av_scorer
+    )
 
 
 # Module-level builder bound to no audio_output (assistant_speaking always
@@ -495,8 +532,12 @@ def build_live_pipeline(
     # Bind the audio_output.is_playing callback into the builder closure so
     # `PolicyInputs.assistant_speaking` reflects live playback state. The
     # orchestrator-side signature is unchanged (closure approach).
+    # Also bind the per-session `vision_sidecar` so the builder can source
+    # `scene_change_score`, `grounding_confidence`, and (via the default
+    # `_NullAudioVisualConflictScorer`) `audio_visual_conflict_score`.
     policy_inputs_builder = _make_live_policy_inputs_builder(
         is_playing_fn=lambda: audio_output.is_playing,
+        vision_sidecar=vision_sidecar,
     )
 
     session_state_store: Any = EmptyMemoryStore()
