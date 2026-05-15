@@ -54,6 +54,9 @@ class _FakeModel:
     ) -> ThinkerProposal | None:
         return next(self._returns)
 
+    def set_context(self, items) -> None:
+        pass
+
 
 def test_no_torch_import():
     """Importing foreground_model must not transitively pull in torch.
@@ -166,6 +169,9 @@ def test_streaming_fake_satisfies_both_protocols():
         ) -> ThinkerProposal | None:
             return None
 
+        def set_context(self, items) -> None:
+            pass
+
         async def infer_stream(
             self,
             frame_iter: AsyncIterator[tuple[bytes, bytes | None]],
@@ -195,6 +201,9 @@ async def test_process_stream_proposals_carry_caused_by():
             self, audio_frame: bytes, video_frame: bytes | None = None
         ) -> ThinkerProposal | None:
             return None
+
+        def set_context(self, items) -> None:
+            pass
 
         async def infer_stream(
             self,

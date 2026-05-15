@@ -39,7 +39,7 @@ import numpy as np
 import torch
 from transformers import AutoModel, AutoTokenizer
 
-from companion_harness.schemas import ThinkerProposal
+from companion_harness.schemas import MemoryItem, ThinkerProposal
 
 __all__ = ["MiniCPMDuplexModel", "MiniCPMStreamingModel"]
 
@@ -90,6 +90,9 @@ class MiniCPMDuplexModel:
         """DuplexModel Protocol: not used in text-path latency tests; returns None."""
         return None
 
+    def set_context(self, items: list[MemoryItem]) -> None:
+        self._memory_context = list(items)
+
 
 class MiniCPMStreamingModel:
     """StreamingDuplexModel backed by MiniCPM-o 4.5 in as_duplex mode.
@@ -132,6 +135,9 @@ class MiniCPMStreamingModel:
     def infer(self, audio_frame: bytes, video_frame: bytes | None = None) -> ThinkerProposal | None:
         """DuplexModel Protocol stub — single-frame path not used for streaming."""
         return None
+
+    def set_context(self, items: list[MemoryItem]) -> None:
+        self._memory_context = list(items)
 
     async def infer_stream(
         self,

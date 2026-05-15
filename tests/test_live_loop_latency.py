@@ -98,6 +98,9 @@ class _FakeStreamingModel:
     def infer(self, audio_frame: bytes, video_frame: bytes | None = None) -> ThinkerProposal | None:
         return None
 
+    def set_context(self, items) -> None:
+        pass
+
     async def infer_stream(
         self,
         frame_iter: AsyncIterator[tuple[bytes, bytes | None]],

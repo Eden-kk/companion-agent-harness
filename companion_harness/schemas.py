@@ -107,6 +107,7 @@ class PolicyInputs:
     quiet_mode_active:           bool  = False
     aesthetic_novelty_score:     float = 0.0
     short_response_appropriate:  bool  = False
+    retrieved_items:             list["MemoryItem"] = field(default_factory=list)
 
 
 @dataclass
