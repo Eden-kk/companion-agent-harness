@@ -97,6 +97,8 @@ The page renders four lanes (or panels — exact UI is fixed by the Phase 1 PR):
 3. **SpeakPolicy decisions** — `SpeakDecision` rows with `action_type` (`silence` / `full_response` / `backchannel` / etc.), `primary_reason_code`, and `caused_by[]`.
 4. **Causal graph trace** — the DAG that closes each utterance. Orphan count must stay at zero. If it climbs, that's an invariant #1 violation worth reporting.
 
+**Panel routing.** The console splits events into two panels by `payload_kind`. The left panel ("Ingested input Events") shows `payload_kind = raw_audio` and `raw_video` events (so: `raw_audio_chunk`, `raw_video_frame`). The right panel ("TurnSignals / SpeakDecisions / causal chain") shows everything else — VAD signals, SpeakPolicy decisions, foreground proposals, memory events, log_drop_or_degrade. If you're watching for a `SpeakDecision` or a `vad_turn_signal`, look right. If you're watching mic capture, look left.
+
 ### 2.5 Scripted scenarios to try
 
 These are the manual flows worth running once you have the console up. Each is meant to take 1–3 minutes; do not over-engineer.
