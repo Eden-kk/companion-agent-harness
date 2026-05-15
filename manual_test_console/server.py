@@ -51,6 +51,8 @@ from aiohttp import WSMsgType, web
 from companion_harness.event_logger import EventLogger
 from companion_harness.input_ingest import CaptureMetadata, InputIngest
 from companion_harness.schemas import Event
+from manual_test_console.config_schema import ALLOWLIST, tier_a_keys, validate_patch
+from manual_test_console.config_store import ConfigChange, ConfigStore
 from manual_test_console.live_pipeline import LivePipeline, build_live_pipeline
 
 __all__ = ["build_app", "main"]
@@ -92,6 +94,15 @@ KEY_AUDIO_OUT_COUNTER: web.AppKey[dict] = web.AppKey("audio_out_counter", dict)
 KEY_TTS_ADAPTER: web.AppKey[object] = web.AppKey("tts_adapter", object)
 KEY_TTS_LABEL: web.AppKey[str] = web.AppKey("tts_label", str)
 KEY_VISION_ENABLED: web.AppKey[bool] = web.AppKey("vision_enabled", bool)
+KEY_CONFIG_STORE: web.AppKey[object] = web.AppKey("config_store", object)
+KEY_OPERATOR_SEQ: web.AppKey[dict] = web.AppKey("operator_seq", dict)
+
+# Session id stamped onto operator_action + config_change events emitted from
+# the /config/* HTTP endpoints. These events are decoupled from any /ws/ingest
+# session; they record control-plane mutations against the singleton
+# ConfigStore. Per docs/design-config-and-dashboard.md §8.
+_OPERATOR_SESSION_ID = "manual_test_console.operator"
+_CONFIG_EVENT_SCHEMA_VERSION = "v0.1f"
 
 
 def _event_to_json(event: Event) -> dict:
@@ -212,6 +223,97 @@ class AudioOutBroker:
                     self._counter["chunks_dropped"] = (
                         self._counter.get("chunks_dropped", 0) + 1
                     )
+
+
+# ---------------------------------------------------------------------------
+# /config event helpers
+# ---------------------------------------------------------------------------
+
+
+def _next_operator_seq(counter: dict) -> int:
+    n = counter.get("seq", 0)
+    counter["seq"] = n + 1
+    return n
+
+
+def _make_operator_action_event(
+    *,
+    endpoint: str,
+    client_ip: str,
+    request_id: str,
+    seq_counter: dict,
+) -> Event:
+    """Build an `operator_action` audit event for a /config/* HTTP request.
+
+    See docs/design-config-and-dashboard.md §8 row 1. The event is the root of
+    an operator-initiated DAG chain — `caused_by=[]` is correct (per
+    causal_graph.py, a root event has empty caused_by[]).
+    """
+    event_id = f"operator_action-{uuid.uuid4().hex}"
+    now_ms = int(time.monotonic() * 1000)
+    payload = {
+        "endpoint": endpoint,
+        "client_ip": client_ip,
+        "request_id": request_id,
+    }
+    return Event(
+        event_id=event_id,
+        session_id=_OPERATOR_SESSION_ID,
+        schema_version=_CONFIG_EVENT_SCHEMA_VERSION,
+        seq_no=_next_operator_seq(seq_counter),
+        event_type="operator_action",
+        timestamp_mono_ms=now_ms,
+        timestamp_wall=_now_wall(),
+        source="manual_test_console.server",
+        caused_by=[],
+        payload_hash="",
+        payload_ref=None,
+        payload_kind="signal",
+        subject_class="operator",
+        sensitivity="safe",
+        retention_policy_id="config_change_30d",
+        payload_inline=payload,
+    )
+
+
+def _make_config_change_event(
+    *,
+    change: ConfigChange,
+    operator_action_event_id: str,
+    seq_counter: dict,
+) -> Event:
+    """Build a `config_change` event citing its upstream operator_action.
+
+    See docs/design-config-and-dashboard.md §8 row 2. `caused_by` references
+    the operator_action event id so the DAG closes (invariant #1).
+    """
+    event_id = f"config_change-{uuid.uuid4().hex}"
+    now_ms = int(time.monotonic() * 1000)
+    payload = {
+        "key": change.key,
+        "previous_value": change.previous_value,
+        "new_value": change.new_value,
+        "applied_at_ms": now_ms,
+        "operator_action_event_id": operator_action_event_id,
+    }
+    return Event(
+        event_id=event_id,
+        session_id=_OPERATOR_SESSION_ID,
+        schema_version=_CONFIG_EVENT_SCHEMA_VERSION,
+        seq_no=_next_operator_seq(seq_counter),
+        event_type="config_change",
+        timestamp_mono_ms=now_ms,
+        timestamp_wall=_now_wall(),
+        source="manual_test_console.server",
+        caused_by=[operator_action_event_id],
+        payload_hash="",
+        payload_ref=None,
+        payload_kind="signal",
+        subject_class="self",
+        sensitivity="safe",
+        retention_policy_id="config_change_30d",
+        payload_inline=payload,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -464,6 +566,202 @@ async def _handle_health(request: web.Request) -> web.Response:
 
 
 # ---------------------------------------------------------------------------
+# /config HTTP endpoints
+# ---------------------------------------------------------------------------
+
+
+def _schema_entry_dict(key: str) -> dict[str, Any]:
+    entry = ALLOWLIST[key]
+    return {
+        "default": entry.default,
+        "min": entry.min,
+        "max": entry.max,
+        "step": entry.step,
+        "value_type": entry.value_type.__name__,
+        "description": entry.description,
+        "code_location": entry.code_location,
+    }
+
+
+async def _handle_get_config(request: web.Request) -> web.Response:
+    """Return current effective Tier-B values + schema metadata.
+
+    Dashboard (Task F) uses this on page load to render sliders.
+    See docs/design-config-and-dashboard.md §5.
+    """
+    config_store: ConfigStore = request.app[KEY_CONFIG_STORE]  # type: ignore[assignment]
+    return web.json_response({
+        "values": config_store.current_state(),
+        "schema": {key: _schema_entry_dict(key) for key in ALLOWLIST.keys()},
+    })
+
+
+async def _handle_post_config_patch(request: web.Request) -> web.Response:
+    """Apply a single Tier-B key override.
+
+    Body: {key: str, value: float|int}. See design doc §5.
+
+    Emits:
+      - operator_action event (root of the chain)
+      - config_change event (caused_by=[operator_action_event_id])
+    """
+    config_store: ConfigStore = request.app[KEY_CONFIG_STORE]  # type: ignore[assignment]
+    logger: EventLogger = request.app[KEY_LOGGER]  # type: ignore[assignment]
+    seq_counter: dict = request.app[KEY_OPERATOR_SEQ]
+
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response(
+            {"error": "request body is not valid JSON", "key": None, "tier": "unknown"},
+            status=400,
+        )
+
+    if not isinstance(body, dict) or "key" not in body or "value" not in body:
+        return web.json_response(
+            {"error": "body must be {key, value}", "key": None, "tier": "unknown"},
+            status=400,
+        )
+
+    key = body["key"]
+    value = body["value"]
+
+    # Rejection routing per design doc §5:
+    #   - Tier-A key      → HTTP 403, tier="A"
+    #   - Unknown key     → HTTP 403, tier="unknown"
+    #   - Type mismatch / out of range on Tier-B → HTTP 400, tier="B"
+    if key in tier_a_keys():
+        return web.json_response(
+            {"error": f"Tier-A key not patchable: {key!r}", "key": key, "tier": "A"},
+            status=403,
+        )
+    if key not in ALLOWLIST:
+        return web.json_response(
+            {"error": f"unknown key: {key!r}", "key": key, "tier": "unknown"},
+            status=403,
+        )
+
+    ok, msg = validate_patch(key, value)
+    if not ok:
+        return web.json_response(
+            {"error": msg, "key": key, "tier": "B"},
+            status=400,
+        )
+
+    # Emit operator_action FIRST so config_change can cite its event_id.
+    op_event = _make_operator_action_event(
+        endpoint="/config/patch",
+        client_ip=request.remote or "",
+        request_id=f"req-{uuid.uuid4().hex[:8]}",
+        seq_counter=seq_counter,
+    )
+    logger.log(op_event)
+
+    change = config_store.set(key, value)
+    cc_event = _make_config_change_event(
+        change=change,
+        operator_action_event_id=op_event.event_id,
+        seq_counter=seq_counter,
+    )
+    logger.log(cc_event)
+
+    return web.json_response({
+        "key": change.key,
+        "previous_value": change.previous_value,
+        "new_value": change.new_value,
+        "operator_action_event_id": op_event.event_id,
+        "config_change_event_id": cc_event.event_id,
+    })
+
+
+async def _handle_post_config_reset(request: web.Request) -> web.Response:
+    """Reset a single key, a section, or all Tier-B keys.
+
+    Body: {key?: str, section?: str}. Empty body resets all keys. See §5.
+
+    Emits one operator_action plus one config_change per actual change. If
+    nothing was non-default, only operator_action fires (audit trail of the
+    request itself).
+    """
+    config_store: ConfigStore = request.app[KEY_CONFIG_STORE]  # type: ignore[assignment]
+    logger: EventLogger = request.app[KEY_LOGGER]  # type: ignore[assignment]
+    seq_counter: dict = request.app[KEY_OPERATOR_SEQ]
+
+    try:
+        body = await request.json() if request.body_exists else {}
+    except json.JSONDecodeError:
+        return web.json_response(
+            {"error": "request body is not valid JSON"},
+            status=400,
+        )
+    if body is None:
+        body = {}
+    if not isinstance(body, dict):
+        return web.json_response(
+            {"error": "body must be an object or empty"},
+            status=400,
+        )
+
+    key = body.get("key")
+    section = body.get("section")
+
+    changes: list[ConfigChange] = []
+    if key is not None:
+        if key not in ALLOWLIST:
+            return web.json_response(
+                {"error": f"unknown key: {key!r}", "key": key, "tier": "unknown"},
+                status=403,
+            )
+        c = config_store.reset(key)
+        if c is not None:
+            changes.append(c)
+    elif section is not None:
+        prefix = f"{section}."
+        matching = [k for k in ALLOWLIST.keys() if k.startswith(prefix)]
+        if not matching:
+            return web.json_response(
+                {"error": f"unknown section: {section!r}", "section": section},
+                status=403,
+            )
+        for k in matching:
+            c = config_store.reset(k)
+            if c is not None:
+                changes.append(c)
+    else:
+        changes = config_store.reset_all()
+
+    op_event = _make_operator_action_event(
+        endpoint="/config/reset",
+        client_ip=request.remote or "",
+        request_id=f"req-{uuid.uuid4().hex[:8]}",
+        seq_counter=seq_counter,
+    )
+    logger.log(op_event)
+
+    cc_event_ids: list[str] = []
+    cc_dicts: list[dict] = []
+    for change in changes:
+        cc_event = _make_config_change_event(
+            change=change,
+            operator_action_event_id=op_event.event_id,
+            seq_counter=seq_counter,
+        )
+        logger.log(cc_event)
+        cc_event_ids.append(cc_event.event_id)
+        cc_dicts.append({
+            "key": change.key,
+            "previous_value": change.previous_value,
+            "new_value": change.new_value,
+        })
+
+    return web.json_response({
+        "changes": cc_dicts,
+        "operator_action_event_id": op_event.event_id,
+        "config_change_event_ids": cc_event_ids,
+    })
+
+
+# ---------------------------------------------------------------------------
 # App factory + lifecycle
 # ---------------------------------------------------------------------------
 
@@ -542,12 +840,21 @@ def build_app(
     app[KEY_TTS_ADAPTER] = tts_adapter
     app[KEY_TTS_LABEL] = "stub:NoopTtsAdapter" if (tts_adapter is None or use_stubs) else "injected"
     app[KEY_VISION_ENABLED] = vision_enabled
+    # ConfigStore: in-memory authoritative Tier-B runtime state. Phase 1 Task E
+    # owns the write side (HTTP endpoints below); Task D will wire the same
+    # singleton into the orchestrator's read side once it merges. Until then
+    # we construct our own ConfigStore here so /config/{patch,reset} can run.
+    app[KEY_CONFIG_STORE] = ConfigStore(ALLOWLIST)
+    app[KEY_OPERATOR_SEQ] = {"seq": 0}
 
     app.router.add_get("/", _handle_index)
     app.router.add_get("/healthz", _handle_health)
     app.router.add_get("/ws/ingest", _handle_ingest_ws)
     app.router.add_get("/ws/display", _handle_display_ws)
     app.router.add_get("/ws/audio_out", _handle_audio_out_ws)
+    app.router.add_get("/config", _handle_get_config)
+    app.router.add_post("/config/patch", _handle_post_config_patch)
+    app.router.add_post("/config/reset", _handle_post_config_reset)
 
     async def _on_startup(_app: web.Application) -> None:
         await logger.start()
