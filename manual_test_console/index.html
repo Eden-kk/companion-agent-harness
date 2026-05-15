@@ -40,7 +40,7 @@
 <body>
 <header>
   <h1>manual-test console</h1>
-  <span class="meta">Phase 2 — audio + video capture + observability</span>
+  <span class="meta">Phase 3 — audio + video capture + audio-out playback</span>
   <button id="btn-start">Start mic</button>
   <button id="btn-stop" disabled>Stop</button>
   <button id="btn-start-cam">Start camera</button>
@@ -48,10 +48,12 @@
   <span id="cap-status" class="status off">audio: off</span>
   <span id="cam-status" class="status off">video: off</span>
   <span id="display-status" class="status off">display: off</span>
+  <span id="audio-out-status" class="status off">audio out: off</span>
   <span class="meta" id="chunk-meta">chunks: 0</span>
   <span class="meta" id="frame-meta">frames: 0</span>
   <span class="meta" id="event-meta">events: 0</span>
   <span class="meta" id="orphan-meta">orphans: 0</span>
+  <span class="meta" id="audio-out-meta">tts chunks: 0</span>
 </header>
 <main>
   <section class="panel">
@@ -80,6 +82,7 @@
   const wsScheme = location.protocol === "https:" ? "wss:" : "ws:";
   const INGEST_URL = `${wsScheme}//${location.host}/ws/ingest`;
   const DISPLAY_URL = `${wsScheme}//${location.host}/ws/display`;
+  const AUDIO_OUT_URL = `${wsScheme}//${location.host}/ws/audio_out`;
 
   const ingestRows = document.getElementById("ingest-rows");
   const signalRows = document.getElementById("signal-rows");
@@ -91,10 +94,12 @@
   const capStatus = document.getElementById("cap-status");
   const camStatus = document.getElementById("cam-status");
   const dispStatus = document.getElementById("display-status");
+  const audioOutStatus = document.getElementById("audio-out-status");
   const chunkMeta = document.getElementById("chunk-meta");
   const frameMeta = document.getElementById("frame-meta");
   const eventMeta = document.getElementById("event-meta");
   const orphanMeta = document.getElementById("orphan-meta");
+  const audioOutMeta = document.getElementById("audio-out-meta");
   const camPreview = document.getElementById("cam-preview");
   const thumbs = document.getElementById("thumbs");
 
@@ -189,6 +194,102 @@
     };
   }
   connectDisplay();
+
+  // ---------------- Audio-out WS (synthesized TTS playback) ----------------
+  // Server pushes JSON envelopes:
+  //   { type: "audio_chunk", session_id, seq, pcm_bytes_b64, sample_rate, sample_format }
+  // We decode PCM16 mono → Float32, schedule each chunk on a private AudioContext.
+  let audioOutWs = null;
+  let playbackCtx = null;
+  let nextPlaybackTime = 0;
+  let audioOutChunkCount = 0;
+  let lastPlaybackTs = 0;
+
+  function ensurePlaybackCtx(sampleRate) {
+    if (playbackCtx && playbackCtx.sampleRate === sampleRate) return playbackCtx;
+    if (playbackCtx) { try { playbackCtx.close(); } catch (e) {} }
+    playbackCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate });
+    nextPlaybackTime = playbackCtx.currentTime;
+    return playbackCtx;
+  }
+
+  function base64ToBytes(b64) {
+    const bin = atob(b64);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+
+  function pcm16leToFloat32(bytes) {
+    // bytes is a Uint8Array of little-endian int16 samples
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const n = Math.floor(bytes.byteLength / 2);
+    const out = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const s = view.getInt16(i * 2, true);
+      out[i] = s / 0x8000;
+    }
+    return out;
+  }
+
+  function enqueuePcmChunk(b64, sampleRate, format) {
+    if (format !== "pcm_s16le") {
+      log(`audio_out: unsupported sample_format=${format}; skipping chunk`);
+      return;
+    }
+    const bytes = base64ToBytes(b64);
+    if (bytes.length === 0) return;  // NoopTtsAdapter yields b"" — nothing to play
+    const f32 = pcm16leToFloat32(bytes);
+    if (f32.length === 0) return;
+    const ctx = ensurePlaybackCtx(sampleRate);
+    const buffer = ctx.createBuffer(1, f32.length, sampleRate);
+    buffer.copyToChannel(f32, 0);
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    src.connect(ctx.destination);
+    const startAt = Math.max(nextPlaybackTime, ctx.currentTime);
+    src.start(startAt);
+    nextPlaybackTime = startAt + buffer.duration;
+    lastPlaybackTs = performance.now();
+    audioOutStatus.textContent = "audio out: playing";
+    audioOutStatus.className = "status ok";
+  }
+
+  function connectAudioOut() {
+    audioOutWs = new WebSocket(AUDIO_OUT_URL);
+    audioOutWs.onopen = () => {
+      audioOutStatus.textContent = "audio out: connected";
+      audioOutStatus.className = "status ok";
+      log("audio_out ws connected");
+    };
+    audioOutWs.onclose = () => {
+      audioOutStatus.textContent = "audio out: closed";
+      audioOutStatus.className = "status off";
+      log("audio_out ws closed; retrying in 2s");
+      setTimeout(connectAudioOut, 2000);
+    };
+    audioOutWs.onerror = () => log("audio_out ws error");
+    audioOutWs.onmessage = (msg) => {
+      try {
+        const parsed = JSON.parse(msg.data);
+        if (parsed.type !== "audio_chunk") return;
+        audioOutChunkCount++;
+        audioOutMeta.textContent = `tts chunks: ${audioOutChunkCount}`;
+        enqueuePcmChunk(parsed.pcm_bytes_b64, parsed.sample_rate, parsed.sample_format);
+      } catch (e) { log("bad audio_out msg: " + e); }
+    };
+  }
+  connectAudioOut();
+
+  // Drop status back to "connected" after a quiet period (no chunks for 1.5s).
+  setInterval(() => {
+    if (audioOutWs && audioOutWs.readyState === WebSocket.OPEN
+        && lastPlaybackTs > 0
+        && (performance.now() - lastPlaybackTs) > 1500
+        && audioOutStatus.textContent === "audio out: playing") {
+      audioOutStatus.textContent = "audio out: connected (idle)";
+    }
+  }, 500);
 
   // ---------------- Capture pipeline ----------------
   // AudioWorklet processor source — registered inline.
