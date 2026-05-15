@@ -466,6 +466,14 @@ class StreamingRealtimeOrchestrator:
                 ),
                 retention_policy_id="decision_trace_30d",
                 payload_ref=trace_uri,
+                # Finding 5: inline the two operator-facing fields so the
+                # display/audit consumer surfaces them without dereferencing
+                # decision_trace://. Both are derived deterministically from
+                # SpeakDecision; full trace remains at payload_ref.
+                payload_inline={
+                    "action_type": decision.action_type,
+                    "primary_reason_code": decision.primary_reason_code.value,
+                },
             )
             self._logger.log(policy_evt)
 

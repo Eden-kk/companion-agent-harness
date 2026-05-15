@@ -362,3 +362,44 @@ async def test_decision_trace_emitted_payload_hash_is_sha256_of_content(tmp_path
         assert dte_evt.payload_hash == expected_hash, (
             f"payload_hash mismatch: got {dte_evt.payload_hash!r}, expected {expected_hash!r}"
         )
+
+
+@pytest.mark.asyncio
+async def test_policy_decision_inlines_action_type_and_reason_code(tmp_path: Path) -> None:
+    """Finding 5: policy_decision Event envelope carries action_type and
+    primary_reason_code inline (alongside payload_ref) so display/audit
+    consumers don't need to dereference decision_trace://."""
+    logger, received = _make_logger()
+    await logger.start()
+    ingest = InputIngest(logger=logger, blob_dir=tmp_path / "blobs")
+    trace_dir = tmp_path / "traces"
+
+    await _run_one_decision("sid-inline", logger, received, ingest, trace_dir)
+
+    pd_events = [e for e in received if e.event_type == "policy_decision"]
+    assert pd_events, "No policy_decision events emitted"
+
+    store = DecisionTraceStore(trace_dir)
+    for evt in pd_events:
+        # Envelope carries inline payload.
+        assert evt.payload_inline is not None, (
+            "policy_decision.payload_inline is None; expected dict with "
+            "action_type + primary_reason_code"
+        )
+        assert "action_type" in evt.payload_inline, (
+            f"action_type missing from payload_inline: {evt.payload_inline!r}"
+        )
+        assert "primary_reason_code" in evt.payload_inline, (
+            f"primary_reason_code missing from payload_inline: {evt.payload_inline!r}"
+        )
+
+        # Inline values match the persisted DecisionTrace (deterministic source).
+        trace = store.read(evt.event_id)
+        assert evt.payload_inline["primary_reason_code"] == trace.primary_reason_code.value, (
+            f"inline reason_code {evt.payload_inline['primary_reason_code']!r} "
+            f"!= trace.primary_reason_code {trace.primary_reason_code.value!r}"
+        )
+
+        # payload_ref to the full trace is unchanged (audit completeness).
+        assert evt.payload_ref is not None
+        assert evt.payload_ref.startswith("decision_trace://")
