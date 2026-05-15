@@ -22,6 +22,7 @@ _BLOCKING_SOCIAL_MODES = frozenset({
 
 _BACKCHANNEL_THRESHOLD = 0.7
 _AUDIO_VISUAL_CONFLICT_THRESHOLD = 0.7
+_GROUNDING_CONFIDENCE_THRESHOLD = 0.5
 
 
 def decide(
@@ -89,7 +90,11 @@ def decide(
             max_duration_ms=None,
         )
 
-    # 6. EOU confirmed.  Respond only when the agent was addressed.
+    # 6. Deictic grounding below confidence threshold — refuse to invent.
+    if inputs.deictic_reference and inputs.grounding_confidence < _GROUNDING_CONFIDENCE_THRESHOLD:
+        return _silence(ReasonCode.VISUAL_LOW_CONFIDENCE, caused_by)
+
+    # 7. EOU confirmed.  Respond only when the agent was addressed.
     if inputs.user_addressed_agent:
         return SpeakDecision(
             action_type="full_response",
@@ -103,7 +108,7 @@ def decide(
             max_duration_ms=None,
         )
 
-    # 7. EOU confirmed but agent not explicitly addressed — silence wins ties.
+    # 8. EOU confirmed but agent not explicitly addressed — silence wins ties.
     return _silence(ReasonCode.NOT_ADDRESSED_TO_AGENT, caused_by)
 
 
