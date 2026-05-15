@@ -32,7 +32,7 @@ from typing import Protocol, runtime_checkable
 from companion_harness.event_logger import EventLogger
 from companion_harness.schemas import Event
 
-__all__ = ["SceneScorer", "GroundingModel", "FrameRef", "GroundingResult", "VisionSidecar"]
+__all__ = ["SceneScorer", "GroundingModel", "FrameRef", "GroundingResult", "VisionSidecar", "_NullSceneScorer"]
 
 _WINDOW_MS: int = 60_000  # 60-second ring-buffer window
 
@@ -46,6 +46,11 @@ class SceneScorer(Protocol):
     """
 
     def __call__(self, prev_frame: bytes, curr_frame: bytes) -> float: ...
+
+
+class _NullSceneScorer:
+    def __call__(self, prev_frame: bytes, curr_frame: bytes) -> float:
+        return 0.0  # UNAVAILABLE: #166 — real CLIP cosine scorer pending model wiring
 
 
 @runtime_checkable
@@ -113,6 +118,7 @@ class VisionSidecar:
         self._window_ms = window_ms
         self._buffer: deque[FrameRef] = deque()
         self._last_frame: bytes | None = None
+        self._last_scene_change_score: float = 0.0
         self._seq = 0
         # Live-loop pairing buffer: single most-recent frame, consumed by
         # StreamingRealtimeOrchestrator._bounded_frame_gen on the next audio
@@ -137,6 +143,7 @@ class VisionSidecar:
         if self._last_frame is not None:
             score = self._scene_scorer(self._last_frame, ref.frame_bytes)
         self._last_frame = ref.frame_bytes
+        self._last_scene_change_score = score
 
         self._buffer.append(ref)
         self._evict(ref.timestamp_mono_ms)
@@ -213,6 +220,10 @@ class VisionSidecar:
     def last_frame_event_id(self) -> str | None:
         """Event id of the most recently logged vision_frame, or None."""
         return self._last_frame_event_id
+
+    def last_scene_change_score(self) -> float:
+        """Most recently computed scene-change score, or 0.0 if no pair seen yet."""
+        return self._last_scene_change_score
 
     def on_privacy_mode_change(self, new_mode: str) -> None:
         """Update privacy mode; clear pending frame on transition to no_camera_memory."""

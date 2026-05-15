@@ -33,6 +33,7 @@ from typing import Any, Protocol
 
 from companion_harness.addressing_classifier import WakeWordAddressingClassifier
 from companion_harness.audio_output_controller import AudioOutputController
+from companion_harness.deictic_detector import DeicticDetector, _NullDeicticModel
 from companion_harness.backchannel_classifier import BackchannelClassifier
 from companion_harness.event_logger import EventLogger
 from companion_harness.foreground_model import ForegroundModel
@@ -45,6 +46,7 @@ from companion_harness.turn_detector_vad import VADDetector
 __all__ = [
     "LivePipeline",
     "build_live_pipeline",
+    "_make_live_policy_inputs_builder",
     "EnergyVADModel",
     "SilenceSmartTurnModel",
     "ZeroBackchannelModel",
@@ -261,6 +263,21 @@ def _live_policy_inputs_builder(
     )
 
 
+def _make_live_policy_inputs_builder(
+    vision_sidecar: Any = None,
+) -> Any:
+    """Return a (signal, signal_history) -> PolicyInputs builder closed over vision_sidecar."""
+    def _builder(signal: TurnSignal, signal_history: list[TurnSignal]) -> PolicyInputs:
+        inputs = _live_policy_inputs_builder(signal, signal_history)
+        inputs.scene_change_score = (
+            vision_sidecar.last_scene_change_score()
+            if vision_sidecar is not None
+            else 0.0  # UNAVAILABLE: #166 — real CLIP cosine scorer pending model wiring
+        )
+        return inputs
+    return _builder
+
+
 # ---------------------------------------------------------------------------
 # LivePipeline
 # ---------------------------------------------------------------------------
@@ -407,6 +424,11 @@ def build_live_pipeline(
     # mode too. The orchestrator applies the 3-tier rule (wake-word / speaker-
     # count placeholder / mechanical fallback) over the ASR transcript on EOU.
     addressing_classifier = WakeWordAddressingClassifier()
+    deictic_detector = DeicticDetector(
+        model=_NullDeicticModel(),
+        session_id=session_id,
+        logger=shielded_logger,  # type: ignore[arg-type]
+    )
 
     orch = StreamingRealtimeOrchestrator(
         session_id=session_id,
@@ -416,7 +438,7 @@ def build_live_pipeline(
         vad_detector=vad,
         smart_turn_detector=smart_turn,
         backchannel_classifier=backchannel,
-        policy_inputs_builder=_live_policy_inputs_builder,
+        policy_inputs_builder=_make_live_policy_inputs_builder(vision_sidecar),
         foreground_model=foreground,
         audio_output=audio_output,
         tts_adapter=tts_adapter,
@@ -425,6 +447,7 @@ def build_live_pipeline(
         asr_model=asr_model,
         vision_sidecar=vision_sidecar,
         addressing_classifier=addressing_classifier,
+        deictic_detector=deictic_detector,
     )
 
     return LivePipeline(

@@ -113,10 +113,10 @@ async def _null_sink(_event: Event) -> None:
 
 
 class _NullSceneScorer:
-    """Returns 0.0 — scene-change scoring deferred to a follow-up issue."""
+    """Returns 0.0 — real CLIP cosine scorer pending model selection."""
 
     def __call__(self, prev_frame: bytes, curr_frame: bytes) -> float:
-        return 0.0
+        return 0.0  # UNAVAILABLE: #166 — real CLIP cosine scorer pending model wiring
 
 
 class _NullGroundingModel:
