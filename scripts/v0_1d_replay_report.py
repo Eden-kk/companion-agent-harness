@@ -301,7 +301,7 @@ _GATES: list[dict] = [
             "Carried from v0.1a/b/c (measured ~170ms p50 on b200 audio-only path in PR #15). "
             "v0.1d wires Stage 3 policy branches — no changes to the audio path; the b200 "
             "measurement continues to hold. Re-measurement not required for a policy-layer milestone. "
-            "test_direct_question_latency is skipped in the torchless venv (no CUDA)."
+            "test_direct_question_latency is skipped on hosts without CUDA."
         ),
     },
     {
@@ -328,7 +328,7 @@ _GATES: list[dict] = [
             "NOT_MEASURED: requires a live-loop log. Carried from v0.1a/b/c (measured <30ms "
             "on barge_in_001 fixture over 30 trials; live-loop Task 7 confirmed the path). "
             "No Stage 3 changes affect the barge-in / AudioOutputController stop path. "
-            "test_barge_in is fixture-driven and passes in the torchless venv."
+            "test_barge_in is fixture-driven and passes on hosts without CUDA."
         ),
     },
     {
