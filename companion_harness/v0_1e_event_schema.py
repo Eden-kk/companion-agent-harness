@@ -57,7 +57,7 @@ class MemoryEventSchema:
     notes:               str
 
 
-MEMORY_EVENT_SCHEMAS: dict[str, MemoryEventSchema] = {
+EVENT_TYPE_SCHEMAS: dict[str, MemoryEventSchema] = {
     # per-content event: all three variable axes come from the MemoryItem
     "memory_write_candidate": MemoryEventSchema(
         payload_kind="memory_op",
