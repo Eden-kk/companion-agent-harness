@@ -102,6 +102,12 @@ class Event:
     subject_class:       Literal["self", "third_party", "mixed", "unknown"]
     sensitivity:         Literal["safe", "sensitive", "highly_sensitive"]
     retention_policy_id: str
+    # Optional inline payload for fields surfaced alongside the envelope so
+    # display/audit consumers don't need to dereference payload_ref. Used by
+    # policy_decision (action_type + primary_reason_code). Must contain only
+    # deterministic, non-sensitive fields — see Finding 5 in
+    # docs/manual-test-findings-2026-05-15.md.
+    payload_inline:      dict | None = None
 
 
 @dataclass

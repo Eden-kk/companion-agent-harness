@@ -151,7 +151,16 @@
     row.className = "row " + (orphan ? "orphan " : "") + (evt.event_type || "");
     const kind = document.createElement("div");
     kind.className = "kind";
-    kind.textContent = evt.event_type || "?";
+    let kindLabel = evt.event_type || "?";
+    // Finding 5: surface action_type + primary_reason_code on policy_decision
+    // rows directly from the inline payload, so operators don't need to fetch
+    // decision_trace://.
+    if (evt.event_type === "policy_decision" && evt.payload_inline) {
+      const at = evt.payload_inline.action_type;
+      const rc = evt.payload_inline.primary_reason_code;
+      if (at || rc) kindLabel += ` → ${at || "?"} / ${rc || "?"}`;
+    }
+    kind.textContent = kindLabel;
     const body = document.createElement("div");
     body.className = "body";
     const cb = (evt.caused_by || []).map((s) => s.slice(0, 12)).join(",") || "-";
