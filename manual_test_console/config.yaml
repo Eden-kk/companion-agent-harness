@@ -1,0 +1,31 @@
+# manual_test_console/config.yaml
+#
+# Manual-test runtime config. Tier B parameters only. See
+# docs/design-config-and-dashboard.md §1 for the tiering rules and
+# manual_test_console/config_schema.py for the canonical 12-key ALLOWLIST
+# (defaults, min/max/step, descriptions).
+#
+# Tier A values (spec-frozen, determinism-affecting) MUST NOT appear here.
+# Tier C values (startup-only, e.g. ASR model path, vision init) belong in
+# a separate startup config; the dashboard does NOT expose either.
+
+policy:
+  backchannel_threshold:           0.7   # speak_policy.py:28
+  audio_visual_conflict_threshold: 0.7   # speak_policy.py:29
+  grounding_confidence_threshold:  0.5   # speak_policy.py:30
+
+detectors:
+  vad:
+    speech_threshold: 0.5                # turn_detector_vad.py:26
+    silence_onset_ms: 300                # turn_detector_vad.py:27 — see design doc §11 OQ-2
+  smart_turn:
+    silence_onset_ms:      300           # turn_detector_smart.py:46
+    silence_rms_threshold: 100           # turn_detector_smart.py:47
+  backchannel:
+    emit_threshold: 0.3                  # backchannel_classifier.py:89
+
+orchestrator:
+  proposal_batch_window_ms: 80           # realtime_orchestrator.py:175
+  hard_cancel_after_ms:     120          # realtime_orchestrator.py:176 — capped at 180 (design doc §11 OQ-1)
+  p_speech_thresh:          0.5          # realtime_orchestrator.py:177
+  p_backchannel_thresh:     0.7          # realtime_orchestrator.py:178
