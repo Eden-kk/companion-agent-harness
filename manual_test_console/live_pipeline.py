@@ -42,6 +42,7 @@ from companion_harness.realtime_orchestrator import StreamingRealtimeOrchestrato
 from companion_harness.schemas import MemoryItem, PolicyInputs, ThinkerProposal, TurnSignal
 from companion_harness.turn_detector_smart import SmartTurnDetector
 from companion_harness.turn_detector_vad import VADDetector
+from companion_harness.urgency_scorer import UrgencyScorer, _NullUrgencyScorer
 from manual_test_console.config_schema import ALLOWLIST
 from manual_test_console.config_store import ConfigStore
 
@@ -248,6 +249,7 @@ def _make_live_policy_inputs_builder(
     is_playing_fn: Callable[[], bool] | None = None,
     vision_sidecar: Any = None,
     av_scorer: AudioVisualConflictScorer | None = None,
+    urgency_scorer: UrgencyScorer | None = None,
 ) -> Callable[[TurnSignal, list[TurnSignal]], PolicyInputs]:
     """Factory: return a builder closure with `assistant_speaking` bound to
     `is_playing_fn` (typically `AudioOutputController.is_playing`).
@@ -265,8 +267,13 @@ def _make_live_policy_inputs_builder(
     `av_scorer` (optional): the `AudioVisualConflictScorer` used to source
     `audio_visual_conflict_score`. Defaults to `_NullAudioVisualConflictScorer`
     (returns 0.0; UNAVAILABLE: #168).
+
+    `urgency_scorer` (optional): the `UrgencyScorer` used to source
+    `urgency_score`. Defaults to `_NullUrgencyScorer` (returns 0.0;
+    UNAVAILABLE: #171).
     """
     _av: AudioVisualConflictScorer = av_scorer if av_scorer is not None else _NullAudioVisualConflictScorer()
+    _urgency: UrgencyScorer = urgency_scorer if urgency_scorer is not None else _NullUrgencyScorer()
 
     def _builder(signal: TurnSignal, signal_history: list[TurnSignal]) -> PolicyInputs:
         """Build PolicyInputs from a TurnSignal + sorted history.
@@ -326,7 +333,7 @@ def _make_live_policy_inputs_builder(
             scene_change_score=scene_score,
             deictic_reference=False,
             user_addressed_agent=False,  # placeholder; AddressingClassifier overrides post-ASR.
-            urgency_score=0.0,
+            urgency_score=_urgency.score("", None),  # UNAVAILABLE: #171
             proactivity_budget_remaining={},
             privacy_mode="normal",
             current_task_mode="normal",
@@ -349,6 +356,7 @@ def _make_live_policy_inputs_builder(
 def _make_policy_inputs_builder(
     vision_sidecar: Any,
     av_scorer: AudioVisualConflictScorer | None = None,
+    urgency_scorer: UrgencyScorer | None = None,
 ) -> Callable[[TurnSignal, list[TurnSignal]], PolicyInputs]:
     """Backward-compatible factory: same as `_make_live_policy_inputs_builder`
     but without an `is_playing_fn` binding (assistant_speaking always False).
@@ -357,7 +365,10 @@ def _make_policy_inputs_builder(
     without wiring an AudioOutputController.
     """
     return _make_live_policy_inputs_builder(
-        is_playing_fn=None, vision_sidecar=vision_sidecar, av_scorer=av_scorer
+        is_playing_fn=None,
+        vision_sidecar=vision_sidecar,
+        av_scorer=av_scorer,
+        urgency_scorer=urgency_scorer,
     )
 
 
@@ -538,6 +549,7 @@ def build_live_pipeline(
     policy_inputs_builder = _make_live_policy_inputs_builder(
         is_playing_fn=lambda: audio_output.is_playing,
         vision_sidecar=vision_sidecar,
+        urgency_scorer=_NullUrgencyScorer(),
     )
 
     session_state_store: Any = EmptyMemoryStore()
