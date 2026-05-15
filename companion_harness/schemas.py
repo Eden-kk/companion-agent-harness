@@ -103,6 +103,8 @@ class PolicyInputs:
     audio_visual_conflict_score: float = 0.0
     grounding_confidence:        float = 1.0
     deictic_ambiguous:           bool  = False
+    quiet_mode_active:           bool  = False
+    aesthetic_novelty_score:     float = 0.0
 
 
 @dataclass
