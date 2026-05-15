@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <title>manual-test console — Phase 2</title>
 <style>
-  :root { --bg:#0e1116; --fg:#cdd6e0; --row:#161a22; --accent:#5fb3ff; --warn:#ffa657; --err:#f97583; --ok:#56d364; }
+  :root { --bg:#0e1116; --fg:#cdd6e0; --row:#161a22; --accent:#5fb3ff; --warn:#ffa657; --err:#f97583; --ok:#56d364; --muted:#7c8694; }
   html, body { background: var(--bg); color: var(--fg); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; margin: 0; }
   body { display: grid; grid-template-rows: auto 1fr; height: 100vh; }
   header { padding: 8px 12px; background: #11151c; border-bottom: 1px solid #1f2530; display: flex; gap: 12px; align-items: center; }
@@ -12,11 +12,13 @@
   header .meta { font-size: 11px; opacity: 0.75; }
   header button { background: #1f2530; color: var(--fg); border: 1px solid #2c3340; padding: 4px 10px; cursor: pointer; border-radius: 3px; font: inherit; font-size: 12px; }
   header button:disabled { opacity: 0.5; cursor: not-allowed; }
+  header .spacer { flex: 1; }
   header .status { padding: 2px 8px; border-radius: 3px; font-size: 11px; }
   .status.ok { background: rgba(86, 211, 100, 0.15); color: var(--ok); }
   .status.off { background: rgba(249, 117, 131, 0.15); color: var(--err); }
   .status.warn { background: rgba(255, 166, 87, 0.15); color: var(--warn); }
-  main { display: grid; grid-template-columns: 1fr 1fr; gap: 0; overflow: hidden; }
+  main { display: grid; grid-template-columns: 1fr 1fr 380px; gap: 0; overflow: hidden; }
+  main.tuning-hidden { grid-template-columns: 1fr 1fr; }
   .panel { display: flex; flex-direction: column; overflow: hidden; border-right: 1px solid #1f2530; }
   .panel:last-child { border-right: none; }
   .panel h2 { margin: 0; padding: 6px 12px; font-size: 12px; background: #11151c; border-bottom: 1px solid #1f2530; color: var(--accent); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
@@ -27,6 +29,9 @@
   .row.vad_turn_signal .kind { color: #ffd070; }
   .row.policy_decision .kind { color: var(--ok); }
   .row.log_drop_or_degrade .kind, .row.orphan .kind { color: var(--err); }
+  .row.config_change .kind { color: var(--warn); }
+  .row.operator_action .kind { color: var(--warn); }
+  .row.highlighted { background: rgba(95, 179, 255, 0.15); transition: background 0.4s ease; }
   .row .body { color: var(--fg); opacity: 0.85; word-break: break-all; }
   .row .body small { opacity: 0.6; }
   .log { padding: 6px 12px; font-size: 11px; background: #11151c; border-top: 1px solid #1f2530; max-height: 80px; overflow-y: auto; }
@@ -35,6 +40,66 @@
   .video-area video { width: 160px; height: 90px; background: #000; border: 1px solid #2c3340; }
   .video-area .thumbs { display: flex; gap: 4px; overflow-x: auto; flex: 1; }
   .video-area .thumbs img { width: 60px; height: 34px; object-fit: cover; border: 1px solid #2c3340; }
+
+  /* ---- Tuning panel (Phase 1 Task F) ---- */
+  #tuning-panel { display: flex; flex-direction: column; overflow: hidden; background: var(--bg); border-left: 1px solid #1f2530; }
+  #tuning-panel.hidden { display: none; }
+  #tuning-panel h2 { display: flex; align-items: center; gap: 6px; }
+  #tuning-panel h2 .title { flex: 1; }
+  #tuning-panel h2 button { background: #1f2530; color: var(--fg); border: 1px solid #2c3340; padding: 1px 6px; cursor: pointer; border-radius: 3px; font: inherit; font-size: 10px; text-transform: none; letter-spacing: normal; }
+  #tuning-body { overflow-y: auto; flex: 1; padding: 8px 10px 4px; }
+  .tuning-error { color: var(--err); padding: 8px 12px; font-size: 11px; opacity: 0.85; }
+  .tuning-section { margin-bottom: 12px; border: 1px solid #1f2530; border-radius: 4px; background: #11151c; }
+  .tuning-section-header { display: flex; align-items: center; padding: 5px 8px; background: #161a22; border-bottom: 1px solid #1f2530; gap: 6px; cursor: pointer; user-select: none; }
+  .tuning-section-header .caret { font-size: 9px; color: var(--muted); width: 9px; }
+  .tuning-section-header .name { flex: 1; font-size: 11px; font-weight: 600; color: var(--accent); text-transform: uppercase; letter-spacing: 0.5px; }
+  .tuning-section-header .section-reset { background: transparent; color: var(--muted); border: 1px solid #2c3340; padding: 1px 5px; cursor: pointer; border-radius: 2px; font: inherit; font-size: 10px; }
+  .tuning-section-header .section-reset:hover { color: var(--fg); border-color: var(--accent); }
+  .tuning-section-body { padding: 6px 8px; }
+  .tuning-section.collapsed .tuning-section-body { display: none; }
+  .tuning-section.collapsed .caret::before { content: "\25B6"; }
+  .tuning-section:not(.collapsed) .caret::before { content: "\25BC"; }
+  .slider-row { padding: 7px 6px; border-radius: 3px; margin-bottom: 5px; background: var(--row); transition: background 0.25s ease; }
+  .slider-row.green-flash { background: rgba(86, 211, 100, 0.25); }
+  .slider-row.red-flash { background: rgba(249, 117, 131, 0.35); }
+  .slider-row .slider-head { display: flex; align-items: baseline; gap: 6px; font-size: 11.5px; }
+  .slider-row .slider-head .label { flex: 1; color: var(--fg); }
+  .slider-row .slider-head .modified-badge { color: var(--accent); font-size: 9.5px; opacity: 0.85; }
+  .slider-row .slider-head .key-reset { background: transparent; color: var(--muted); border: 1px solid #2c3340; padding: 0 5px; cursor: pointer; border-radius: 2px; font: inherit; font-size: 10px; }
+  .slider-row .slider-head .key-reset.enabled { color: var(--accent); border-color: var(--accent); }
+  .slider-row .slider-head .key-reset:disabled { opacity: 0.4; cursor: not-allowed; }
+  .slider-row .slider-input-line { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+  .slider-row .readout { min-width: 52px; font-size: 11.5px; color: var(--fg); font-variant-numeric: tabular-nums; }
+  .slider-row.modified .readout { font-weight: 700; color: var(--accent); }
+  .slider-row.pending .readout::after { content: " \23F3"; opacity: 0.75; }
+  .slider-row.pending input[type=range]::-webkit-slider-thumb { animation: pulse 0.8s ease-in-out infinite; }
+  .slider-row.pending input[type=range]::-moz-range-thumb { animation: pulse 0.8s ease-in-out infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+  .slider-row input[type=range] { flex: 1; accent-color: var(--muted); height: 4px; }
+  .slider-row.modified input[type=range] { accent-color: var(--accent); }
+  .slider-row .meta { font-size: 10px; color: var(--muted); margin-top: 3px; }
+  .slider-row .desc { font-size: 10.5px; color: var(--fg); opacity: 0.7; margin-top: 2px; font-style: italic; }
+  .tuning-top-bar { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; }
+  .tuning-top-bar .reset-all { background: #1f2530; color: var(--fg); border: 1px solid #2c3340; padding: 3px 8px; cursor: pointer; border-radius: 3px; font: inherit; font-size: 11px; }
+  .tuning-top-bar .reset-all:hover { border-color: var(--warn); color: var(--warn); }
+  .tuning-top-bar .hint { font-size: 10px; color: var(--muted); flex: 1; text-align: right; }
+  .audit-tail { border-top: 1px solid #1f2530; background: #11151c; padding: 8px 12px; font-size: 10.5px; flex-shrink: 0; }
+  .audit-tail .audit-head { display: flex; align-items: center; gap: 6px; color: var(--accent); text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; font-size: 10.5px; margin-bottom: 4px; }
+  .audit-tail .audit-head .label { flex: 1; }
+  .audit-tail .audit-head .view-full { background: transparent; color: var(--muted); border: none; padding: 0; cursor: pointer; font: inherit; font-size: 10px; text-decoration: underline; }
+  .audit-tail .audit-rows { display: flex; flex-direction: column; gap: 1px; }
+  .audit-tail .audit-row { cursor: pointer; padding: 2px 0; color: var(--fg); opacity: 0.85; display: grid; grid-template-columns: 60px 1fr auto; gap: 6px; }
+  .audit-tail .audit-row:hover { opacity: 1; color: var(--accent); }
+  .audit-tail .audit-row .ts { color: var(--muted); }
+  .audit-tail .audit-row .change { font-variant-numeric: tabular-nums; }
+  .audit-tail .empty { color: var(--muted); font-style: italic; opacity: 0.6; }
+  .toast-area { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); display: flex; flex-direction: column; gap: 4px; z-index: 1000; }
+  .toast { background: #2b1f23; color: var(--err); border: 1px solid var(--err); padding: 6px 12px; border-radius: 4px; font-size: 11.5px; opacity: 0.95; }
+  .show-tuning { display: none; }
+  @media (max-width: 1024px) {
+    main { grid-template-columns: 1fr 1fr; }
+    #tuning-panel { position: fixed; right: 0; top: 38px; bottom: 0; width: min(420px, 92vw); z-index: 999; border-left: 1px solid #1f2530; box-shadow: -4px 0 18px rgba(0,0,0,0.55); }
+  }
 </style>
 </head>
 <body>
@@ -54,8 +119,10 @@
   <span class="meta" id="event-meta">events: 0</span>
   <span class="meta" id="orphan-meta">orphans: 0</span>
   <span class="meta" id="audio-out-meta">tts chunks: 0</span>
+  <span class="spacer"></span>
+  <button id="btn-show-tuning" class="show-tuning" title="Show threshold-tuning panel">&#9881; Tuning</button>
 </header>
-<main>
+<main id="main-grid">
   <section class="panel">
     <h2>Ingested input Events</h2>
     <div class="rows" id="ingest-rows"></div>
@@ -69,7 +136,24 @@
     <div class="rows" id="signal-rows"></div>
     <div class="log" id="log"></div>
   </section>
+  <aside class="panel" id="tuning-panel">
+    <h2><span class="title">Threshold tuning</span><button id="btn-hide-tuning" title="Hide tuning panel">&laquo; hide</button></h2>
+    <div id="tuning-body">
+      <div class="tuning-top-bar">
+        <button class="reset-all" id="btn-reset-all" title="Reset every Tier-B key to its default">[reset all]</button>
+        <span class="hint" id="tuning-loading">loading from /config...</span>
+      </div>
+      <div id="tuning-sections"></div>
+    </div>
+    <div class="audit-tail">
+      <div class="audit-head">
+        <span class="label">Recent config changes</span>
+      </div>
+      <div class="audit-rows" id="audit-rows"><div class="empty">no changes yet</div></div>
+    </div>
+  </aside>
 </main>
+<div class="toast-area" id="toast-area"></div>
 
 <script>
 (() => {
@@ -115,6 +199,7 @@
   let videoStream = null;
   let videoTimer = null;
   const knownEventIds = new Set();
+  const eventRowsById = new Map();
   // Modality buckets to render in the right column.
   const SIGNAL_TYPES = new Set([
     "vad_frame", "vad_turn_signal",
@@ -135,10 +220,17 @@
     return (mono_ms / 1000).toFixed(3) + "s";
   }
 
+  // Subscribers wired by other modules (e.g. tuning panel audit-tail).
+  const eventSubscribers = [];
+  function subscribeEvents(fn) { eventSubscribers.push(fn); }
+
   function renderEvent(evt) {
     eventCount++;
     eventMeta.textContent = `events: ${eventCount}`;
     knownEventIds.add(evt.event_id);
+    for (const fn of eventSubscribers) {
+      try { fn(evt); } catch (e) { log("event subscriber error: " + e); }
+    }
 
     // Orphan check: caused_by entries must already be known (best-effort live view).
     let orphan = false;
@@ -175,8 +267,14 @@
     const target = isIngest ? ingestRows : (SIGNAL_TYPES.has(evt.event_type) || evt.payload_kind === "signal") ? signalRows : ingestRows;
     target.appendChild(row);
     row.prepend(kind);
+    row.dataset.eventId = evt.event_id || "";
+    eventRowsById.set(evt.event_id, row);
     // Cap rendered rows.
-    while (target.children.length > 500) target.removeChild(target.firstChild);
+    while (target.children.length > 500) {
+      const stale = target.firstChild;
+      if (stale && stale.dataset && stale.dataset.eventId) eventRowsById.delete(stale.dataset.eventId);
+      target.removeChild(stale);
+    }
     target.scrollTop = target.scrollHeight;
   }
 
@@ -529,6 +627,447 @@
   btnStopCam.addEventListener("click", stopVideoCapture);
 
   log("page loaded — click \"Start mic\" and/or \"Start camera\" to begin streaming.");
+
+  // ---------------- Tuning panel (Phase 1 Task F) ----------------
+  // Threshold-tuning UI per docs/design-config-and-dashboard.md §4.
+  // 12 sliders rendered from GET /config (schema + values). Drag updates the
+  // readout locally; release POSTs /config/patch. Section + global reset
+  // buttons call /config/reset. The audit tail at the bottom shows the last
+  // 5 config_change events from /ws/display.
+  //
+  // The endpoints (PR #151, Task E) may not yet exist when this code runs.
+  // The page renders the panel chrome, surfaces a friendly error if the
+  // initial GET /config fails, and the audit tail still works once events
+  // start flowing.
+  const tuningPanel = document.getElementById("tuning-panel");
+  const tuningBody = document.getElementById("tuning-body");
+  const tuningSectionsEl = document.getElementById("tuning-sections");
+  const tuningLoading = document.getElementById("tuning-loading");
+  const btnHideTuning = document.getElementById("btn-hide-tuning");
+  const btnShowTuning = document.getElementById("btn-show-tuning");
+  const btnResetAll = document.getElementById("btn-reset-all");
+  const mainGrid = document.getElementById("main-grid");
+  const auditRowsEl = document.getElementById("audit-rows");
+  const toastArea = document.getElementById("toast-area");
+
+  // Section layout per design §4(3): order, default-expanded, key list.
+  const TUNING_SECTIONS = [
+    {
+      id: "policy",
+      name: "Policy",
+      defaultExpanded: true,
+      keys: [
+        "policy.backchannel_threshold",
+        "policy.audio_visual_conflict_threshold",
+        "policy.grounding_confidence_threshold",
+      ],
+    },
+    {
+      id: "detectors",
+      name: "Detectors",
+      defaultExpanded: true,
+      keys: [
+        "detectors.vad.speech_threshold",
+        "detectors.vad.silence_onset_ms",
+        "detectors.smart_turn.silence_onset_ms",
+        "detectors.smart_turn.silence_rms_threshold",
+        "detectors.backchannel.emit_threshold",
+      ],
+    },
+    {
+      id: "orchestrator",
+      name: "Orchestrator",
+      defaultExpanded: false,
+      keys: [
+        "orchestrator.proposal_batch_window_ms",
+        "orchestrator.hard_cancel_after_ms",
+        "orchestrator.p_speech_thresh",
+        "orchestrator.p_backchannel_thresh",
+      ],
+    },
+  ];
+
+  // Human-readable labels per design doc §4(2) example. We derive from the
+  // dotted key rather than hardcoding to keep this list in lockstep with the
+  // server-side ALLOWLIST.
+  const LABEL_OVERRIDES = {
+    "policy.backchannel_threshold": "Backchannel threshold",
+    "policy.audio_visual_conflict_threshold": "Audio-visual conflict threshold",
+    "policy.grounding_confidence_threshold": "Grounding confidence threshold",
+    "detectors.vad.speech_threshold": "VAD speech threshold",
+    "detectors.vad.silence_onset_ms": "VAD silence onset (ms)",
+    "detectors.smart_turn.silence_onset_ms": "Smart-turn silence onset (ms)",
+    "detectors.smart_turn.silence_rms_threshold": "Smart-turn silence RMS threshold",
+    "detectors.backchannel.emit_threshold": "Backchannel emit threshold",
+    "orchestrator.proposal_batch_window_ms": "Proposal batch window (ms)",
+    "orchestrator.hard_cancel_after_ms": "Hard cancel after (ms)",
+    "orchestrator.p_speech_thresh": "p_speech threshold",
+    "orchestrator.p_backchannel_thresh": "p_backchannel threshold",
+  };
+
+  function labelFor(key) { return LABEL_OVERRIDES[key] || key; }
+
+  // Per-key DOM + state registry. Populated by renderTuning().
+  const sliderState = new Map();
+
+  function fmtNum(v, step) {
+    if (typeof v !== "number") return String(v);
+    // Use the step to pick decimals so we don't show "0.7000000001" floats.
+    const isInt = Number.isInteger(step) && Number.isInteger(v);
+    if (isInt) return v.toFixed(0);
+    const decimals = (String(step).split(".")[1] || "").length || 2;
+    return v.toFixed(decimals);
+  }
+
+  function showToast(msg) {
+    const t = document.createElement("div");
+    t.className = "toast";
+    t.textContent = msg;
+    toastArea.appendChild(t);
+    setTimeout(() => { try { toastArea.removeChild(t); } catch (e) {} }, 3000);
+  }
+
+  function setHidden(hidden) {
+    if (hidden) {
+      tuningPanel.classList.add("hidden");
+      mainGrid.classList.add("tuning-hidden");
+      btnShowTuning.style.display = "inline-block";
+    } else {
+      tuningPanel.classList.remove("hidden");
+      mainGrid.classList.remove("tuning-hidden");
+      btnShowTuning.style.display = "none";
+    }
+  }
+
+  btnHideTuning.addEventListener("click", () => setHidden(true));
+  btnShowTuning.addEventListener("click", () => setHidden(false));
+  document.addEventListener("keydown", (e) => {
+    // Esc closes the panel only on narrow screens (per design §4(1)).
+    if (e.key === "Escape" && window.matchMedia("(max-width: 1024px)").matches) {
+      setHidden(true);
+    }
+  });
+
+  function applyVisualState(key) {
+    const s = sliderState.get(key);
+    if (!s) return;
+    const isDefault = (s.committedValue === s.entry.default);
+    s.row.classList.toggle("modified", !isDefault);
+    s.modifiedBadge.style.display = isDefault ? "none" : "inline";
+    s.resetBtn.disabled = isDefault;
+    s.resetBtn.classList.toggle("enabled", !isDefault);
+  }
+
+  function flashRow(row, kind) {
+    row.classList.add(kind);
+    setTimeout(() => row.classList.remove(kind), kind === "green-flash" ? 220 : 420);
+  }
+
+  function renderSlider(section, key, entry, currentValue) {
+    const row = document.createElement("div");
+    row.className = "slider-row";
+
+    const head = document.createElement("div");
+    head.className = "slider-head";
+    const label = document.createElement("span");
+    label.className = "label";
+    label.textContent = labelFor(key);
+    const modifiedBadge = document.createElement("span");
+    modifiedBadge.className = "modified-badge";
+    modifiedBadge.textContent = "(modified)";
+    modifiedBadge.style.display = "none";
+    const resetBtn = document.createElement("button");
+    resetBtn.className = "key-reset";
+    resetBtn.title = `Reset ${key} to default (${entry.default})`;
+    resetBtn.textContent = "↺";
+    head.appendChild(label);
+    head.appendChild(modifiedBadge);
+    head.appendChild(resetBtn);
+    row.appendChild(head);
+
+    const inputLine = document.createElement("div");
+    inputLine.className = "slider-input-line";
+    const readout = document.createElement("span");
+    readout.className = "readout";
+    readout.textContent = fmtNum(currentValue, entry.step);
+    const slider = document.createElement("input");
+    slider.type = "range";
+    slider.min = String(entry.min);
+    slider.max = String(entry.max);
+    slider.step = String(entry.step);
+    slider.value = String(currentValue);
+    inputLine.appendChild(readout);
+    inputLine.appendChild(slider);
+    row.appendChild(inputLine);
+
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    meta.textContent =
+      `default ${fmtNum(entry.default, entry.step)}  •  ` +
+      `min ${fmtNum(entry.min, entry.step)}  •  ` +
+      `max ${fmtNum(entry.max, entry.step)}  •  ` +
+      `step ${entry.step}`;
+    row.appendChild(meta);
+
+    const desc = document.createElement("div");
+    desc.className = "desc";
+    desc.textContent = entry.description || "";
+    row.appendChild(desc);
+
+    const state = {
+      key, entry, row, slider, readout, resetBtn, modifiedBadge,
+      committedValue: currentValue,
+      lastKnownGood: currentValue,
+      pending: false,
+    };
+    sliderState.set(key, state);
+
+    function parseValue(raw) {
+      if (entry.value_type === "int") return parseInt(raw, 10);
+      return parseFloat(raw);
+    }
+
+    slider.addEventListener("input", () => {
+      // Drag: local-only update of the readout. No HTTP.
+      readout.textContent = fmtNum(parseValue(slider.value), entry.step);
+    });
+    slider.addEventListener("change", () => {
+      // Release: commit to server.
+      const newValue = parseValue(slider.value);
+      if (newValue === state.committedValue) return;
+      patchKey(key, newValue);
+    });
+    resetBtn.addEventListener("click", () => {
+      if (state.committedValue === entry.default) return;
+      patchKey(key, entry.default);
+    });
+
+    applyVisualState(key);
+    return row;
+  }
+
+  function renderSection(section, schema, values) {
+    const wrap = document.createElement("div");
+    wrap.className = "tuning-section" + (section.defaultExpanded ? "" : " collapsed");
+
+    const header = document.createElement("div");
+    header.className = "tuning-section-header";
+    const caret = document.createElement("span");
+    caret.className = "caret";
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = section.name;
+    const resetBtn = document.createElement("button");
+    resetBtn.className = "section-reset";
+    resetBtn.textContent = "[reset]";
+    resetBtn.title = `Reset all ${section.name} keys to defaults`;
+    header.appendChild(caret);
+    header.appendChild(name);
+    header.appendChild(resetBtn);
+    wrap.appendChild(header);
+
+    const body = document.createElement("div");
+    body.className = "tuning-section-body";
+    for (const key of section.keys) {
+      const entry = schema[key];
+      if (!entry) {
+        const missing = document.createElement("div");
+        missing.className = "slider-row";
+        missing.textContent = `(${key} not in /config schema)`;
+        body.appendChild(missing);
+        continue;
+      }
+      body.appendChild(renderSlider(section, key, entry, values[key]));
+    }
+    wrap.appendChild(body);
+
+    header.addEventListener("click", (e) => {
+      // Don't toggle when the section-reset button itself was clicked.
+      if (e.target === resetBtn) return;
+      wrap.classList.toggle("collapsed");
+    });
+    resetBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      resetSection(section.id);
+    });
+
+    return wrap;
+  }
+
+  function renderTuning(schema, values) {
+    tuningSectionsEl.innerHTML = "";
+    for (const section of TUNING_SECTIONS) {
+      tuningSectionsEl.appendChild(renderSection(section, schema, values));
+    }
+  }
+
+  async function loadConfig() {
+    try {
+      const r = await fetch("/config");
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const data = await r.json();
+      if (!data || !data.schema || !data.values) {
+        throw new Error("invalid /config response shape");
+      }
+      tuningLoading.textContent = "";
+      renderTuning(data.schema, data.values);
+      log(`config: loaded ${Object.keys(data.schema).length} Tier-B entries`);
+    } catch (e) {
+      tuningLoading.textContent = "";
+      tuningSectionsEl.innerHTML =
+        `<div class="tuning-error">/config endpoint not reachable (${e.message}). ` +
+        `The panel will activate once the runtime config server (PR #151) is up.</div>`;
+      log("config: load failed: " + e.message);
+    }
+  }
+
+  function setPending(state, pending) {
+    state.pending = pending;
+    state.row.classList.toggle("pending", pending);
+    if (!pending) {
+      state.readout.textContent = fmtNum(state.committedValue, state.entry.step);
+    }
+  }
+
+  async function patchKey(key, value) {
+    const state = sliderState.get(key);
+    if (!state) return;
+    setPending(state, true);
+    try {
+      const r = await fetch("/config/patch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key, value }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        const errMsg = (data && data.error) || `HTTP ${r.status}`;
+        throw new Error(errMsg);
+      }
+      state.committedValue = (typeof data.new_value === "number") ? data.new_value : value;
+      state.lastKnownGood = state.committedValue;
+      state.slider.value = String(state.committedValue);
+      setPending(state, false);
+      applyVisualState(key);
+      flashRow(state.row, "green-flash");
+    } catch (e) {
+      // Revert to last-known-good per design §4(4).
+      state.slider.value = String(state.lastKnownGood);
+      state.committedValue = state.lastKnownGood;
+      setPending(state, false);
+      applyVisualState(key);
+      flashRow(state.row, "red-flash");
+      showToast(`patch ${key} failed: ${e.message}`);
+      log(`config: patch ${key} failed: ${e.message}`);
+    }
+  }
+
+  async function resetSection(sectionId) {
+    try {
+      const r = await fetch("/config/reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ section: sectionId }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error((data && data.error) || `HTTP ${r.status}`);
+      applyResetResults(data.changes || []);
+      log(`config: section ${sectionId} reset (${(data.changes || []).length} keys)`);
+    } catch (e) {
+      showToast(`reset section ${sectionId} failed: ${e.message}`);
+      log(`config: reset section ${sectionId} failed: ${e.message}`);
+    }
+  }
+
+  async function resetAll() {
+    try {
+      const r = await fetch("/config/reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error((data && data.error) || `HTTP ${r.status}`);
+      applyResetResults(data.changes || []);
+      log(`config: reset all (${(data.changes || []).length} keys changed)`);
+    } catch (e) {
+      showToast(`reset all failed: ${e.message}`);
+      log(`config: reset all failed: ${e.message}`);
+    }
+  }
+
+  function applyResetResults(changes) {
+    // Server returns one entry per actually-changed key. Apply each to local
+    // state so the slider snaps to the new (default) value and badges clear.
+    for (const change of changes) {
+      const state = sliderState.get(change.key);
+      if (!state) continue;
+      state.committedValue = change.new_value;
+      state.lastKnownGood = change.new_value;
+      state.slider.value = String(change.new_value);
+      state.readout.textContent = fmtNum(change.new_value, state.entry.step);
+      applyVisualState(change.key);
+      flashRow(state.row, "green-flash");
+    }
+  }
+
+  btnResetAll.addEventListener("click", resetAll);
+
+  // Audit tail: last 5 config_change events from /ws/display.
+  const auditEvents = []; // newest last
+
+  function renderAuditTail() {
+    auditRowsEl.innerHTML = "";
+    if (auditEvents.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = "no changes yet";
+      auditRowsEl.appendChild(empty);
+      return;
+    }
+    // Show newest first (last 5).
+    const recent = auditEvents.slice(-5).reverse();
+    for (const evt of recent) {
+      const p = evt.payload_inline || {};
+      const row = document.createElement("div");
+      row.className = "audit-row";
+      row.title = `event_id=${evt.event_id}`;
+      const ts = document.createElement("span");
+      ts.className = "ts";
+      ts.textContent = new Date(evt.timestamp_wall || Date.now()).toLocaleTimeString();
+      const change = document.createElement("span");
+      change.className = "name";
+      change.textContent = labelFor(p.key || "?");
+      const arrow = document.createElement("span");
+      arrow.className = "change";
+      const state = sliderState.get(p.key);
+      const step = state ? state.entry.step : 1;
+      const fromV = (typeof p.previous_value === "number") ? fmtNum(p.previous_value, step) : String(p.previous_value);
+      const toV = (typeof p.new_value === "number") ? fmtNum(p.new_value, step) : String(p.new_value);
+      arrow.textContent = `${fromV} → ${toV}`;
+      row.appendChild(ts);
+      row.appendChild(change);
+      row.appendChild(arrow);
+      row.addEventListener("click", () => {
+        // Scroll/highlight the full event row in the signal lane.
+        const target = eventRowsById.get(evt.event_id);
+        if (!target) return;
+        target.scrollIntoView({ behavior: "smooth", block: "center" });
+        target.classList.add("highlighted");
+        setTimeout(() => target.classList.remove("highlighted"), 1500);
+      });
+      auditRowsEl.appendChild(row);
+    }
+  }
+
+  subscribeEvents((evt) => {
+    if (evt.event_type !== "config_change") return;
+    auditEvents.push(evt);
+    while (auditEvents.length > 200) auditEvents.shift();
+    renderAuditTail();
+  });
+
+  loadConfig();
 })();
 </script>
 </body>
