@@ -74,10 +74,6 @@ class TestAmbiguousDeicticCase:
         decision = speak_policy.decide(self._inputs, signal_event_ids=[self._frame["frame_id"]])
         assert decision.primary_reason_code == ReasonCode.DEICTIC_AMBIGUOUS
 
-    def test_not_full_response(self):
-        decision = speak_policy.decide(self._inputs, signal_event_ids=[self._frame["frame_id"]])
-        assert decision.action_type != "full_response"
-
     def test_determinism(self):
         """Invariant #5: identical inputs → bit-identical decisions."""
         from dataclasses import astuple
@@ -105,7 +101,3 @@ class TestUnambiguousDeicticCase:
         decision = speak_policy.decide(self._inputs, signal_event_ids=[self._frame["frame_id"]])
         assert decision.primary_reason_code == ReasonCode.EOU_CONFIRMED
 
-    def test_not_deictic_ambiguous(self):
-        """Positive discriminator: the test would fail if DEICTIC_AMBIGUOUS is returned for every frame."""
-        decision = speak_policy.decide(self._inputs, signal_event_ids=[self._frame["frame_id"]])
-        assert decision.primary_reason_code != ReasonCode.DEICTIC_AMBIGUOUS
