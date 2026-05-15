@@ -1,0 +1,46 @@
+{
+  "case_id": "eou_invariant_under_mode_001",
+  "stage": 3,
+  "scenario": "eou_invariant_under_mode",
+  "modalities": ["audio"],
+  "fixture_ref": "companion_harness/fixtures/eou_invariant_under_mode_001/",
+  "sensitivity": "safe_eval_fixture",
+  "expected_events": [
+    "user_speech_start",
+    "eou_decision",
+    "policy_decision"
+  ],
+  "expected_metrics": {
+    "eou_mode_invariance_rate": "= 100% on fixture set (identical EOU decisions across all three modes)"
+  },
+  "consent_class": "synthetic_eval",
+  "description": "The same audio pattern (user utterance followed by silence) is replayed in three task modes: normal, cooking, and crisis_emergency. The EOU decision must be identical across all three modes — the alert_threshold may differ per mode, but the EOU policy is mode-invariant (per spec Part 6 Stage 3: 'A crisis mode lowers the alert threshold. It does NOT lower the EOU threshold; cutting the user off is not a crisis response.'). This tests the critical separation between EOU thresholds and speak-policy thresholds.",
+  "fixture_conventions": {
+    "skeleton_note": "Per-frame signal values are placeholders. Finalize at Stage 3 activation when the EOU policy config and per-mode speak-policy configs are specified.",
+    "sub_case": "'normal', 'cooking', or 'crisis_emergency' — three replicas of the same audio pattern.",
+    "p_done": "Scripted SmartTurnModel output. Identical values across all three sub_cases (same audio pattern).",
+    "p_continue": "Scripted SmartTurnModel output. Identical values across all three sub_cases.",
+    "task_mode": "One of {normal, cooking, crisis_emergency}. Differs per sub_case; EOU result must not differ.",
+    "eou_fires_at": "Placeholder frame — identical across all three sub_cases.",
+    "alert_threshold": "May differ by mode (cooking/crisis=low, normal=medium) — but does not affect the EOU decision.",
+    "expected_action_class": "full_response in all three sub_cases (EOU confirmed; turn handed off).",
+    "expected_reason_code": "EOU_CONFIRMED in all three sub_cases.",
+    "invariance_assertion": "Task asserts EOU decision (fires_at frame, p_done/p_continue threshold, action_class) is bit-identical across all three sub_cases.",
+    "frame_duration_ms": "32 — to be confirmed at Stage 3 activation.",
+    "expected_events_markers": "event_type strings are fixture-internal role labels, not Part 5 event_type values."
+  },
+  "signal_trace": {
+    "status": "skeleton",
+    "frames": [
+      {"t_ms": 0,    "frame_id": "frame-000", "sub_case": "normal",          "event_type": "user_speech_start", "task_mode": "normal",          "p_done": null, "p_continue": null, "notes": "PLACEHOLDER — speech onset, normal mode"},
+      {"t_ms": 32,   "frame_id": "frame-001", "sub_case": "normal",          "event_type": "user_speech_active","task_mode": "normal",          "p_done": null, "p_continue": null, "notes": "PLACEHOLDER"},
+      {"t_ms": 800,  "frame_id": "frame-025", "sub_case": "normal",          "event_type": "eou_decision",      "task_mode": "normal",          "p_done": null, "p_continue": null, "resolution_frame": true, "expected_action_class": "full_response", "expected_reason_code": "EOU_CONFIRMED", "notes": "PLACEHOLDER — EOU fires; normal mode"},
+      {"t_ms": 5000, "frame_id": "frame-100", "sub_case": "cooking",         "event_type": "user_speech_start", "task_mode": "cooking",         "p_done": null, "p_continue": null, "notes": "PLACEHOLDER — same audio pattern; cooking mode"},
+      {"t_ms": 5032, "frame_id": "frame-101", "sub_case": "cooking",         "event_type": "user_speech_active","task_mode": "cooking",         "p_done": null, "p_continue": null, "notes": "PLACEHOLDER"},
+      {"t_ms": 5800, "frame_id": "frame-125", "sub_case": "cooking",         "event_type": "eou_decision",      "task_mode": "cooking",         "p_done": null, "p_continue": null, "resolution_frame": true, "expected_action_class": "full_response", "expected_reason_code": "EOU_CONFIRMED", "notes": "PLACEHOLDER — EOU fires; cooking mode; must match normal sub_case"},
+      {"t_ms": 10000,"frame_id": "frame-200", "sub_case": "crisis_emergency","event_type": "user_speech_start", "task_mode": "crisis_emergency","p_done": null, "p_continue": null, "notes": "PLACEHOLDER — same audio pattern; crisis_emergency mode"},
+      {"t_ms": 10032,"frame_id": "frame-201", "sub_case": "crisis_emergency","event_type": "user_speech_active","task_mode": "crisis_emergency","p_done": null, "p_continue": null, "notes": "PLACEHOLDER"},
+      {"t_ms": 10800,"frame_id": "frame-225", "sub_case": "crisis_emergency","event_type": "eou_decision",      "task_mode": "crisis_emergency","p_done": null, "p_continue": null, "resolution_frame": true, "expected_action_class": "full_response", "expected_reason_code": "EOU_CONFIRMED", "notes": "PLACEHOLDER — EOU fires; crisis_emergency mode; must match normal sub_case"}
+    ]
+  }
+}

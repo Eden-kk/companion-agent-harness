@@ -1,0 +1,35 @@
+{
+  "case_id": "not_addressed_to_me_001",
+  "stage": 3,
+  "scenario": "not_addressed_to_me",
+  "modalities": ["audio"],
+  "fixture_ref": "companion_harness/fixtures/not_addressed_to_me_001/",
+  "sensitivity": "safe_eval_fixture",
+  "expected_events": [
+    "user_speech_start",
+    "addressee_classification",
+    "policy_decision"
+  ],
+  "expected_metrics": {
+    "not_addressed_silence_rate": "= 100% on fixture set"
+  },
+  "consent_class": "synthetic_eval",
+  "description": "Two humans are talking near the device; the audio is conversational but the speech is not addressed to the agent. The speak policy must produce silence — NOT a full_response or backchannel — because the utterance is classified as not addressed to the agent. This tests the invariant that proactive speech requires policy approval (invariant #4) and that silence wins ties (invariant #8) when addressee confidence is below threshold.",
+  "fixture_conventions": {
+    "skeleton_note": "Per-frame signal values are placeholders. Finalize at Stage 3 activation when the addressee-classification adapter and its confidence threshold are specified.",
+    "addressee_p_self": "Scripted probability [0.0, 1.0] that the utterance is addressed to the agent. < threshold => NOT_ADDRESSED_TO_AGENT branch fires.",
+    "addressee_threshold": "Placeholder — to be set at Stage 3 activation (expected ~0.5).",
+    "expected_action_class": "silence — the agent must not speak when not addressed.",
+    "expected_reason_code": "NOT_ADDRESSED_TO_AGENT",
+    "frame_duration_ms": "32 — to be confirmed at Stage 3 activation.",
+    "expected_events_markers": "event_type strings are fixture-internal role labels, not Part 5 event_type values."
+  },
+  "signal_trace": {
+    "status": "skeleton",
+    "frames": [
+      {"t_ms": 0,   "frame_id": "frame-000", "event_type": "user_speech_start",       "addressee_p_self": null, "notes": "PLACEHOLDER — speech onset; two humans conversing near device"},
+      {"t_ms": 32,  "frame_id": "frame-001", "event_type": "user_speech_active",      "addressee_p_self": null, "notes": "PLACEHOLDER — speech active"},
+      {"t_ms": 64,  "frame_id": "frame-002", "event_type": "addressee_classification","addressee_p_self": null, "resolution_frame": true, "expected_action_class": "silence", "expected_reason_code": "NOT_ADDRESSED_TO_AGENT", "notes": "PLACEHOLDER — addressee classification fires; p_self < threshold; policy must produce silence"}
+    ]
+  }
+}
