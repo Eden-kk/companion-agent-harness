@@ -34,8 +34,17 @@ def decide(
     inputs: PolicyInputs,
     signal_event_ids: list[str],
     p_backchannel: float = 0.0,
+    *,
+    backchannel_threshold: float = _BACKCHANNEL_THRESHOLD,
+    audio_visual_conflict_threshold: float = _AUDIO_VISUAL_CONFLICT_THRESHOLD,
+    grounding_confidence_threshold: float = _GROUNDING_CONFIDENCE_THRESHOLD,
 ) -> SpeakDecision:
     """Return a SpeakDecision for the given PolicyInputs.
+
+    The three keyword-only threshold parameters allow runtime tuning via the
+    manual-test dashboard (see docs/design-config-and-dashboard.md §3). When
+    omitted, the module-level constants are used so existing callers see no
+    behavior change.
 
     Determinism guarantees (invariant #5):
       - No wall-clock reads.
@@ -87,7 +96,7 @@ def decide(
         return _silence(ReasonCode.NOT_ADDRESSED_TO_AGENT, caused_by)
 
     # 4. EOU confirmed + high backchannel probability — user is just acknowledging.
-    if p_backchannel >= _BACKCHANNEL_THRESHOLD:
+    if p_backchannel >= backchannel_threshold:
         return SpeakDecision(
             action_type="backchannel",
             primary_reason_code=ReasonCode.BACKCHANNEL_DETECTED,
@@ -100,7 +109,7 @@ def decide(
         )
 
     # 5. Audio-visual conflict exceeds threshold — surface conflict, do not silently agree.
-    if inputs.audio_visual_conflict_score > _AUDIO_VISUAL_CONFLICT_THRESHOLD:
+    if inputs.audio_visual_conflict_score > audio_visual_conflict_threshold:
         return SpeakDecision(
             action_type="clarification",
             primary_reason_code=ReasonCode.AUDIO_VISUAL_CONFLICT,
@@ -113,7 +122,7 @@ def decide(
         )
 
     # 6. Deictic grounding below confidence threshold — refuse to invent.
-    if inputs.deictic_reference and inputs.grounding_confidence < _GROUNDING_CONFIDENCE_THRESHOLD:
+    if inputs.deictic_reference and inputs.grounding_confidence < grounding_confidence_threshold:
         return _silence(ReasonCode.VISUAL_LOW_CONFIDENCE, caused_by)
 
     # 7. Deictic reference with ambiguous grounding — ask for clarification.
@@ -197,12 +206,21 @@ def _silence(reason: ReasonCode, caused_by: list[str]) -> SpeakDecision:
     )
 
 
-def _threshold_path_for(inputs: PolicyInputs, decision: SpeakDecision, p_backchannel: float) -> list[str]:
+def _threshold_path_for(
+    inputs: PolicyInputs,
+    decision: SpeakDecision,
+    p_backchannel: float,
+    *,
+    backchannel_threshold: float = _BACKCHANNEL_THRESHOLD,
+    audio_visual_conflict_threshold: float = _AUDIO_VISUAL_CONFLICT_THRESHOLD,
+    grounding_confidence_threshold: float = _GROUNDING_CONFIDENCE_THRESHOLD,
+) -> list[str]:
     """Reconstruct the ordered threshold path traversed by decide() for the given inputs.
 
     Each string names a gate that was evaluated, in evaluation order.  The list
     is deterministic given (inputs, decision, p_backchannel) and contains only
-    enum-safe strings (no PII, no free text).
+    enum-safe strings (no PII, no free text). The threshold kwargs match
+    decide()'s signature so the path reflects the same gates that were applied.
     """
     path: list[str] = []
     if inputs.social_mode in _BLOCKING_SOCIAL_MODES:
@@ -222,13 +240,13 @@ def _threshold_path_for(inputs: PolicyInputs, decision: SpeakDecision, p_backcha
         path.append("eou_gate:below_threshold")
         return path
     path.append("eou_gate:passed")
-    if p_backchannel >= _BACKCHANNEL_THRESHOLD:
+    if p_backchannel >= backchannel_threshold:
         path.append("backchannel_threshold:exceeded")
         return path
-    if inputs.audio_visual_conflict_score > _AUDIO_VISUAL_CONFLICT_THRESHOLD:
+    if inputs.audio_visual_conflict_score > audio_visual_conflict_threshold:
         path.append("audio_visual_conflict:exceeded")
         return path
-    if inputs.deictic_reference and inputs.grounding_confidence < _GROUNDING_CONFIDENCE_THRESHOLD:
+    if inputs.deictic_reference and inputs.grounding_confidence < grounding_confidence_threshold:
         path.append("grounding_confidence:below_threshold")
         return path
     if inputs.deictic_reference and inputs.deictic_ambiguous:
@@ -269,17 +287,30 @@ def build_decision_trace(
     input_event_ids: list[str] | None = None,
     p_backchannel: float = 0.0,
     retrieval_event_ids: list[str] | None = None,
+    *,
+    backchannel_threshold: float = _BACKCHANNEL_THRESHOLD,
+    audio_visual_conflict_threshold: float = _AUDIO_VISUAL_CONFLICT_THRESHOLD,
+    grounding_confidence_threshold: float = _GROUNDING_CONFIDENCE_THRESHOLD,
 ) -> DecisionTrace:
     """Construct a DecisionTrace linked to a SpeakDecision by shared decision_id.
 
     Pure function — no I/O, no wall-clock reads.  Safe to call on the replay path.
-    input_event_ids defaults to signal_event_ids when not provided.
+    input_event_ids defaults to signal_event_ids when not provided. The
+    threshold kwargs are forwarded to ``_threshold_path_for`` so the recorded
+    threshold_path matches the gates that decide() actually applied.
     """
     return DecisionTrace(
         decision_id=decision_id,
         input_event_ids=list(input_event_ids) if input_event_ids is not None else list(signal_event_ids),
         signal_event_ids=list(signal_event_ids),
-        threshold_path=_threshold_path_for(inputs, decision, p_backchannel),
+        threshold_path=_threshold_path_for(
+            inputs,
+            decision,
+            p_backchannel,
+            backchannel_threshold=backchannel_threshold,
+            audio_visual_conflict_threshold=audio_visual_conflict_threshold,
+            grounding_confidence_threshold=grounding_confidence_threshold,
+        ),
         primary_reason_code=decision.primary_reason_code,
         supporting_reason_codes=list(decision.supporting_reason_codes),
         counterfactuals={"action_selected": decision.action_type},

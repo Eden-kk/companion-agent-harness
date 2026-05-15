@@ -71,6 +71,7 @@ from companion_harness.turn_detector_vad import VADDetector
 if TYPE_CHECKING:
     from companion_harness.memory_manager import MemoryManager
     from companion_harness.vision_sidecar import VisionSidecar
+    from manual_test_console.config_store import ConfigStore
 
 __all__ = ["StreamingRealtimeOrchestrator"]
 
@@ -156,6 +157,17 @@ class StreamingRealtimeOrchestrator:
       T2 _policy_gate_task       : turn_signals → policy_decisions
       T3 _foreground_stream_task : tee_to_foreground → proposal_buffer
       T4 _synthesis_dispatch_task: policy_decisions + proposal_buffer → AudioOutputController
+
+    Runtime config (Tier B, per docs/design-config-and-dashboard.md §3):
+      When ``config_store`` is provided, the 12 Tier-B keys are read once per
+      ``_policy_gate_task`` iteration BEFORE ``policy_inputs_builder`` runs.
+      Orchestrator-level keys (proposal_batch_window_ms, hard_cancel_after_ms,
+      p_speech_thresh, p_backchannel_thresh) update self state. Detector keys
+      (vad / smart_turn / backchannel) are applied via setters at the EOU
+      boundary. Policy keys (backchannel / audio_visual_conflict /
+      grounding_confidence) are passed as kwargs into the speak_policy
+      callable. Policy thresholds apply within the current decision; detector
+      thresholds apply starting on the next frame after the EOU.
     """
 
     SOURCE = _SOURCE
@@ -186,6 +198,7 @@ class StreamingRealtimeOrchestrator:
         asr_model: ASRModel | None = None,
         vision_sidecar: "VisionSidecar | None" = None,
         addressing_classifier: AddressingClassifier | None = None,
+        config_store: "ConfigStore | None" = None,
     ) -> None:
         self._session_id = session_id
         self._logger = logger
@@ -247,6 +260,11 @@ class StreamingRealtimeOrchestrator:
         self._asr_model = asr_model
         self._vision_sidecar = vision_sidecar
         self._addressing_classifier = addressing_classifier
+        self._config_store = config_store
+        # Last-applied policy thresholds (read from config_store at EOU); when
+        # config_store is None we fall back to speak_policy.decide()'s defaults
+        # by leaving these as None and not passing kwargs.
+        self._policy_threshold_kwargs: dict[str, float] = {}
         # Per-turn audio buffer (PCM16 bytes). Appended on every audio frame in
         # _audio_tee_task; consumed + cleared in T2 on EOU when asr_model is set.
         # No-op (always empty / never consumed) when asr_model is None.
@@ -390,6 +408,15 @@ class StreamingRealtimeOrchestrator:
                 self._emit("turn_signal_coalesced", [self._pending_signal_evt_id], "signal")
                 continue
 
+            # --- ConfigStore snapshot (per docs/design-config-and-dashboard.md §3) ---
+            # Read all 12 Tier-B keys once at the EOU boundary. There is no await
+            # between this snapshot and _speak_policy_decide() below, so no
+            # config_change can land mid-decision (determinism boundary). Detector
+            # setter calls take effect starting on the next frame; policy threshold
+            # kwargs apply within the current decision (asymmetry documented in
+            # class docstring).
+            self._snapshot_config()
+
             # Maintain signal history (for determinism boundary).
             self._signal_history.append(signal)
             # Sort by evidence_event_ids[0] lexicographic — determinism boundary (§6).
@@ -503,6 +530,7 @@ class StreamingRealtimeOrchestrator:
                 decision_id=policy_evt_id,
                 p_backchannel=signal.p_backchannel,
                 retrieval_event_ids=[mre_event_id],
+                **self._policy_threshold_kwargs,
             )
             trace_uri = self._decision_trace_store.write(trace)
 
@@ -715,7 +743,49 @@ class StreamingRealtimeOrchestrator:
         signal_evt_id: str,
         p_backchannel: float,
     ) -> SpeakDecision:
-        return self._speak_policy_fn(inputs, [signal_evt_id], p_backchannel)
+        # Policy threshold kwargs are populated by _snapshot_config() at the EOU
+        # boundary; when config_store is None they remain empty and the callable
+        # uses its own defaults (backward compatible).
+        return self._speak_policy_fn(
+            inputs, [signal_evt_id], p_backchannel, **self._policy_threshold_kwargs
+        )
+
+    def _snapshot_config(self) -> None:
+        """Read all 12 Tier-B keys at the EOU boundary; apply to orchestrator + detectors.
+
+        No-op when ``config_store`` is None (backward compatible). All reads are
+        synchronous (no await) so the snapshot is atomic relative to the policy
+        decision. See docs/design-config-and-dashboard.md §3, §6.
+        """
+        if self._config_store is None:
+            return
+        cfg = self._config_store
+
+        # Orchestrator-level keys → self state (apply within this iteration).
+        self._proposal_batch_window_ms = cfg.get("orchestrator.proposal_batch_window_ms")
+        self._hard_cancel_after_ms = cfg.get("orchestrator.hard_cancel_after_ms")
+        self._p_speech_thresh = cfg.get("orchestrator.p_speech_thresh")
+        self._p_backchannel_thresh = cfg.get("orchestrator.p_backchannel_thresh")
+
+        # Policy keys → kwargs threaded into decide() in the same no-await window.
+        self._policy_threshold_kwargs = {
+            "backchannel_threshold": cfg.get("policy.backchannel_threshold"),
+            "audio_visual_conflict_threshold": cfg.get("policy.audio_visual_conflict_threshold"),
+            "grounding_confidence_threshold": cfg.get("policy.grounding_confidence_threshold"),
+        }
+
+        # Detector keys → setters; take effect on the NEXT frame after this EOU.
+        self._vad_detector.update_thresholds(
+            speech_threshold=cfg.get("detectors.vad.speech_threshold"),
+            silence_onset_ms=cfg.get("detectors.vad.silence_onset_ms"),
+        )
+        self._smart_turn_detector.update_thresholds(
+            silence_onset_ms=cfg.get("detectors.smart_turn.silence_onset_ms"),
+            silence_rms_threshold=cfg.get("detectors.smart_turn.silence_rms_threshold"),
+        )
+        self._backchannel_classifier.update_threshold(
+            emit_threshold=cfg.get("detectors.backchannel.emit_threshold"),
+        )
 
     # ------------------------------------------------------------------
     # Barge-in helpers (Task 6)

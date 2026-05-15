@@ -72,6 +72,23 @@ class VADDetector:
         self.last_frame_p_speech: float = 0.0
         self.last_frame_event_id: str = ""
 
+    def update_thresholds(
+        self,
+        *,
+        speech_threshold: float | None = None,
+        silence_onset_ms: int | None = None,
+    ) -> None:
+        """Update runtime-tunable thresholds.
+
+        Pass ``None`` to leave a field unchanged. Takes effect on the next
+        ``process_frame`` call (config_change applies at the next-frame boundary
+        — see docs/design-config-and-dashboard.md §3).
+        """
+        if speech_threshold is not None:
+            self._speech_threshold = speech_threshold
+        if silence_onset_ms is not None:
+            self._silence_onset_ms = silence_onset_ms
+
     def process_frame(self, frame: bytes, caused_by: list[str]) -> TurnSignal | None:
         """Feed one audio frame through the VAD model.
 

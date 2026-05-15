@@ -41,10 +41,13 @@ from companion_harness.realtime_orchestrator import StreamingRealtimeOrchestrato
 from companion_harness.schemas import PolicyInputs, ThinkerProposal, TurnSignal
 from companion_harness.turn_detector_smart import SmartTurnDetector
 from companion_harness.turn_detector_vad import VADDetector
+from manual_test_console.config_schema import ALLOWLIST
+from manual_test_console.config_store import ConfigStore
 
 __all__ = [
     "LivePipeline",
     "build_live_pipeline",
+    "build_config_store",
     "EnergyVADModel",
     "SilenceSmartTurnModel",
     "ZeroBackchannelModel",
@@ -54,6 +57,21 @@ __all__ = [
     "WebSocketAudioSink",
     "AudioOutSinkTarget",
 ]
+
+
+def build_config_store(config_path: Path | None = None) -> ConfigStore:
+    """Construct the server-global Tier-B ConfigStore singleton.
+
+    Loads defaults from :data:`ALLOWLIST`, then optionally overlays
+    ``config_path`` if provided and the file exists. The store is shared across
+    every session per design doc §3 (server-global, per-process). Task E will
+    expose the write side via /config/patch and /config/reset on the same
+    instance.
+    """
+    store = ConfigStore(ALLOWLIST)
+    if config_path is not None and config_path.exists():
+        store.load_from_yaml(config_path)
+    return store
 
 
 class SharedLoggerProxy:
@@ -323,6 +341,7 @@ def build_live_pipeline(
     audio_out_broker: AudioOutSinkTarget | None = None,
     tts_adapter: Any = None,
     vision_sidecar: Any = None,
+    config_store: ConfigStore | None = None,
 ) -> LivePipeline:
     """Construct a LivePipeline for one ingest session.
 
@@ -348,6 +367,13 @@ def build_live_pipeline(
     The shared `logger` is wrapped in a `SharedLoggerProxy` so this session's
     StreamingRealtimeOrchestrator.stop() cannot shut down the Application-owned
     EventLogger on disconnect.
+
+    `config_store` is the server-global Tier-B ConfigStore singleton (typically
+    built once at server startup via :func:`build_config_store`). When provided,
+    the orchestrator reads all 12 Tier-B keys at each EOU boundary and applies
+    them to detectors, policy thresholds, and orchestrator timing (see
+    docs/design-config-and-dashboard.md §3). When None, the orchestrator uses
+    its construction-time defaults (backward compatible).
     """
     audio_in: asyncio.Queue[tuple[bytes, str]] = asyncio.Queue(maxsize=64)
     shielded_logger = SharedLoggerProxy(logger)
@@ -425,6 +451,7 @@ def build_live_pipeline(
         asr_model=asr_model,
         vision_sidecar=vision_sidecar,
         addressing_classifier=addressing_classifier,
+        config_store=config_store,
     )
 
     return LivePipeline(

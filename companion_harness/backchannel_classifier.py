@@ -95,6 +95,20 @@ class BackchannelClassifier:
         self._emit_threshold = emit_threshold
         self._seq = 0
 
+    def update_threshold(
+        self,
+        *,
+        emit_threshold: float | None = None,
+    ) -> None:
+        """Update runtime-tunable emit threshold.
+
+        Pass ``None`` to leave the field unchanged. Takes effect on the next
+        ``process_frame`` call (config_change applies at the next-frame boundary
+        — see docs/design-config-and-dashboard.md §3).
+        """
+        if emit_threshold is not None:
+            self._emit_threshold = emit_threshold
+
     def process_frame(self, frame: bytes, caused_by: list[str]) -> TurnSignal | None:
         """Feed one audio frame through the backchannel model (every frame).
 
