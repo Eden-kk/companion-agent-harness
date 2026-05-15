@@ -1,0 +1,35 @@
+{
+  "case_id": "sensitive_conversation_retention_001",
+  "stage": 4,
+  "scenario": "privacy_mode_sensitive_conversation",
+  "modalities": ["audio"],
+  "fixture_ref": "companion_harness/fixtures/sensitive_conversation_retention_001/",
+  "sensitivity": "safe_eval_fixture",
+  "privacy_mode": "sensitive_conversation",
+  "expected_events": [
+    "privacy_mode_active",
+    "conversation_content_detected",
+    "long_term_write_suppressed",
+    "opt_in_prompt_available"
+  ],
+  "consent_class": "synthetic_eval",
+  "description": "privacy_mode = sensitive_conversation. Expected: no long-term memory write by default; transcript is redacted by default; policy signals only are retained; user can opt in to long-term retention via explicit consent. Tests that privacy_mode = sensitive_conversation suppresses durable writes and redacts transcripts per Part 7 and the test_sensitive_conversation_retention contract. Signal and memory-op traces are skeleton placeholders pending Stage 4 activation.",
+  "fixture_conventions": {
+    "privacy_mode": "sensitive_conversation: policy signals only retained by default; transcript redacted; no long-term memory write unless user explicitly opts in (Part 7 privacy_mode_compatibility table).",
+    "default_suppression": "Long-term memory writes are suppressed by default. Session-state writes (non-persistent) are permitted for the duration of the session only.",
+    "transcript_redaction": "Transcript content is redacted from the event log by default while this mode is active. The redacted_explanation field (SensitiveField) is used where transcript evidence is required for policy replay.",
+    "opt_in_path": "User can opt in to long-term retention by explicitly accepting a consent prompt. The opt-in event must appear in the event log with caused_by pointing to the user's consent utterance.",
+    "policy_signals_retained": "Policy-layer signals (SpeakDecision action_type, primary_reason_code, timing) are retained even under sensitive_conversation mode — the replay invariant (#5) must hold even when transcript is redacted.",
+    "expected_events_markers": "event_type strings are fixture-internal role labels. Filled in at Stage 4 activation."
+  },
+  "signal_trace": {
+    "status": "skeleton",
+    "note": "Per-frame scripted values are placeholders. To be finalized when Stage 4 is activated.",
+    "frames": []
+  },
+  "memory_op_trace": {
+    "status": "skeleton",
+    "note": "Privacy mode activation, suppressed long-term writes, transcript redaction, and optional opt-in path to be scripted at Stage 4 activation.",
+    "ops": []
+  }
+}

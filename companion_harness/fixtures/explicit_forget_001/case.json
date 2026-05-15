@@ -1,0 +1,33 @@
+{
+  "case_id": "explicit_forget_001",
+  "stage": 4,
+  "scenario": "explicit_forget_command",
+  "modalities": ["audio"],
+  "fixture_ref": "companion_harness/fixtures/explicit_forget_001/",
+  "sensitivity": "safe_eval_fixture",
+  "expected_events": [
+    "user_speech_start",
+    "explicit_forget_command",
+    "memory_invalidate",
+    "audit_tombstone_retained"
+  ],
+  "consent_class": "synthetic_eval",
+  "description": "User says 'forget that'. Expected: target MemoryItem is invalidated for normal retrieval (valid_to set to command timestamp; superseded_by unset); a minimal audit tombstone is retained; item is excluded from future retrieval unless history is explicitly requested. Forget is a historical correction, not a privacy deletion — contrast with explicit_hard_delete_001. Signal and memory-op traces are skeleton placeholders pending Stage 4 activation.",
+  "fixture_conventions": {
+    "command_surface": "Explicit forget command: user revokes a previously committed memory item by reference (most recent item by default).",
+    "forget_vs_hard_delete": "forget = historical correction; valid_to is set; audit tombstone retained; item excluded from normal retrieval. hard_delete = privacy operation; content removed where possible; only non-content deletion receipt retained. These are different commands and must both work (Part 6 Stage 4).",
+    "bi_temporal_semantics": "valid_to is set to the command timestamp. superseded_by is unset (this is an invalidation, not a supersession). The item is excluded from retrieval queries that do not request history.",
+    "tombstone_requirement": "A non-content audit tombstone must be retained after forget. The tombstone carries the item_id and invalidation timestamp but no user content.",
+    "expected_events_markers": "event_type strings are fixture-internal role labels. Filled in at Stage 4 activation."
+  },
+  "signal_trace": {
+    "status": "skeleton",
+    "note": "Per-frame scripted values are placeholders. To be finalized when Stage 4 is activated.",
+    "frames": []
+  },
+  "memory_op_trace": {
+    "status": "skeleton",
+    "note": "Memory operation sequence (pre-existing item, forget command, invalidation, tombstone) to be scripted at Stage 4 activation.",
+    "ops": []
+  }
+}

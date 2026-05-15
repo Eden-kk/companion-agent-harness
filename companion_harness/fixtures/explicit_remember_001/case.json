@@ -1,0 +1,32 @@
+{
+  "case_id": "explicit_remember_001",
+  "stage": 4,
+  "scenario": "explicit_remember",
+  "modalities": ["audio"],
+  "fixture_ref": "companion_harness/fixtures/explicit_remember_001/",
+  "sensitivity": "safe_eval_fixture",
+  "expected_events": [
+    "user_speech_start",
+    "memory_write_candidate",
+    "memory_commit"
+  ],
+  "consent_class": "synthetic_eval",
+  "description": "User says 'remember that I prefer X'. Expected: a visible memory_write_candidate is emitted, then committed to the session store with full provenance (source_event_id, created_at, confidence, salience, valid_from, user_visible_summary). Tests invariant #3 and the test_explicit_remember contract (Stage 4 activation). Signal and memory-op traces are skeleton placeholders pending Stage 4 activation.",
+  "fixture_conventions": {
+    "command_surface": "Explicit remember command: user names a fact to persist. Distinguishable from implicit background memory writes by the presence of an explicit_remember_command event in the trace.",
+    "memory_op_flow": "user_speech_start -> explicit_remember_command -> memory_write_candidate -> memory_commit. The write_candidate is emitted before commit so the policy layer can inspect and approve the write.",
+    "provenance_fields": "Every MemoryItem in the trace must carry source_event_id, created_at, confidence, salience, valid_from, valid_to, superseded_by, and user_visible_summary per invariant #3.",
+    "store_target": "session_state for this sub-case (lowest-risk store; Stage 4 activation may add sub-cases for core_user_profile).",
+    "expected_events_markers": "event_type strings are fixture-internal role labels, not Part 5 event_type values. Filled in at Stage 4 activation."
+  },
+  "signal_trace": {
+    "status": "skeleton",
+    "note": "Per-frame scripted values are placeholders. To be finalized when Stage 4 is activated.",
+    "frames": []
+  },
+  "memory_op_trace": {
+    "status": "skeleton",
+    "note": "Memory operation sequence to be scripted at Stage 4 activation.",
+    "ops": []
+  }
+}

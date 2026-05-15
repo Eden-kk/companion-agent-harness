@@ -1,0 +1,33 @@
+{
+  "case_id": "why_did_you_say_that_001",
+  "stage": 4,
+  "scenario": "trace_explanation_query",
+  "modalities": ["audio"],
+  "fixture_ref": "companion_harness/fixtures/why_did_you_say_that_001/",
+  "sensitivity": "safe_eval_fixture",
+  "expected_events": [
+    "user_speech_start",
+    "trace_query_command",
+    "retrieval_trace_cited",
+    "policy_decision_cited"
+  ],
+  "consent_class": "synthetic_eval",
+  "description": "User asks 'why did you say that?'. Expected: system response cites retrieval_used and policy_decision in the decision trace (DecisionTrace.retrieval_used + DecisionTrace.decision_id chain). The response is grounded in logged causal predecessors — no invented explanation. Tests invariant #1 (no unlogged behavior) and the test_why_did_you_say_that contract. Signal and memory-op traces are skeleton placeholders pending Stage 4 activation.",
+  "fixture_conventions": {
+    "command_surface": "User command 'why did you say that?' is a first-class product feature per invariant #7. Must be handled without accessing unlogged state.",
+    "trace_requirements": "Response must cite: (1) retrieval_used — which MemoryItems were consulted; (2) policy_decision — the SpeakDecision / DecisionTrace that produced the utterance being questioned. Both must be present in the event log.",
+    "no_invented_explanation": "The response must not fabricate causal predecessors. Every cited fact must have a corresponding logged event with a cause chain that closes per invariant #1.",
+    "decision_trace_linkage": "DecisionTrace is defined in schemas.py but not yet production-wired (see issue #34 ADR). At Stage 4 activation, DecisionTrace.retrieval_used will be populated and available for this query.",
+    "expected_events_markers": "event_type strings are fixture-internal role labels. Filled in at Stage 4 activation."
+  },
+  "signal_trace": {
+    "status": "skeleton",
+    "note": "Per-frame scripted values are placeholders. To be finalized when Stage 4 is activated.",
+    "frames": []
+  },
+  "memory_op_trace": {
+    "status": "skeleton",
+    "note": "Retrieval trace and decision trace references to be scripted at Stage 4 activation.",
+    "ops": []
+  }
+}
