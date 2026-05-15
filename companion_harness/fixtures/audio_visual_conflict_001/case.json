@@ -1,0 +1,136 @@
+{
+  "case_id": "audio_visual_conflict_001",
+  "stage": 2,
+  "scenario": "audio_visual_conflict_surfacing",
+  "modalities": ["audio", "raw_video"],
+  "fixture_ref": "companion_harness/fixtures/audio_visual_conflict_001/",
+  "sensitivity": "safe_eval_fixture",
+  "expected_events": [
+    "raw_video_frame",
+    "deictic_classification",
+    "audio_visual_conflict",
+    "policy_decision"
+  ],
+  "expected_metrics": {
+    "audio_visual_conflict_handling_rate": "= 100% on fixture set (conflict surfaced + in caused_by)"
+  },
+  "consent_class": "synthetic_eval",
+  "description": "User asks 'is this the blue one?' while the camera points at a red object. The audio query asserts blue; the visual scene shows red. The harness detects a conflict (audio_visual_conflict_score > 0.7) and surfaces it rather than silently agreeing. SpeakPolicy must produce primary_reason_code=AUDIO_VISUAL_CONFLICT. A conflict event must appear in the decision's caused_by chain. Positive sub-case: user asks about the red object correctly — no conflict, produces full_response.",
+  "fixture_conventions": {
+    "conflict_threshold": 0.7,
+    "frame_duration_ms": "33 — approximate 30fps",
+    "deictic_p": "Both sub-cases are deictic (>= 0.8).",
+    "scene_change_score": "Scripted. Not the focus.",
+    "grounding_result": "Stub scene label. 'red_object' for conflict case; 'red_object' for no-conflict case (user correctly identifies it).",
+    "grounding_confidence": "High for both sub-cases (conflict is not a confidence issue).",
+    "audio_visual_conflict_score": "Scalar in [0.0, 1.0]. > conflict_threshold (0.7) => conflict branch fires. 0.85 for conflict case; 0.05 for no-conflict case.",
+    "sub_case": "'conflict' or 'no_conflict'. Consumers (task 15) partition by this field.",
+    "conflict_design": "User says 'is this the blue one?' (audio asserts blue). Camera points at red object (grounding_result='red_object'). audio_visual_conflict_score=0.85 > 0.7. SpeakPolicy must produce AUDIO_VISUAL_CONFLICT; must NOT produce a plain full_response that ignores the mismatch.",
+    "no_conflict_design": "User says 'is this the red one?' (matches scene). audio_visual_conflict_score=0.05 < 0.7. SpeakPolicy produces full_response (positive discriminator).",
+    "conflict_event_in_caused_by": "Task 15 asserts that the audio_visual_conflict event appears in the policy decision's caused_by chain.",
+    "frame_bytes_synthesis": "raw_video frame blobs are minimal synthetic placeholders: b'\\x89VID\\x00' + 1 index byte.",
+    "expected_events_markers": "event_type strings are fixture-internal role labels. 'audio_visual_conflict' is an expected future adapter-emitted event_type.",
+    "PolicyInputs_field": "audio_visual_conflict_score maps to the PolicyInputs.audio_visual_conflict_score field added in task 14."
+  },
+  "signal_trace": [
+    {
+      "t_ms": 0,
+      "frame_id": "frame-000",
+      "sub_case": "conflict",
+      "event_type": "raw_video_frame",
+      "timestamp_mono_ms": 0,
+      "seq_no": 0,
+      "frame_bytes_hex": "895649440000",
+      "deictic_p": 0.88,
+      "scene_change_score": 0.05,
+      "grounding_result": "red_object",
+      "grounding_confidence": 0.90,
+      "audio_visual_conflict_score": 0.85,
+      "notes": "CONFLICT CASE: user says 'is this the blue one?'; camera shows red object; conflict_score=0.85 > 0.7"
+    },
+    {
+      "t_ms": 33,
+      "frame_id": "frame-001",
+      "sub_case": "conflict",
+      "event_type": "raw_video_frame",
+      "timestamp_mono_ms": 33,
+      "seq_no": 1,
+      "frame_bytes_hex": "895649440001",
+      "deictic_p": 0.88,
+      "scene_change_score": 0.03,
+      "grounding_result": "red_object",
+      "grounding_confidence": 0.90,
+      "audio_visual_conflict_score": 0.83,
+      "notes": "conflict frame 2; still red object, audio still asserts blue"
+    },
+    {
+      "t_ms": 66,
+      "frame_id": "frame-002",
+      "sub_case": "conflict",
+      "event_type": "audio_visual_conflict",
+      "timestamp_mono_ms": 66,
+      "seq_no": 2,
+      "frame_bytes_hex": "895649440002",
+      "deictic_p": 0.88,
+      "scene_change_score": 0.02,
+      "grounding_result": "red_object",
+      "grounding_confidence": 0.90,
+      "audio_visual_conflict_score": 0.85,
+      "resolution_frame": true,
+      "expected_action_class": "conflict_surface",
+      "expected_reason_code": "AUDIO_VISUAL_CONFLICT",
+      "notes": "CONFLICT GATE FRAME: conflict_score=0.85 > 0.7; SpeakPolicy must produce AUDIO_VISUAL_CONFLICT; conflict event must appear in policy decision caused_by; must NOT produce full_response ignoring mismatch"
+    },
+    {
+      "t_ms": 5000,
+      "frame_id": "frame-100",
+      "sub_case": "no_conflict",
+      "event_type": "raw_video_frame",
+      "timestamp_mono_ms": 5000,
+      "seq_no": 100,
+      "frame_bytes_hex": "895649440064",
+      "deictic_p": 0.88,
+      "scene_change_score": 0.50,
+      "grounding_result": "red_object",
+      "grounding_confidence": 0.90,
+      "audio_visual_conflict_score": 0.05,
+      "notes": "NO-CONFLICT CASE: user says 'is this the red one?'; matches scene; conflict_score=0.05 < 0.7"
+    },
+    {
+      "t_ms": 5033,
+      "frame_id": "frame-101",
+      "sub_case": "no_conflict",
+      "event_type": "deictic_classification",
+      "timestamp_mono_ms": 5033,
+      "seq_no": 101,
+      "frame_bytes_hex": "895649440065",
+      "deictic_p": 0.88,
+      "scene_change_score": 0.04,
+      "grounding_result": "red_object",
+      "grounding_confidence": 0.90,
+      "audio_visual_conflict_score": 0.05,
+      "resolution_frame": true,
+      "expected_action_class": "full_response",
+      "expected_reason_code": "EOU_CONFIRMED",
+      "notes": "NO-CONFLICT GATE FRAME: conflict_score=0.05 < 0.7; no conflict branch; full_response (positive discriminator)"
+    }
+  ],
+  "baseline_decisions": [
+    {
+      "frame_id": "frame-002",
+      "sub_case": "conflict",
+      "action_type": "clarification",
+      "primary_reason_code": "AUDIO_VISUAL_CONFLICT",
+      "supporting_reason_codes": [],
+      "notes": "audio says blue, visual shows red; conflict surfaced; action_type=clarification (conflict gate, Option A)"
+    },
+    {
+      "frame_id": "frame-101",
+      "sub_case": "no_conflict",
+      "action_type": "full_response",
+      "primary_reason_code": "EOU_CONFIRMED",
+      "supporting_reason_codes": [],
+      "notes": "audio matches visual; no conflict; full_response (positive discriminator)"
+    }
+  ]
+}

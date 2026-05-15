@@ -1,0 +1,121 @@
+{
+  "case_id": "current_frame_grounding_001",
+  "stage": 2,
+  "scenario": "deictic_current_frame_grounding",
+  "modalities": ["audio", "raw_video"],
+  "fixture_ref": "companion_harness/fixtures/current_frame_grounding_001/",
+  "sensitivity": "safe_eval_fixture",
+  "expected_events": [
+    "raw_video_frame",
+    "deictic_classification",
+    "deictic_grounding",
+    "policy_decision"
+  ],
+  "expected_metrics": {
+    "deictic_grounding_accuracy": "= 100% on fixture set (harness mechanism gate)"
+  },
+  "consent_class": "synthetic_eval",
+  "description": "User says 'what is this?' while camera is pointed at a single object (a mug). Deictic detector fires (deictic_reference=True); grounding pass resolves the current frame to label='mug' with high confidence. SpeakPolicy produces full_response. Negative sub-case: same scene but user says 'what time is it?' (deictic_p < 0.3) — no grounding pass runs, no deictic_grounding event is emitted.",
+  "fixture_conventions": {
+    "frame_duration_ms": "33 — approximate 30fps",
+    "deictic_p": "Scripted DeicticModel output probability. >= 0.8 => deictic gate fires. < 0.3 => non-deictic, no grounding pass.",
+    "scene_change_score": "Scripted scene-change score. Low values indicate static scene.",
+    "grounding_result": "Stub label returned by GroundingModel when deictic gate fires.",
+    "grounding_confidence": "Stub confidence. >= 0.7 => confident answer; < 0.5 => low confidence / hallucination-resistance path.",
+    "sub_case": "'deictic' or 'non_deictic'. Consumers (task 9) assert: deictic sub-case emits deictic_grounding event tracing to the correct raw_video_frame; non-deictic sub-case emits NO deictic_grounding event.",
+    "frame_bytes_synthesis": "raw_video frame blobs are minimal synthetic placeholders: b'\\x89VID\\x00' + 1 index byte. Grounding results are scripted.",
+    "target_frame_event_id": "The deictic_grounding event must have caused_by[] referencing the raw_video_frame event_id of frame-002 (the frame the grounding ran against). Task 9 asserts this causal chain.",
+    "expected_events_markers": "event_type strings are fixture-internal role labels for human readability."
+  },
+  "signal_trace": [
+    {
+      "t_ms": 0,
+      "frame_id": "frame-000",
+      "sub_case": "deictic",
+      "event_type": "raw_video_frame",
+      "timestamp_mono_ms": 0,
+      "seq_no": 0,
+      "frame_bytes_hex": "895649440000",
+      "deictic_p": 0.91,
+      "scene_change_score": 0.0,
+      "grounding_result": "mug",
+      "grounding_confidence": 0.92,
+      "notes": "DEICTIC CASE: user says 'what is this?'; camera on mug; deictic_p=0.91 => gate fires"
+    },
+    {
+      "t_ms": 33,
+      "frame_id": "frame-001",
+      "sub_case": "deictic",
+      "event_type": "raw_video_frame",
+      "timestamp_mono_ms": 33,
+      "seq_no": 1,
+      "frame_bytes_hex": "895649440001",
+      "deictic_p": 0.91,
+      "scene_change_score": 0.02,
+      "grounding_result": "mug",
+      "grounding_confidence": 0.92,
+      "notes": "deictic frame 2; mug still in frame"
+    },
+    {
+      "t_ms": 66,
+      "frame_id": "frame-002",
+      "sub_case": "deictic",
+      "event_type": "deictic_classification",
+      "timestamp_mono_ms": 66,
+      "seq_no": 2,
+      "frame_bytes_hex": "895649440002",
+      "deictic_p": 0.91,
+      "scene_change_score": 0.01,
+      "grounding_result": "mug",
+      "grounding_confidence": 0.92,
+      "target_grounding_frame": true,
+      "expected_action_class": "full_response",
+      "notes": "GATE FRAME: deictic gate fires; grounding runs against current frame; label=mug confidence=0.92; deictic_grounding event must cite this frame in caused_by"
+    },
+    {
+      "t_ms": 5000,
+      "frame_id": "frame-100",
+      "sub_case": "non_deictic",
+      "event_type": "raw_video_frame",
+      "timestamp_mono_ms": 5000,
+      "seq_no": 100,
+      "frame_bytes_hex": "895649440064",
+      "deictic_p": 0.10,
+      "scene_change_score": 0.05,
+      "grounding_result": null,
+      "grounding_confidence": null,
+      "notes": "NON-DEICTIC SUB-CASE: user says 'what time is it?'; deictic_p=0.10 < 0.3 => gate does NOT fire; no grounding pass"
+    },
+    {
+      "t_ms": 5033,
+      "frame_id": "frame-101",
+      "sub_case": "non_deictic",
+      "event_type": "deictic_classification",
+      "timestamp_mono_ms": 5033,
+      "seq_no": 101,
+      "frame_bytes_hex": "895649440065",
+      "deictic_p": 0.10,
+      "scene_change_score": 0.03,
+      "grounding_result": null,
+      "grounding_confidence": null,
+      "expected_grounding_events": 0,
+      "notes": "NEGATIVE GATE FRAME: deictic gate does NOT fire; no deictic_grounding event must be emitted for this sub-case"
+    }
+  ],
+  "baseline_decisions": [
+    {
+      "frame_id": "frame-002",
+      "sub_case": "deictic",
+      "action_type": "full_response",
+      "primary_reason_code": "EOU_CONFIRMED",
+      "supporting_reason_codes": [],
+      "notes": "deictic gate fired; grounding resolved to mug at 0.92; confident answer"
+    },
+    {
+      "frame_id": "frame-101",
+      "sub_case": "non_deictic",
+      "grounding_event_emitted": false,
+      "notes": "no deictic reference; no grounding pass; no deictic_grounding event emitted"
+    }
+  ]
+}
