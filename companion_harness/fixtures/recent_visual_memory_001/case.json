@@ -15,7 +15,7 @@
     "recent_visual_recall_accuracy": "= 100% on fixture set (harness mechanism gate — in-window resolvable, out-of-window not)"
   },
   "consent_class": "synthetic_eval",
-  "description": "Tests the 30-60s ring buffer window bound. Three sub-cases: (1) in-window referent (frame at t=5000ms, query at t=40000ms, window=60000ms) — resolvable; (2) out-of-window referent (frame at t=0ms, query at t=65000ms, window=60000ms) — NOT resolvable; (3) edge: frame at t=5000ms, query at t=64000ms (still in window) — resolvable. The ring buffer uses event timestamp_mono_ms, not wall-clock time. VisionSidecar window_ms=60000.",
+  "description": "Tests the 30-60s ring buffer window bound. Three sub-cases each have their own strictly monotonic timestamp segment: (1) in-window referent (frame at t=5000ms, query at t=40000ms, window=60000ms) — 35000ms gap, resolvable; (2) out-of-window referent (frame at t=100000ms, query at t=170000ms, window=60000ms) — 70000ms gap, clearly evicted, NOT resolvable; (3) edge: frame at t=200000ms, query at t=258000ms — 58000ms gap, still in-window, resolvable. Each sub-case's timestamp range is non-overlapping; the trace is monotonically increasing overall. The ring buffer uses event timestamp_mono_ms, not wall-clock time. VisionSidecar window_ms=60000.",
   "fixture_conventions": {
     "window_ms": 60000,
     "frame_duration_ms": "33 — approximate 30fps",
@@ -25,8 +25,8 @@
     "grounding_confidence": "0.89 for resolvable frames; null for out-of-window.",
     "sub_case": "'in_window', 'out_of_window', or 'edge_in_window'. Consumers (task 11) partition by this field.",
     "in_window_design": "frame-000 at t=5000ms ingested into ring buffer. Query frame at t=40000ms. 40000-5000=35000ms < window_ms=60000ms => in-window, resolvable. deictic_grounding event emitted with caused_by referencing frame-000.",
-    "out_of_window_design": "frame-200 at t=0ms ingested. Query frame at t=65000ms. 65000-0=65000ms > window_ms=60000ms => evicted, NOT resolvable. No deictic_grounding event emitted (or emitted with frame_event_id=null).",
-    "edge_in_window_design": "frame-300 at t=5000ms ingested. Query frame at t=64000ms. 64000-5000=59000ms < window_ms=60000ms => still in-window, resolvable.",
+    "out_of_window_design": "frame-200 at t=100000ms ingested. Query frame at t=170000ms. 170000-100000=70000ms > window_ms=60000ms => clearly evicted, NOT resolvable. No deictic_grounding event emitted (or emitted with frame_event_id=null).",
+    "edge_in_window_design": "frame-300 at t=200000ms ingested. Query frame at t=258000ms. 258000-200000=58000ms < window_ms=60000ms => still in-window, resolvable.",
     "timestamp_mono_ms_drives_eviction": "VisionSidecar evicts frames whose timestamp_mono_ms is more than window_ms behind the latest ingested frame's timestamp_mono_ms. This makes eviction deterministic and testable with fixture-injected timestamps.",
     "frame_bytes_synthesis": "raw_video frame blobs are minimal synthetic placeholders: b'\\x89VID\\x00' + 1 index byte.",
     "expected_events_markers": "event_type strings are fixture-internal role labels."
@@ -64,25 +64,25 @@
       "notes": "IN-WINDOW GATE FRAME: t=40000ms; referent frame-000 at t=5000ms is within 60s window; grounding must resolve to 'keys' with caused_by referencing frame-000"
     },
     {
-      "t_ms": 0,
+      "t_ms": 100000,
       "frame_id": "frame-200",
       "sub_case": "out_of_window",
       "event_type": "raw_video_frame",
-      "timestamp_mono_ms": 0,
+      "timestamp_mono_ms": 100000,
       "seq_no": 200,
       "frame_bytes_hex": "895649440200",
       "deictic_p": 0.89,
       "scene_change_score": 0.0,
       "grounding_result": "keys",
       "grounding_confidence": 0.89,
-      "notes": "OUT-OF-WINDOW REFERENT: ingested at t=0ms; query at t=65000ms; 65000ms > 60000ms window => evicted, NOT resolvable"
+      "notes": "OUT-OF-WINDOW REFERENT: ingested at t=100000ms; query at t=170000ms; 70000ms > 60000ms window => clearly evicted, NOT resolvable"
     },
     {
-      "t_ms": 65000,
+      "t_ms": 170000,
       "frame_id": "frame-201",
       "sub_case": "out_of_window",
       "event_type": "deictic_classification",
-      "timestamp_mono_ms": 65000,
+      "timestamp_mono_ms": 170000,
       "seq_no": 201,
       "frame_bytes_hex": "895649440201",
       "deictic_p": 0.89,
@@ -91,28 +91,28 @@
       "grounding_confidence": null,
       "resolution_frame": true,
       "expected_resolvable": false,
-      "notes": "OUT-OF-WINDOW GATE FRAME: t=65000ms; frame-200 at t=0ms is 65000ms ago > 60000ms window; evicted; grounding must return not-resolvable (frame_event_id=null)"
+      "notes": "OUT-OF-WINDOW GATE FRAME: t=170000ms; frame-200 at t=100000ms is 70000ms ago > 60000ms window; clearly evicted; grounding must return not-resolvable (frame_event_id=null)"
     },
     {
-      "t_ms": 5000,
+      "t_ms": 200000,
       "frame_id": "frame-300",
       "sub_case": "edge_in_window",
       "event_type": "raw_video_frame",
-      "timestamp_mono_ms": 5000,
+      "timestamp_mono_ms": 200000,
       "seq_no": 300,
       "frame_bytes_hex": "895649440300",
       "deictic_p": 0.89,
       "scene_change_score": 0.05,
       "grounding_result": "keys",
       "grounding_confidence": 0.89,
-      "notes": "EDGE REFERENT: ingested at t=5000ms; query at t=64000ms; 59000ms < 60000ms => still in window"
+      "notes": "EDGE REFERENT: ingested at t=200000ms; query at t=258000ms; 58000ms < 60000ms => still in window"
     },
     {
-      "t_ms": 64000,
+      "t_ms": 258000,
       "frame_id": "frame-301",
       "sub_case": "edge_in_window",
       "event_type": "deictic_classification",
-      "timestamp_mono_ms": 64000,
+      "timestamp_mono_ms": 258000,
       "seq_no": 301,
       "frame_bytes_hex": "895649440301",
       "deictic_p": 0.89,
@@ -122,7 +122,7 @@
       "resolution_frame": true,
       "expected_resolvable": true,
       "expected_grounding_caused_by": "frame-300",
-      "notes": "EDGE GATE FRAME: t=64000ms; 64000-5000=59000ms < 60000ms => frame-300 still in buffer; grounding resolves to 'keys'"
+      "notes": "EDGE GATE FRAME: t=258000ms; 258000-200000=58000ms < 60000ms => frame-300 still in buffer; grounding resolves to 'keys'"
     }
   ],
   "baseline_decisions": [
@@ -140,7 +140,7 @@
       "resolvable": false,
       "grounding_label": null,
       "grounding_frame": null,
-      "notes": "65000ms > window; evicted; NOT resolvable; negative path proves window bound is real"
+      "notes": "70000ms > window; clearly evicted; NOT resolvable; negative path proves window bound is real"
     },
     {
       "frame_id": "frame-301",
@@ -148,7 +148,7 @@
       "resolvable": true,
       "grounding_label": "keys",
       "grounding_frame": "frame-300",
-      "notes": "59000ms < window; still resolvable at the edge"
+      "notes": "58000ms < window; still resolvable at the edge"
     }
   ]
 }
