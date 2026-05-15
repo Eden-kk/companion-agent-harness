@@ -247,10 +247,11 @@ async def test_grounding_event_logged_with_causal_chain_into_raw_video_frame() -
         logger=logger,
     )
     frame_event_id = "raw-video-frame-001"
+    deictic_evt_id = "deictic-classification-001"
     ref = FrameRef(event_id=frame_event_id, timestamp_mono_ms=1_000, frame_bytes=b"\x01")
     sidecar.ingest_frame(ref)
 
-    result = sidecar.resolve("what is this?", deictic_reference=True)
+    result = sidecar.resolve("what is this?", deictic_reference=True, deictic_evt_id=deictic_evt_id)
     assert result.frame_event_id == frame_event_id
 
     await logger.stop()
@@ -261,6 +262,9 @@ async def test_grounding_event_logged_with_causal_chain_into_raw_video_frame() -
     ge = grounding_events[0]
     assert frame_event_id in ge.caused_by, (
         f"grounding event caused_by={ge.caused_by!r} does not reference raw_video_frame {frame_event_id!r}"
+    )
+    assert deictic_evt_id in ge.caused_by, (
+        f"grounding event caused_by={ge.caused_by!r} does not reference deictic_classification {deictic_evt_id!r}"
     )
 
 

@@ -24,7 +24,6 @@ does not run. Full wiring of the grounding pass is implemented in v0.1c Task 7.
 from __future__ import annotations
 
 import hashlib
-import time
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -140,7 +139,7 @@ class VisionSidecar:
     # ------------------------------------------------------------------
     # Grounding pass (gated by deictic_reference)
 
-    def resolve(self, query: str, *, deictic_reference: bool) -> GroundingResult:
+    def resolve(self, query: str, *, deictic_reference: bool, deictic_evt_id: str = "") -> GroundingResult:
         """Run the deictic-grounding pass against the most recent buffered frame.
 
         Returns not-resolvable when:
@@ -160,7 +159,7 @@ class VisionSidecar:
             confidence=confidence,
             frame_event_id=frame_ref.event_id,
         )
-        self._emit_grounding_event(frame_ref.event_id, label, confidence)
+        self._emit_grounding_event(frame_ref, label, confidence, deictic_evt_id)
         return result
 
     # ------------------------------------------------------------------
@@ -178,25 +177,26 @@ class VisionSidecar:
         self._seq += 1
         return self._seq
 
-    def _emit_grounding_event(self, frame_event_id: str, label: str, confidence: float) -> None:
+    def _emit_grounding_event(self, frame_ref: FrameRef, label: str, confidence: float, deictic_evt_id: str) -> None:
         if self._logger is None:
             return
-        now_ms = int(time.monotonic() * 1000)
         seq = self._next_seq()
-        event_id = f"{self._session_id}-grounding-{seq}-{now_ms}"
+        ts_ms = frame_ref.timestamp_mono_ms
+        event_id = f"{self._session_id}-grounding-{seq}-{ts_ms}"
         payload_hash = hashlib.sha256(
             f"deictic_grounding:{event_id}:{label}:{confidence:.4f}".encode()
         ).hexdigest()[:16]
+        caused_by = [frame_ref.event_id, deictic_evt_id] if deictic_evt_id else [frame_ref.event_id]
         evt = Event(
             event_id=event_id,
             session_id=self._session_id,
             schema_version=self.SCHEMA_VERSION,
             seq_no=seq,
             event_type="deictic_grounding",
-            timestamp_mono_ms=now_ms,
+            timestamp_mono_ms=ts_ms,
             timestamp_wall=datetime.now(timezone.utc).isoformat(),
             source=self.SOURCE,
-            caused_by=[frame_event_id],
+            caused_by=caused_by,
             payload_hash=payload_hash,
             payload_ref=None,
             payload_kind="signal",
