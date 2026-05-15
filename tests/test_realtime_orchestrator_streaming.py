@@ -6,7 +6,6 @@ Success criterion (verbatim):
   decide(). The coalescing test fails if a second EOU within the grace window
   produces a second decision_future. The decide()-raise test fails if the
   orchestrator crashes instead of falling back to silence.
-  realtime_loop.py and its tests from Task 5a are UNCHANGED.
 
 Design notes:
   - All models are fakes — NO MiniCPM, torch, or SDK import (adapter-first).
