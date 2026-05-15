@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from companion_harness.reason_codes import ReasonCode  # intentionally not re-exported; import from reason_codes
+from companion_harness.tool_progress import ToolProgressEvidence  # v0.1f Anchor 4 (re-exported via __all__)
 
 __all__ = [
     "SensitiveField",
@@ -28,6 +29,7 @@ __all__ = [
     "MemoryItem",
     "EvaluationCase",
     "ReplayRun",
+    "ToolProgressEvidence",
 ]
 
 
@@ -152,6 +154,7 @@ class PolicyInputs:
     aesthetic_novelty_score:     float = 0.0
     short_response_appropriate:  bool  = False
     retrieved_items:             list["MemoryItem"] = field(default_factory=list)
+    tool_progress_evidence:      ToolProgressEvidence | None = None  # v0.1f Anchor 4
 
 
 @dataclass
