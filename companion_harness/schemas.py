@@ -99,7 +99,7 @@ class Event:
     payload_ref:         str | None
     payload_kind:        Literal["signal", "transcript", "raw_audio", "raw_video",
                                  "model_output", "memory_op", "tool_event"]
-    subject_class:       Literal["self", "third_party", "mixed", "unknown"]
+    subject_class:       Literal["self", "third_party", "mixed", "unknown", "operator"]
     sensitivity:         Literal["safe", "sensitive", "highly_sensitive"]
     retention_policy_id: str
     # Optional inline payload for fields surfaced alongside the envelope so

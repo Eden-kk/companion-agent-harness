@@ -90,3 +90,12 @@ retention_policies:
       no event lands in the log with a missing policy id. v0.1f
       Anchor 2.
     ttl_days_or_indefinite: 30
+
+  config_change_30d:
+    description: |
+      Audit log for config_change and operator_action events emitted by the
+      manual-test dashboard's /config/patch + /config/reset endpoints. 30 days
+      is sufficient for "what threshold was in effect at 14:32?" lookback during
+      a manual-test session and for post-session replay reproduction
+      (docs/design-config-and-dashboard.md §6).
+    ttl_days_or_indefinite: 30
