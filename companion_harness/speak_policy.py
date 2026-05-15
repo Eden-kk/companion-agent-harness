@@ -128,7 +128,22 @@ def decide(
             max_duration_ms=None,
         )
 
-    # 8. EOU confirmed.  Respond only when the agent was addressed.
+    # 8. Short reaction: brief proactive reply when the trigger is present and budget allows.
+    if inputs.short_response_appropriate:
+        if inputs.proactivity_budget_remaining.get("short_reaction", 0) > 0:
+            return SpeakDecision(
+                action_type="short_reaction",
+                primary_reason_code=ReasonCode.PROACTIVITY_BUDGET_AVAILABLE,
+                supporting_reason_codes=[],
+                redacted_explanation=None,
+                caused_by=caused_by,
+                budget_bucket="short_reaction",
+                allowed_prosody_tags=[],
+                max_duration_ms=None,
+            )
+        return _silence(ReasonCode.COOLDOWN_BLOCKED, caused_by)
+
+    # 9. EOU confirmed.  Respond only when the agent was addressed.
     if inputs.user_addressed_agent:
         return SpeakDecision(
             action_type="full_response",
@@ -142,7 +157,7 @@ def decide(
             max_duration_ms=None,
         )
 
-    # 9. Aesthetic reaction — lowest priority, fires only when nothing else fires.
+    # 10. Aesthetic reaction — lowest priority, fires only when nothing else fires.
     _AESTHETIC_DISABLED_MODES = frozenset({
         "creative_focus", "sleep_winddown", "group_unaddressed", "cooking",
         "crisis_emergency",
@@ -163,7 +178,8 @@ def decide(
             max_duration_ms=None,
         )
 
-    # 10. EOU confirmed but agent not explicitly addressed — silence wins ties.
+
+    # 11. EOU confirmed but agent not explicitly addressed — silence wins ties.
     return _silence(ReasonCode.NOT_ADDRESSED_TO_AGENT, caused_by)
 
 

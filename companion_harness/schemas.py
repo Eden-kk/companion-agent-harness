@@ -105,6 +105,7 @@ class PolicyInputs:
     deictic_ambiguous:           bool  = False
     quiet_mode_active:           bool  = False
     aesthetic_novelty_score:     float = 0.0
+    short_response_appropriate:  bool  = False
 
 
 @dataclass
