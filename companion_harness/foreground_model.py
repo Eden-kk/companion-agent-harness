@@ -91,6 +91,7 @@ class StreamingDuplexModel(DuplexModel, Protocol):
         self,
         frame_iter: AsyncIterator[tuple[bytes, bytes | None]],
         caused_by: list[str],
+        context_items: tuple[MemoryItem, ...] = (),
     ) -> AsyncGenerator[ThinkerProposal, None]: ...
 
 
@@ -145,6 +146,7 @@ class ForegroundModel:
         self,
         frame_iter: AsyncIterator[tuple[bytes, bytes | None]],
         caused_by: list[str],
+        context_items: tuple[MemoryItem, ...] = (),
     ) -> AsyncGenerator[ThinkerProposal, None]:
         """Drive a StreamingDuplexModel and yield logged ThinkerProposal candidates.
 
@@ -154,7 +156,7 @@ class ForegroundModel:
         """
         frame_evt = self._emit("foreground_frame", caused_by, "raw_audio")
         async for proposal in await self._model.infer_stream(  # type: ignore[attr-defined]
-            frame_iter, [frame_evt.event_id]
+            frame_iter, [frame_evt.event_id], context_items=context_items
         ):
             if not proposal.caused_by:
                 proposal.caused_by = [frame_evt.event_id]

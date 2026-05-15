@@ -176,6 +176,7 @@ def test_streaming_fake_satisfies_both_protocols():
             self,
             frame_iter: AsyncIterator[tuple[bytes, bytes | None]],
             caused_by: list[str],
+            context_items: tuple = (),
         ) -> AsyncGenerator[ThinkerProposal, None]:
             async def _gen() -> AsyncGenerator[ThinkerProposal, None]:
                 yield _make_proposal(caused_by=caused_by)
@@ -209,6 +210,7 @@ async def test_process_stream_proposals_carry_caused_by():
             self,
             frame_iter: AsyncIterator[tuple[bytes, bytes | None]],
             caused_by: list[str],
+            context_items: tuple = (),
         ) -> AsyncGenerator[ThinkerProposal, None]:
             async def _gen() -> AsyncGenerator[ThinkerProposal, None]:
                 yield _make_proposal(caused_by=caused_by)

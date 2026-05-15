@@ -266,6 +266,7 @@ class StreamingRealtimeOrchestrator:
         # config_store is None we fall back to speak_policy.decide()'s defaults
         # by leaving these as None and not passing kwargs.
         self._policy_threshold_kwargs: dict[str, float] = {}
+        self._pending_retrieved_items: list[MemoryItem] = []
         # Per-turn audio buffer (PCM16 bytes). Appended on every audio frame in
         # _audio_tee_task; consumed + cleared in T2 on EOU when asr_model is set.
         # No-op (always empty / never consumed) when asr_model is None.
@@ -527,6 +528,7 @@ class StreamingRealtimeOrchestrator:
             self._logger.log(mre_event)
 
             self._foreground_model.set_context(retrieved_items)
+            self._pending_retrieved_items = retrieved_items
             inputs.retrieved_items = retrieved_items
 
             # Emit policy_decision event FIRST so event_id is available before enqueueing (nit 10).
@@ -677,6 +679,7 @@ class StreamingRealtimeOrchestrator:
             async for proposal in self._foreground_model.process_stream(
                 frame_iter,
                 caused_by=[self._pending_signal_evt_id] if self._pending_signal_evt_id else [],
+                context_items=tuple(self._pending_retrieved_items),
             ):
                 self.proposal_buffer.append(proposal)
                 self._first_proposal_event.set()
@@ -733,6 +736,7 @@ class StreamingRealtimeOrchestrator:
 
             # Close the batch for T3.
             self._batch_close_event.set()
+            self._pending_retrieved_items = []
 
             if decision.action_type == "silence":
                 self.proposal_buffer.clear()

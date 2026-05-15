@@ -122,6 +122,7 @@ class _FakeStreamingModel:
         self,
         frame_iter: AsyncIterator[tuple[bytes, bytes | None]],
         caused_by: list[str],
+        context_items: tuple = (),
     ) -> AsyncGenerator[ThinkerProposal, None]:
         async def _gen() -> AsyncGenerator[ThinkerProposal, None]:
             async for _ in frame_iter:
@@ -154,6 +155,7 @@ class _FakeStreamingModelNoProposals:
         self,
         frame_iter: AsyncIterator[tuple[bytes, bytes | None]],
         caused_by: list[str],
+        context_items: tuple = (),
     ) -> AsyncGenerator[ThinkerProposal, None]:
         async def _gen() -> AsyncGenerator[ThinkerProposal, None]:
             async for _ in frame_iter:
