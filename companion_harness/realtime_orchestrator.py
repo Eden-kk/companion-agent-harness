@@ -51,6 +51,7 @@ from companion_harness.schemas import (
     ThinkerProposal,
     TurnSignal,
 )
+from companion_harness.speak_policy import build_decision_trace as _build_decision_trace
 from companion_harness.speak_policy import decide as _default_speak_policy_decide
 from companion_harness.tts_adapter import TtsAdapter
 from companion_harness.turn_detector_smart import SmartTurnDetector
@@ -378,6 +379,20 @@ class StreamingRealtimeOrchestrator:
                 event_type=f"policy_decision_action_{decision.action_type}",
                 caused_by=[policy_evt_id],
                 payload_kind="signal",
+            ))
+            trace = _build_decision_trace(
+                decision=decision,
+                inputs=inputs,
+                signal_event_ids=[signal_evt_id],
+                decision_id=policy_evt_id,
+                p_backchannel=signal.p_backchannel,
+            )
+            self._logger.log(self._make_event(
+                event_id=self._new_event_id(),
+                event_type="decision_trace_emitted",
+                caused_by=[policy_evt_id],
+                payload_kind="model_output",
+                extra_hash=trace.decision_id,
             ))
             decision_future.set_result(decision)
 

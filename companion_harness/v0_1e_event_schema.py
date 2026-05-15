@@ -121,4 +121,18 @@ MEMORY_EVENT_SCHEMAS: dict[str, MemoryEventSchema] = {
             "subject_class derived from the deleted MemoryItem."
         ),
     ),
+
+    # policy-decision trace; all fields are policy-replay-safe (spec lines 365-381)
+    "decision_trace_emitted": MemoryEventSchema(
+        payload_kind="model_output",
+        subject_class="self",
+        sensitivity="safe",
+        retention_policy_id="decision_trace_30d",
+        notes=(
+            "DecisionTrace artifact co-emitted with policy_decision. "
+            "All fields (threshold_path, counterfactuals, reason codes, versions) "
+            "are Tier B replay-safe. redacted_explanation is None in v0.1e. "
+            "decision_id links to the paired policy_decision event payload."
+        ),
+    ),
 }

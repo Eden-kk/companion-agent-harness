@@ -37,3 +37,11 @@ retention_policies:
       "non-content deletion receipt retained". The receipts contain NO
       content, only structural identifiers + timestamps.
     ttl_days_or_indefinite: indefinite
+
+  decision_trace_30d:
+    description: |
+      DecisionTrace artifacts co-emitted with every policy_decision event.
+      30 days retention is sufficient for "why did you say that?" lookback
+      and latency debugging. All fields are Tier B replay-safe; no PII
+      (redacted_explanation is None in v0.1e).
+    ttl_days_or_indefinite: 30
