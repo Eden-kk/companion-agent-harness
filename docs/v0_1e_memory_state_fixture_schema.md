@@ -167,6 +167,7 @@ This illustrates all three sections for a single-fact write scenario.
     "status": "active",
     "ops": [
       {
+        "event_id": "evt_002",
         "event_type": "memory_write_candidate",
         "payload": {
           "item_id": "item_abc",
@@ -179,7 +180,7 @@ This illustrates all three sections for a single-fact write scenario.
       {
         "event_type": "memory_commit_completed",
         "payload": {"item_id": "item_abc"},
-        "caused_by": ["evt_001"],
+        "caused_by": ["evt_002"],
         "expected_outcome": "commit_audit_30d event logged; item_abc retrievable"
       }
     ]

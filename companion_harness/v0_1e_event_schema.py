@@ -15,10 +15,12 @@ hardcode a static value.  Using None lets static type-checkers flag any
 callsite that accidentally passes the sentinel directly into an Event field
 (which expects a non-None str Literal).
 
-The three static-valued event types (memory_retrieval_event,
-memory_commit_completed, audit_tombstone_write, deletion_receipt_write)
-carry their classification values directly as str literals so they can be
-validated without a MemoryItem in hand.
+The three fully-static event types (memory_retrieval_event,
+audit_tombstone_write, deletion_receipt_write) carry their classification
+values directly as str literals so they can be validated without a
+MemoryItem in hand.  memory_commit_completed is mixed: its subject_class
+derives from the committed item (DERIVED_FROM_ITEM) while the other axes
+are static.
 
 retention_policy_id values are the stable enum names locked in Anchor 2;
 their TTL is config-only (replay_privacy_policy.yaml).
