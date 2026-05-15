@@ -58,6 +58,10 @@ class AestheticReactionBudgetConfig:
         sleep_winddown:    disabled
         group_unaddressed: disabled
         cooking:           disabled  # safety over aesthetics
+
+    crisis_emergency is not a field here because the spec YAML does not list it.
+    speak_policy.decide() treats crisis_emergency as "disabled" (same as cooking)
+    — safety over aesthetics, mode not enumerated in this config.
     """
 
     walking_outdoor: str

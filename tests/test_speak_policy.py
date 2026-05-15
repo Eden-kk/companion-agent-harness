@@ -147,3 +147,45 @@ def test_alert_determinism():
     d2 = decide(inputs, ["sig-1"])
     assert d1 == d2
     assert d1.action_type == "alert"
+
+
+# Aesthetic reaction gate tests (Task 8)
+
+def _aesthetic_inputs(**overrides):
+    """Base inputs that reach the aesthetic_reaction gate: agent not addressed, high novelty."""
+    return _inputs(user_addressed_agent=False, aesthetic_novelty_score=0.6, **overrides)
+
+
+def test_aesthetic_reaction_fires():
+    """High novelty + normal mode + no cooldown → aesthetic_reaction / PROACTIVITY_BUDGET_AVAILABLE."""
+    result = decide(_aesthetic_inputs(), ["sig-1"])
+    assert result.action_type == "aesthetic_reaction"
+    assert result.primary_reason_code == ReasonCode.PROACTIVITY_BUDGET_AVAILABLE
+
+
+def test_aesthetic_reaction_blocked_creative_focus():
+    """High novelty + creative_focus mode → silence / QUIET_MODE_BLOCKED."""
+    result = decide(_aesthetic_inputs(current_task_mode="creative_focus"), ["sig-1"])
+    assert result.action_type == "silence"
+    assert result.primary_reason_code == ReasonCode.QUIET_MODE_BLOCKED
+
+
+def test_aesthetic_reaction_blocked_cooldown():
+    """High novelty + cooldown_state["aesthetic_reaction"] > 0 → silence / COOLDOWN_BLOCKED."""
+    result = decide(_aesthetic_inputs(cooldown_state={"aesthetic_reaction": 3}), ["sig-1"])
+    assert result.action_type == "silence"
+    assert result.primary_reason_code == ReasonCode.COOLDOWN_BLOCKED
+
+
+def test_aesthetic_reaction_blocked_quiet_mode():
+    """High novelty + quiet_mode_active=True → silence / QUIET_MODE_BLOCKED."""
+    result = decide(_aesthetic_inputs(quiet_mode_active=True), ["sig-1"])
+    assert result.action_type == "silence"
+    assert result.primary_reason_code == ReasonCode.QUIET_MODE_BLOCKED
+
+
+def test_aesthetic_reaction_blocked_crisis_emergency():
+    """crisis_emergency mode → treated as disabled (no aesthetic_reaction)."""
+    result = decide(_aesthetic_inputs(current_task_mode="crisis_emergency"), ["sig-1"])
+    assert result.action_type == "silence"
+    assert result.primary_reason_code == ReasonCode.QUIET_MODE_BLOCKED
