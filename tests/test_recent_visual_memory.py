@@ -75,6 +75,10 @@ def test_in_window_referent_resolves(fixture_data: dict) -> None:
     )
     sidecar.ingest_frame(gate_ref)
 
+    # 35000ms < 60000ms: referent must still be in buffer
+    referent_ids = [r.event_id for r in sidecar.buffer_snapshot()]
+    assert referent["frame_id"] in referent_ids, "referent should still be in buffer in-window"
+
     result = sidecar.resolve("what did I just pick up?", deictic_reference=True)
 
     assert result.frame_event_id is not None, "in-window referent must be resolvable"
