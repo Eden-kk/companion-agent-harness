@@ -28,7 +28,7 @@ from companion_harness.v0_1f_event_schema import (
 
 # --- The 5 new tool_* event types (Anchor 2) ----------------------------------
 
-EXPECTED_EVENT_TYPES = {
+TOOL_EVENT_TYPES = {
     "tool_call_requested",
     "tool_call_dispatched",
     "tool_progress_event",
@@ -36,24 +36,37 @@ EXPECTED_EVENT_TYPES = {
     "tool_call_cancelled",
 }
 
+# docs/design-config-and-dashboard.md §8: control-plane signals for the
+# manual-test dashboard's config endpoints joined the v0.1f registry (the
+# v0.1f file is the canonical host per the design doc; new events join the
+# existing v0.1e/v0.1f/v0.1g alphabet).  Their schema contract is checked
+# in tests/test_config_change_event_schema.py; the parametrized invariants
+# below only apply to the original 5 tool_* events.
+CONFIG_EVENT_TYPES = {
+    "operator_action",
+    "config_change",
+}
 
-def test_registry_has_exactly_five_event_types():
+EXPECTED_EVENT_TYPES = TOOL_EVENT_TYPES | CONFIG_EVENT_TYPES
+
+
+def test_registry_has_expected_event_types():
     assert set(EVENT_TYPE_SCHEMAS.keys()) == EXPECTED_EVENT_TYPES
 
 
-@pytest.mark.parametrize("event_type", sorted(EXPECTED_EVENT_TYPES))
+@pytest.mark.parametrize("event_type", sorted(TOOL_EVENT_TYPES))
 def test_every_event_type_payload_kind_is_tool_event(event_type):
     """Anchor 2 row: payload_kind = `tool_event` for all 5 tool_* event types."""
     assert EVENT_TYPE_SCHEMAS[event_type].payload_kind == "tool_event"
 
 
-@pytest.mark.parametrize("event_type", sorted(EXPECTED_EVENT_TYPES))
+@pytest.mark.parametrize("event_type", sorted(TOOL_EVENT_TYPES))
 def test_every_event_type_subject_class_is_self(event_type):
     """Anchor 2 row: subject_class = `self` for all 5 tool_* event types."""
     assert EVENT_TYPE_SCHEMAS[event_type].subject_class == "self"
 
 
-@pytest.mark.parametrize("event_type", sorted(EXPECTED_EVENT_TYPES))
+@pytest.mark.parametrize("event_type", sorted(TOOL_EVENT_TYPES))
 def test_every_event_type_carries_tool_call_id(event_type):
     """Anchor 2 patched cross-bullet: all 5 tool_* events carry tool_call_id."""
     assert "tool_call_id" in EVENT_TYPE_SCHEMAS[event_type].required_fields

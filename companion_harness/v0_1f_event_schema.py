@@ -48,7 +48,7 @@ DERIVED_FROM_RESULT = None  # tool_call_completed → from result payload
 
 PayloadKind  = Literal["signal", "transcript", "raw_audio", "raw_video",
                        "model_output", "memory_op", "tool_event"]
-SubjectClass = Literal["self", "third_party", "mixed", "unknown"]
+SubjectClass = Literal["self", "third_party", "mixed", "unknown", "operator"]
 Sensitivity  = Literal["safe", "sensitive", "highly_sensitive"]
 
 
@@ -150,6 +150,53 @@ EVENT_TYPE_SCHEMAS: dict[str, ToolEventSchema] = {
             "(typically vad_user_speech_onset for barge-in; v0.1f scopes "
             "cancellation to barge-in only per OQ-10).  No content payload "
             "beyond the structural identifier."
+        ),
+    ),
+
+    # docs/design-config-and-dashboard.md §8 row 1: operator HTTP request to
+    # the manual-test dashboard's /config/patch + /config/reset endpoints.
+    # subject_class="operator" per §11 OQ-4 resolution (new subject class).
+    # Payload is structural metadata only; the request body (the patch) lives
+    # downstream on the config_change event so we don't duplicate the diff.
+    "operator_action": ToolEventSchema(
+        payload_kind="signal",
+        subject_class="operator",
+        sensitivity="safe",
+        retention_policy_id="config_change_30d",
+        required_fields=("endpoint", "client_ip", "request_id"),
+        notes=(
+            "Upstream audit event for operator HTTP requests against the "
+            "manual-test dashboard's config endpoints (docs/design-config-"
+            "and-dashboard.md §8).  Payload carries structural metadata only "
+            "(endpoint, client_ip, request_id); the patch body lives on the "
+            "downstream config_change event.  caused_by[] is the entry-point "
+            "of an operator-initiated chain."
+        ),
+    ),
+
+    # docs/design-config-and-dashboard.md §8 row 2: downstream config-patch
+    # application emitted by /config/patch + /config/reset.  Tier-B values
+    # only (numeric thresholds; sensitivity="safe").  caused_by[] always
+    # cites the upstream operator_action via operator_action_event_id.
+    "config_change": ToolEventSchema(
+        payload_kind="signal",
+        subject_class="self",
+        sensitivity="safe",
+        retention_policy_id="config_change_30d",
+        required_fields=(
+            "key",
+            "previous_value",
+            "new_value",
+            "applied_at_ms",
+            "operator_action_event_id",
+        ),
+        notes=(
+            "Config-patch application event (docs/design-config-and-"
+            "dashboard.md §8).  subject_class=\"self\" because the system is "
+            "the subject of the mutation; the operator's action is the "
+            "upstream operator_action event referenced via "
+            "operator_action_event_id.  Tier-B keys only -- numeric "
+            "thresholds; no free text, no PII."
         ),
     ),
 }
