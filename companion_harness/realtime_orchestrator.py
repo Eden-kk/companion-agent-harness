@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING, Any
 
 from companion_harness.addressing_classifier import (
     AddressingClassifier,
+    MiniCPMAddressingClassifier,
     derive_user_addressed_agent,
 )
 from companion_harness.asr_adapter import ASRModel
@@ -200,6 +201,7 @@ class StreamingRealtimeOrchestrator:
         asr_model: ASRModel | None = None,
         vision_sidecar: "VisionSidecar | None" = None,
         addressing_classifier: AddressingClassifier | None = None,
+        minicpm_addressing_classifier: MiniCPMAddressingClassifier | None = None,
         config_store: "ConfigStore | None" = None,
         native_duplex_eou_source: NativeDuplexEouSource | None = None,
     ) -> None:
@@ -262,7 +264,10 @@ class StreamingRealtimeOrchestrator:
         self._semantic_store = semantic_store
         self._asr_model = asr_model
         self._vision_sidecar = vision_sidecar
+        # WakeWordAddressingClassifier is the safety-net; MiniCPM-derived is the primary.
+        # UNAVAILABLE: #157 — libcudart blocker, MiniCPM-derived addressing unavailable.
         self._addressing_classifier = addressing_classifier
+        self._minicpm_addressing_classifier = minicpm_addressing_classifier
         self._config_store = config_store
         # UNAVAILABLE: #157 — libcudart blocker; _NullNativeDuplexEouSource used
         # by default so every EOU decision routes through the SmartTurn/VAD
@@ -480,23 +485,6 @@ class StreamingRealtimeOrchestrator:
                 self._turn_audio_buffer.clear()
             inputs.user_transcript = transcript
 
-            # --- Addressing classifier: 3-tier override of user_addressed_agent ---
-            # When wired, the classifier inspects (transcript, speaker_count,
-            # social_mode) and overrides the builder's mechanical value per the
-            # explicit/background/implicit rule (see addressing_classifier.py).
-            # speaker_count is None today (diarization not wired); the tier
-            # collapses to wake-word OR mechanical fallback. Backward-compatible
-            # when classifier is None: builder-supplied value stands.
-            if self._addressing_classifier is not None:
-                addressing_signal = self._addressing_classifier(
-                    transcript=transcript,
-                    speaker_count=None,
-                    social_mode=inputs.social_mode,
-                )
-                inputs.user_addressed_agent = derive_user_addressed_agent(
-                    addressing_signal, inputs.social_mode
-                )
-
             # --- Invariant #1: emit the ASR transcript as an Event (PR #144 P0). ---
             # The transcript drives _detect_explicit_remember and the addressing
             # classifier; per invariant #1 ("no unlogged behavior") it must be
@@ -568,6 +556,36 @@ class StreamingRealtimeOrchestrator:
             self._foreground_model.set_context(retrieved_items)
             self._pending_retrieved_items = retrieved_items
             inputs.retrieved_items = retrieved_items
+
+            # --- Addressing: MiniCPM-derived primary; WakeWord safety-net ---
+            # MiniCPM-derived classifier is the final-product primary (issue #139).
+            # WakeWordAddressingClassifier is the safety-net, active when MiniCPM
+            # returns None (unavailable — UNAVAILABLE: #157 libcudart blocker).
+            # A signal_producer_fallback event is emitted whenever the safety-net fires.
+            addressing_signal = None
+            if self._minicpm_addressing_classifier is not None:
+                addressing_signal = self._minicpm_addressing_classifier(
+                    transcript=transcript,
+                    speaker_count=None,
+                    social_mode=inputs.social_mode,
+                )
+            if addressing_signal is None and self._addressing_classifier is not None:
+                addressing_signal = self._addressing_classifier(
+                    transcript=transcript,
+                    speaker_count=None,
+                    social_mode=inputs.social_mode,
+                )
+                self._logger.log(self._make_event(
+                    event_id=self._new_event_id(),
+                    event_type="signal_producer_fallback",
+                    caused_by=[signal_evt_id],
+                    payload_kind="signal",
+                    extra_hash="addressing:wake_word_safety_net",
+                ))
+            if addressing_signal is not None:
+                inputs.user_addressed_agent = derive_user_addressed_agent(
+                    addressing_signal, inputs.social_mode
+                )
 
             # Emit policy_decision event FIRST so event_id is available before enqueueing (nit 10).
             policy_evt_id = self._new_event_id()

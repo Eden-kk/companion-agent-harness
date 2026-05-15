@@ -31,7 +31,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from companion_harness.addressing_classifier import WakeWordAddressingClassifier
+from companion_harness.addressing_classifier import (
+    WakeWordAddressingClassifier,
+    _NullMiniCPMAddressingClassifier,
+)
 from companion_harness.audio_output_controller import AudioOutputController
 from companion_harness.av_conflict_scorer import AudioVisualConflictScorer, _NullAudioVisualConflictScorer
 from companion_harness.backchannel_classifier import BackchannelClassifier
@@ -536,10 +539,11 @@ def build_live_pipeline(
         sink=sink,
     )
 
-    # WakeWordAddressingClassifier is deterministic and SDK-free; safe in stub
-    # mode too. The orchestrator applies the 3-tier rule (wake-word / speaker-
-    # count placeholder / mechanical fallback) over the ASR transcript on EOU.
-    addressing_classifier = WakeWordAddressingClassifier()
+    # MiniCPM-derived classifier is the final-product primary (issue #139).
+    # WakeWordAddressingClassifier is the safety-net, active when MiniCPM returns None.
+    # UNAVAILABLE: #157 — libcudart blocker, MiniCPM-derived addressing unavailable.
+    minicpm_addressing = _NullMiniCPMAddressingClassifier()
+    safety_net_addressing = WakeWordAddressingClassifier()
 
     # Bind the audio_output.is_playing callback into the builder closure so
     # `PolicyInputs.assistant_speaking` reflects live playback state. The
@@ -578,7 +582,8 @@ def build_live_pipeline(
         decision_trace_dir=decision_trace_dir,
         asr_model=asr_model,
         vision_sidecar=vision_sidecar,
-        addressing_classifier=addressing_classifier,
+        minicpm_addressing_classifier=minicpm_addressing,
+        addressing_classifier=safety_net_addressing,
         config_store=config_store,
         # UNAVAILABLE: #157 — libcudart blocker; null source routes every EOU
         # decision through SmartTurn/VAD fallback (signal_producer_fallback
