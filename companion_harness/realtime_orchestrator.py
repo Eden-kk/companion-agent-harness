@@ -327,10 +327,16 @@ class StreamingRealtimeOrchestrator:
             # Race between next frame and batch-close.
             get_task = asyncio.ensure_future(self._tee_to_foreground.get())
             close_task = asyncio.ensure_future(self._batch_close_event.wait())
-            done, pending = await asyncio.wait(
-                {get_task, close_task},
-                return_when=asyncio.FIRST_COMPLETED,
-            )
+            try:
+                done, pending = await asyncio.wait(
+                    {get_task, close_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            finally:
+                if not get_task.done():
+                    get_task.cancel()
+                if not close_task.done():
+                    close_task.cancel()
             for p in pending:
                 p.cancel()
 
@@ -384,7 +390,13 @@ class StreamingRealtimeOrchestrator:
                 chunks = self._tts_adapter.synthesize(text, decision.allowed_prosody_tags)
                 await self._audio_output.play(chunks, gen_event_id)
             except Exception as exc:
-                self._emit("tts_adapter_error", [gen_event_id], "signal")
+                self._logger.log(self._make_event(
+                    event_id=self._new_event_id(),
+                    event_type="tts_adapter_error",
+                    caused_by=[gen_event_id],
+                    payload_kind="signal",
+                    extra_hash=type(exc).__name__,
+                ))
                 self._audio_output.request_stop(caused_by=[gen_event_id])
 
     def _speak_policy_decide(
