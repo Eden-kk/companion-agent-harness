@@ -54,19 +54,81 @@ from enum import Enum
 
 
 class ReasonCode(Enum):
-    EOU_CONFIRMED                = "EOU_CONFIRMED"
-    USER_ADDRESSED_AGENT         = "USER_ADDRESSED_AGENT"
-    NOT_ADDRESSED_TO_AGENT       = "NOT_ADDRESSED_TO_AGENT"
-    BACKCHANNEL_DETECTED         = "BACKCHANNEL_DETECTED"
-    ALERT_THRESHOLD_EXCEEDED     = "ALERT_THRESHOLD_EXCEEDED"
-    PROACTIVITY_BUDGET_AVAILABLE = "PROACTIVITY_BUDGET_AVAILABLE"
-    COOLDOWN_BLOCKED             = "COOLDOWN_BLOCKED"
-    QUIET_MODE_BLOCKED           = "QUIET_MODE_BLOCKED"
-    PRIVACY_MODE_BLOCKED         = "PRIVACY_MODE_BLOCKED"
-    SAFETY_OVERRIDE              = "SAFETY_OVERRIDE"
-    DEICTIC_AMBIGUOUS            = "DEICTIC_AMBIGUOUS"
-    VISUAL_LOW_CONFIDENCE        = "VISUAL_LOW_CONFIDENCE"
-    AUDIO_VISUAL_CONFLICT        = "AUDIO_VISUAL_CONFLICT"
+    EOU_CONFIRMED                  = "EOU_CONFIRMED"
+    USER_ADDRESSED_AGENT           = "USER_ADDRESSED_AGENT"
+    NOT_ADDRESSED_TO_AGENT         = "NOT_ADDRESSED_TO_AGENT"
+    BACKCHANNEL_DETECTED           = "BACKCHANNEL_DETECTED"
+    ALERT_THRESHOLD_EXCEEDED       = "ALERT_THRESHOLD_EXCEEDED"
+    PROACTIVITY_BUDGET_AVAILABLE   = "PROACTIVITY_BUDGET_AVAILABLE"
+    COOLDOWN_BLOCKED               = "COOLDOWN_BLOCKED"
+    QUIET_MODE_BLOCKED             = "QUIET_MODE_BLOCKED"
+    PRIVACY_MODE_BLOCKED           = "PRIVACY_MODE_BLOCKED"
+    SAFETY_OVERRIDE                = "SAFETY_OVERRIDE"
+    DEICTIC_AMBIGUOUS              = "DEICTIC_AMBIGUOUS"
+    VISUAL_LOW_CONFIDENCE          = "VISUAL_LOW_CONFIDENCE"
+    AUDIO_VISUAL_CONFLICT          = "AUDIO_VISUAL_CONFLICT"
+    RUBRIC_VIOLATION               = "RUBRIC_VIOLATION"
+    ATTACHMENT_RISK_DAMPEN         = "ATTACHMENT_RISK_DAMPEN"
+    USER_REDUCTION_COMMAND_APPLIED = "USER_REDUCTION_COMMAND_APPLIED"
+
+
+ReasonCode.RUBRIC_VIOLATION.__doc__               = (
+    "An aesthetic_reaction proposal failed one or more of the eight rubric "
+    "checks (spec lines 624-658).  The per-check violation IDs are carried on "
+    "ThinkerProposal.rubric_violations and replayed via DecisionTrace.threshold_path."
+)
+ReasonCode.ATTACHMENT_RISK_DAMPEN.__doc__         = (
+    "Proactivity is suppressed because attachment_risk_level >= dampen threshold "
+    "(spec lines 851-857 -- \"do NOT increase proactivity during distress\")."
+)
+ReasonCode.USER_REDUCTION_COMMAND_APPLIED.__doc__ = (
+    "A user reduction command (\"less proactive\" / \"quiet mode\") was applied "
+    "and mutated proactivity state (spec lines 678-680; invariant #7)."
+)
+
+
+# --- Stage 6 gap-audit conclusion (2026-05-15, v0.1g Task 2) ---
+#
+# Audit scope: Part 6 Stage 6 (companion texture; spec lines 599-704, 725-732,
+# 1077-1078) against the current enum.  Five candidates were evaluated per
+# docs/roadmap-v0.1g-draft.md §Wave 1 / Task 2:
+#
+#   RUBRIC_VIOLATION                   -- ADDED.  Spec line 663 names the
+#                                        rubric-fired logging explicitly;
+#                                        folding into COOLDOWN_BLOCKED /
+#                                        QUIET_MODE_BLOCKED collapses
+#                                        content-shape blocks with rate /
+#                                        mode blocks.  Distinct policy effect.
+#
+#   ATTACHMENT_RISK_DAMPEN             -- ADDED.  Spec line 855 ("do NOT
+#                                        increase proactivity during distress")
+#                                        is a distinct policy effect; folding
+#                                        into QUIET_MODE_BLOCKED would lose
+#                                        the per-signal evidence chain in
+#                                        replay.
+#
+#   USER_REDUCTION_COMMAND_APPLIED     -- ADDED.  Invariant #7 + the spec
+#                                        line 731
+#                                        user_reduction_command_compliance_rate
+#                                        gate make this a stable policy concept.
+#
+#   SHARED_MOMENT_RETRIEVED            -- DO NOT ADD.  Retrieval attribution
+#                                        already lives in
+#                                        DecisionTrace.retrieval_used (v0.1e
+#                                        Task 1).  PROACTIVITY_BUDGET_AVAILABLE
+#                                        stays the primary code on the accept
+#                                        path.
+#
+#   THINKER_NO_DIRECT_SPEECH_VIOLATION -- DO NOT ADD.  Invariant #2 breach is
+#                                        a bug state, not a policy decision;
+#                                        it should fail loudly (assertion /
+#                                        contract test), not surface as a
+#                                        SpeakDecision reason.
+
+
+class _v0_1g_audit_anchor:
+    """No-op sentinel to anchor the above gap-audit comment block at file end."""
+    pass
 
 
 ReasonCode.EOU_CONFIRMED.__doc__                = "EOU is confirmed and the turn has been handed off to the agent."

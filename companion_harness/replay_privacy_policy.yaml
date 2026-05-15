@@ -45,3 +45,26 @@ retention_policies:
       and latency debugging. All fields are Tier B replay-safe; no PII
       (redacted_explanation is None in v0.1e).
     ttl_days_or_indefinite: 30
+
+  # --- v0.1g Stage 6 additions (Anchor 2 of docs/roadmap-v0.1g-draft.md) ---
+
+  proposal_audit_30d:
+    description: |
+      Audit log for aesthetic_proposal_generated events (one per
+      ThinkerProposal, rubric-pass or rubric-fail) per v0.1g Anchor 4 +
+      invariant #1.  30 days matches the other audit-log retentions;
+      sufficient for "why did you say that?" lookback and rubric-violation
+      attribution.
+    ttl_days_or_indefinite: 30
+
+  attachment_risk_audit_365d:
+    description: |
+      Audit log for attachment_risk_signal events (one per detected
+      tracked-signal occurrence; spec lines 843-848).  365 days reflects
+      the higher audit bar for distress signals -- false-positive-rate
+      gating, longitudinal patterns (prolonged_daily_use_minutes,
+      repeated_reassurance_loops), and post-incident review for
+      explicit_crisis_signals.  Per-event sensitivity (sensitive vs
+      highly_sensitive) is set on the wrapper Event; this retention ID
+      governs the audit-log lifetime, not the content's privacy class.
+    ttl_days_or_indefinite: 365
