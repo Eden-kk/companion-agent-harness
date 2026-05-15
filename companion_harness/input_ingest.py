@@ -1,8 +1,12 @@
-"""InputIngest adapter — audio-only, Manual-test Task 1.
+"""InputIngest adapter — audio + video frame ingest, v0.1c Task 1.
 
 Wire contract: docs/visionclaw-adaptation-plan-draft.md §4.
 Blob store: local filesystem at <blob_dir>/<event_id>, URI = blob://<event_id>.
-Causal chain: harness_init (caused_by=[]) -> session_open -> chunk[0] -> chunk[1] -> ...
+Causal chain (per modality, independent):
+  harness_init (caused_by=[]) -> session_open -> audio[0] -> audio[1] -> ...
+                                              -> video[0] -> video[1] -> ...
+Each modality's caused_by[] chain is independent; video frames never point to
+audio chunk IDs and vice versa (cross-modal causation would be false attribution).
 """
 
 from __future__ import annotations
@@ -40,7 +44,8 @@ class IngestSession:
         self.harness_init_id = harness_init_id
         self.session_open_id = session_open_id
         self._seq = 2  # 0=harness_init, 1=session_open
-        self._prev_chunk_id: str | None = None
+        self._prev_audio_chunk_id: str | None = None
+        self._prev_video_chunk_id: str | None = None
 
     def next_seq(self) -> int:
         n = self._seq
@@ -129,8 +134,8 @@ class InputIngest:
         payload_ref = self._write_blob(event_id, pcm_bytes)
 
         caused_by = (
-            [session._prev_chunk_id]
-            if session._prev_chunk_id is not None
+            [session._prev_audio_chunk_id]
+            if session._prev_audio_chunk_id is not None
             else [session.session_open_id]
         )
 
@@ -151,7 +156,39 @@ class InputIngest:
             sensitivity="sensitive",
             retention_policy_id=_RETENTION,
         )
-        session._prev_chunk_id = event_id
+        session._prev_audio_chunk_id = event_id
+        self._logger.log(event)
+        return event
+
+    def ingest_video_frame(self, session: IngestSession, frame_bytes: bytes, meta: CaptureMetadata) -> Event:
+        event_id = str(uuid.uuid4())
+        payload_hash = hashlib.sha256(frame_bytes).hexdigest()
+        payload_ref = self._write_blob(event_id, frame_bytes)
+
+        caused_by = (
+            [session._prev_video_chunk_id]
+            if session._prev_video_chunk_id is not None
+            else [session.session_open_id]
+        )
+
+        event = Event(
+            event_id=event_id,
+            session_id=session.session_id,
+            schema_version=_SCHEMA_VERSION,
+            seq_no=session.next_seq(),
+            event_type="raw_video_frame",
+            timestamp_mono_ms=meta.timestamp_mono_ms,
+            timestamp_wall=meta.timestamp_wall,
+            source=f"{meta.client_id}.video",
+            caused_by=caused_by,
+            payload_hash=payload_hash,
+            payload_ref=payload_ref,
+            payload_kind="raw_video",
+            subject_class="self",
+            sensitivity="sensitive",
+            retention_policy_id=_RETENTION,
+        )
+        session._prev_video_chunk_id = event_id
         self._logger.log(event)
         return event
 
