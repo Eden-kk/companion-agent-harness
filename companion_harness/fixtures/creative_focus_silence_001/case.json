@@ -24,177 +24,184 @@
     "frame_duration_ms": 33,
     "expected_events_markers": "event_type strings are fixture-internal role labels, not Part 5 event_type values."
   },
-  "signal_trace": {
-    "status": "final",
-    "sub_cases": [
-      {
-        "sub_case_id": "creative_focus_suppression",
-        "description": "creative_focus mode + aesthetic_novelty_score=0.7 -> silence/QUIET_MODE_BLOCKED",
-        "frames": [
-          {
-            "t_ms": 0,
-            "frame_id": "cf-frame-000",
-            "event_type": "raw_video_frame",
-            "sub_case": "creative_focus_suppression",
-            "policy_inputs": {
-              "user_speaking": false,
-              "eou_probability": 0.9,
-              "assistant_speaking": false,
-              "scene_change_score": 0.0,
-              "deictic_reference": false,
-              "user_addressed_agent": false,
-              "urgency_score": 0.0,
-              "proactivity_budget_remaining": {},
-              "privacy_mode": "normal",
-              "current_task_mode": "creative_focus",
-              "social_mode": "user_addressing_agent",
-              "risk_mode": "normal",
-              "cooldown_state": {},
-              "attachment_risk_level": 0.0,
-              "aesthetic_novelty_score": 0.7,
-              "short_response_appropriate": false
-            },
-            "notes": "user silently writing; creative_focus mode active"
-          },
-          {
-            "t_ms": 33,
-            "frame_id": "cf-frame-001",
-            "event_type": "task_mode_classification",
-            "sub_case": "creative_focus_suppression",
-            "policy_inputs": {
-              "user_speaking": false,
-              "eou_probability": 0.9,
-              "assistant_speaking": false,
-              "scene_change_score": 0.0,
-              "deictic_reference": false,
-              "user_addressed_agent": false,
-              "urgency_score": 0.0,
-              "proactivity_budget_remaining": {},
-              "privacy_mode": "normal",
-              "current_task_mode": "creative_focus",
-              "social_mode": "user_addressing_agent",
-              "risk_mode": "normal",
-              "cooldown_state": {},
-              "attachment_risk_level": 0.0,
-              "aesthetic_novelty_score": 0.7,
-              "short_response_appropriate": false
-            },
-            "notes": "task mode confirmed creative_focus"
-          },
-          {
-            "t_ms": 66,
-            "frame_id": "cf-frame-002",
-            "event_type": "aesthetic_reaction_candidate",
-            "sub_case": "creative_focus_suppression",
-            "policy_inputs": {
-              "user_speaking": false,
-              "eou_probability": 0.9,
-              "assistant_speaking": false,
-              "scene_change_score": 0.0,
-              "deictic_reference": false,
-              "user_addressed_agent": false,
-              "urgency_score": 0.0,
-              "proactivity_budget_remaining": {},
-              "privacy_mode": "normal",
-              "current_task_mode": "creative_focus",
-              "social_mode": "user_addressing_agent",
-              "risk_mode": "normal",
-              "cooldown_state": {},
-              "attachment_risk_level": 0.0,
-              "aesthetic_novelty_score": 0.7,
-              "short_response_appropriate": false
-            },
-            "resolution_frame": true,
-            "expected_action_type": "silence",
-            "expected_reason_code": "QUIET_MODE_BLOCKED",
-            "notes": "high-novelty visual event; creative_focus in _AESTHETIC_DISABLED_MODES -> QUIET_MODE_BLOCKED (mode-disable path, not rate-limit/COOLDOWN_BLOCKED)"
-          }
-        ]
+  "signal_trace": [
+    {
+      "t_ms": 0,
+      "frame_id": "cf-frame-000",
+      "event_type": "raw_video_frame",
+      "sub_case": "creative_focus_suppression",
+      "policy_inputs": {
+        "user_speaking": false,
+        "eou_probability": 0.9,
+        "assistant_speaking": false,
+        "scene_change_score": 0.0,
+        "deictic_reference": false,
+        "user_addressed_agent": false,
+        "urgency_score": 0.0,
+        "proactivity_budget_remaining": {},
+        "privacy_mode": "normal",
+        "current_task_mode": "creative_focus",
+        "social_mode": "user_addressing_agent",
+        "risk_mode": "normal",
+        "cooldown_state": {},
+        "attachment_risk_level": 0.0,
+        "aesthetic_novelty_score": 0.7,
+        "short_response_appropriate": false,
+        "quiet_mode_active": true
       },
-      {
-        "sub_case_id": "normal_mode_fires",
-        "description": "normal mode + aesthetic_novelty_score=0.7 -> aesthetic_reaction/PROACTIVITY_BUDGET_AVAILABLE (contrast sub-case)",
-        "frames": [
-          {
-            "t_ms": 200,
-            "frame_id": "n-frame-000",
-            "event_type": "raw_video_frame",
-            "sub_case": "normal_mode_fires",
-            "policy_inputs": {
-              "user_speaking": false,
-              "eou_probability": 0.9,
-              "assistant_speaking": false,
-              "scene_change_score": 0.0,
-              "deictic_reference": false,
-              "user_addressed_agent": false,
-              "urgency_score": 0.0,
-              "proactivity_budget_remaining": {},
-              "privacy_mode": "normal",
-              "current_task_mode": "normal",
-              "social_mode": "user_addressing_agent",
-              "risk_mode": "normal",
-              "cooldown_state": {},
-              "attachment_risk_level": 0.0,
-              "aesthetic_novelty_score": 0.7,
-              "short_response_appropriate": false
-            },
-            "notes": "same aesthetic_novelty_score=0.7; normal mode active; no cooldown"
-          },
-          {
-            "t_ms": 233,
-            "frame_id": "n-frame-001",
-            "event_type": "task_mode_classification",
-            "sub_case": "normal_mode_fires",
-            "policy_inputs": {
-              "user_speaking": false,
-              "eou_probability": 0.9,
-              "assistant_speaking": false,
-              "scene_change_score": 0.0,
-              "deictic_reference": false,
-              "user_addressed_agent": false,
-              "urgency_score": 0.0,
-              "proactivity_budget_remaining": {},
-              "privacy_mode": "normal",
-              "current_task_mode": "normal",
-              "social_mode": "user_addressing_agent",
-              "risk_mode": "normal",
-              "cooldown_state": {},
-              "attachment_risk_level": 0.0,
-              "aesthetic_novelty_score": 0.7,
-              "short_response_appropriate": false
-            },
-            "notes": "task mode confirmed normal"
-          },
-          {
-            "t_ms": 266,
-            "frame_id": "n-frame-002",
-            "event_type": "aesthetic_reaction_candidate",
-            "sub_case": "normal_mode_fires",
-            "policy_inputs": {
-              "user_speaking": false,
-              "eou_probability": 0.9,
-              "assistant_speaking": false,
-              "scene_change_score": 0.0,
-              "deictic_reference": false,
-              "user_addressed_agent": false,
-              "urgency_score": 0.0,
-              "proactivity_budget_remaining": {},
-              "privacy_mode": "normal",
-              "current_task_mode": "normal",
-              "social_mode": "user_addressing_agent",
-              "risk_mode": "normal",
-              "cooldown_state": {},
-              "attachment_risk_level": 0.0,
-              "aesthetic_novelty_score": 0.7,
-              "short_response_appropriate": false
-            },
-            "resolution_frame": true,
-            "expected_action_type": "aesthetic_reaction",
-            "expected_reason_code": "PROACTIVITY_BUDGET_AVAILABLE",
-            "notes": "same novelty score; normal mode not in _AESTHETIC_DISABLED_MODES; no cooldown -> aesthetic_reaction fires"
-          }
-        ]
-      }
-    ]
-  }
+      "notes": "user silently writing; creative_focus mode active"
+    },
+    {
+      "t_ms": 33,
+      "frame_id": "cf-frame-001",
+      "event_type": "task_mode_classification",
+      "sub_case": "creative_focus_suppression",
+      "policy_inputs": {
+        "user_speaking": false,
+        "eou_probability": 0.9,
+        "assistant_speaking": false,
+        "scene_change_score": 0.0,
+        "deictic_reference": false,
+        "user_addressed_agent": false,
+        "urgency_score": 0.0,
+        "proactivity_budget_remaining": {},
+        "privacy_mode": "normal",
+        "current_task_mode": "creative_focus",
+        "social_mode": "user_addressing_agent",
+        "risk_mode": "normal",
+        "cooldown_state": {},
+        "attachment_risk_level": 0.0,
+        "aesthetic_novelty_score": 0.7,
+        "short_response_appropriate": false,
+        "quiet_mode_active": true
+      },
+      "notes": "task mode confirmed creative_focus"
+    },
+    {
+      "t_ms": 66,
+      "frame_id": "cf-frame-002",
+      "event_type": "aesthetic_reaction_candidate",
+      "sub_case": "creative_focus_suppression",
+      "policy_inputs": {
+        "user_speaking": false,
+        "eou_probability": 0.9,
+        "assistant_speaking": false,
+        "scene_change_score": 0.0,
+        "deictic_reference": false,
+        "user_addressed_agent": false,
+        "urgency_score": 0.0,
+        "proactivity_budget_remaining": {},
+        "privacy_mode": "normal",
+        "current_task_mode": "creative_focus",
+        "social_mode": "user_addressing_agent",
+        "risk_mode": "normal",
+        "cooldown_state": {},
+        "attachment_risk_level": 0.0,
+        "aesthetic_novelty_score": 0.7,
+        "short_response_appropriate": false,
+        "quiet_mode_active": true
+      },
+      "resolution_frame": true,
+      "expected_action_type": "silence",
+      "expected_reason_code": "QUIET_MODE_BLOCKED",
+      "notes": "high-novelty visual event; creative_focus in _AESTHETIC_DISABLED_MODES -> QUIET_MODE_BLOCKED (mode-disable path, not rate-limit/COOLDOWN_BLOCKED)"
+    },
+    {
+      "t_ms": 200,
+      "frame_id": "n-frame-000",
+      "event_type": "raw_video_frame",
+      "sub_case": "normal_mode_fires",
+      "policy_inputs": {
+        "user_speaking": false,
+        "eou_probability": 0.9,
+        "assistant_speaking": false,
+        "scene_change_score": 0.0,
+        "deictic_reference": false,
+        "user_addressed_agent": false,
+        "urgency_score": 0.0,
+        "proactivity_budget_remaining": {},
+        "privacy_mode": "normal",
+        "current_task_mode": "normal",
+        "social_mode": "user_addressing_agent",
+        "risk_mode": "normal",
+        "cooldown_state": {},
+        "attachment_risk_level": 0.0,
+        "aesthetic_novelty_score": 0.7,
+        "short_response_appropriate": false,
+        "quiet_mode_active": false
+      },
+      "notes": "same aesthetic_novelty_score=0.7; normal mode active; no cooldown"
+    },
+    {
+      "t_ms": 233,
+      "frame_id": "n-frame-001",
+      "event_type": "task_mode_classification",
+      "sub_case": "normal_mode_fires",
+      "policy_inputs": {
+        "user_speaking": false,
+        "eou_probability": 0.9,
+        "assistant_speaking": false,
+        "scene_change_score": 0.0,
+        "deictic_reference": false,
+        "user_addressed_agent": false,
+        "urgency_score": 0.0,
+        "proactivity_budget_remaining": {},
+        "privacy_mode": "normal",
+        "current_task_mode": "normal",
+        "social_mode": "user_addressing_agent",
+        "risk_mode": "normal",
+        "cooldown_state": {},
+        "attachment_risk_level": 0.0,
+        "aesthetic_novelty_score": 0.7,
+        "short_response_appropriate": false,
+        "quiet_mode_active": false
+      },
+      "notes": "task mode confirmed normal"
+    },
+    {
+      "t_ms": 266,
+      "frame_id": "n-frame-002",
+      "event_type": "aesthetic_reaction_candidate",
+      "sub_case": "normal_mode_fires",
+      "policy_inputs": {
+        "user_speaking": false,
+        "eou_probability": 0.9,
+        "assistant_speaking": false,
+        "scene_change_score": 0.0,
+        "deictic_reference": false,
+        "user_addressed_agent": false,
+        "urgency_score": 0.0,
+        "proactivity_budget_remaining": {},
+        "privacy_mode": "normal",
+        "current_task_mode": "normal",
+        "social_mode": "user_addressing_agent",
+        "risk_mode": "normal",
+        "cooldown_state": {},
+        "attachment_risk_level": 0.0,
+        "aesthetic_novelty_score": 0.7,
+        "short_response_appropriate": false,
+        "quiet_mode_active": false
+      },
+      "resolution_frame": true,
+      "expected_action_type": "aesthetic_reaction",
+      "expected_reason_code": "PROACTIVITY_BUDGET_AVAILABLE",
+      "notes": "same novelty score; normal mode not in _AESTHETIC_DISABLED_MODES; no cooldown -> aesthetic_reaction fires"
+    }
+  ],
+  "baseline_decisions": [
+    {
+      "sub_case": "creative_focus_suppression",
+      "frame_id": "cf-frame-002",
+      "action_type": "silence",
+      "primary_reason_code": "QUIET_MODE_BLOCKED",
+      "supporting_reason_codes": []
+    },
+    {
+      "sub_case": "normal_mode_fires",
+      "frame_id": "n-frame-002",
+      "action_type": "aesthetic_reaction",
+      "primary_reason_code": "PROACTIVITY_BUDGET_AVAILABLE",
+      "supporting_reason_codes": []
+    }
+  ]
 }
