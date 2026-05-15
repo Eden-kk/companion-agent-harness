@@ -157,6 +157,7 @@ def test_in_window_ordering_from_seq_not_array_position(
     stored in FrameRef in the ring buffer), not from array position in the fixture.
     """
     shuffled = [r for r in in_window_rows if r["event_type"] == "raw_video_frame"]
+    random.seed(42)
     random.shuffle(shuffled)
 
     sidecar = _make_sidecar(window_ms=60_000)
@@ -196,13 +197,16 @@ def test_out_of_window_cup_not_resolvable(
     """Cup (t=0ms) is not in the ring buffer when query arrives at t=65000ms.
 
     With window_ms=60000 and query at t=65000, the eviction cutoff is
-    65000 - 60000 = 5000ms. Cup at t=0 (<=5000) is evicted; it is not
-    resolvable for ordering.
+    65000 - 60000 = 5000ms. Cup at t=0 (<=5000) is evicted; keys at t=10000
+    (>5000) is retained. Cup is not resolvable for ordering.
     """
     sidecar, label_to_ref = out_of_window_sidecar
     buffer_ids = {r.event_id for r in sidecar.buffer_snapshot()}
     assert label_to_ref["cup"].event_id not in buffer_ids, (
         "cup frame (t=0ms) must not be in ring buffer when query arrives at t=65000ms"
+    )
+    assert label_to_ref["keys"].event_id in buffer_ids, (
+        "keys frame (t=10000ms) must be in ring buffer (>5000ms cutoff) — one retained, one evicted"
     )
 
 
