@@ -45,7 +45,7 @@ Cannot be tuned at runtime. Cannot be tuned via dashboard. Cannot appear in `man
 | `CONFIG_VERSION` | "v0.1e" | `companion_harness/speak_policy.py:20` | invariant #5 | Bumped only by intentional spec migration. |
 | `ProgressStage` literal alphabet | locked set | `companion_harness/v0_1f_event_schema.py:30,111` (refers to `companion_harness.tool_progress.ProgressStage`) | v0.1f Anchor 1 | Closed alphabet — alphabet renames cost reclassification. |
 | `RubricViolation` literal alphabet | 8 IDs locked | `companion_harness/schemas.py:55-64` | v0.1g Anchor 1 (`docs/roadmap-v0.1g-draft.md:40-41`) | Closed alphabet. |
-| `_LEVEL_TO_FLOAT_THRESHOLD` map (low / medium / high → 0.3 / 0.6 / 0.85) | 0.3 / 0.6 / 0.85 | `companion_harness/speak_policy_config.py:117-121` | spec Part 6 Stage 3 (`docs/architecture-v0.1.md:475-488`) | The MAPPING is calibration (Tier C-ish), but the LEVELS themselves are part of the policy contract carried in `DecisionTrace`. Treat as Tier A until §11 OQ-3 resolves. |
+| `_LEVEL_TO_FLOAT_THRESHOLD` map (low / medium / high → 0.3 / 0.6 / 0.85) | 0.3 / 0.6 / 0.85 | `companion_harness/speak_policy_config.py:117-121` | spec Part 6 Stage 3 (`docs/architecture-v0.1.md:475-488`) | The MAPPING is calibration (Tier C-ish), but the LEVELS themselves are part of the policy contract carried in `DecisionTrace`. Treat as Tier A. The levels (low/medium/high) are spec-pinned but the numeric mapping is calibration; reclassification to Tier B is a separate project-lead decision and not currently captured as an open question. |
 | `SPEC_ALERT_THRESHOLD` per-mode levels | cooking=low / crisis_emergency=low / creative_focus=high / normal=medium | `companion_harness/speak_policy_config.py:93-98` | `docs/architecture-v0.1.md:476-480` | Spec-pinned by Part 6 Stage 3 YAML. |
 | `SPEC_AESTHETIC_REACTION_BUDGET` per-mode rates | as spec YAML | `companion_harness/speak_policy_config.py:100-107` | `docs/architecture-v0.1.md:481-487` | Spec-pinned by Part 6 Stage 3 YAML. |
 | `SPEC_EOU_POLICY.interruption_cost` | "high" | `companion_harness/speak_policy_config.py:109-113` | `docs/architecture-v0.1.md:471-473` ("never lower casually") | Spec-pinned. |
@@ -69,9 +69,9 @@ Can be tuned at runtime via the dashboard. Each change emits a `config_change` e
 | `_SILENCE_ONSET_MS` (SmartTurn) | 300 | `companion_harness/turn_detector_smart.py:46` | same as VAD's `_SILENCE_ONSET_MS` | Independent default — same caveat as VAD. |
 | `_SILENCE_RMS_THRESHOLD` | 100 | `companion_harness/turn_detector_smart.py:47` | spec-silent | RMS energy gate for silence-candidate detection. |
 | **Backchannel classifier** | | | | |
-| `emit_threshold` | 0.3 | `companion_harness/backchannel_classifier.py:89` | spec-silent (manual-test-handbook.md row at line 33 names "0.3" as the operational default) | Below this `p_backchannel`, frame is suppressed (no event, no signal) to avoid drain-storm. |
+| `emit_threshold` | 0.3 | `companion_harness/backchannel_classifier.py:89` | spec-silent | Below this `p_backchannel`, frame is suppressed (no event, no signal) to avoid drain-storm. |
 | **Orchestrator** | | | | |
-| `proposal_batch_window_ms` | 80 | `companion_harness/realtime_orchestrator.py:175` | spec-silent (calibration noted at line 197–198) | Grace window T4 waits for at least one ThinkerProposal before snapshot. |
+| `proposal_batch_window_ms` | 80 | `companion_harness/realtime_orchestrator.py:175` | spec-silent | Grace window T4 waits for at least one ThinkerProposal before snapshot. |
 | `hard_cancel_after_ms` | 120 | `companion_harness/realtime_orchestrator.py:176` | spec-silent — but feeds the Tier-A `vad_detected_user_speech_to_stop_ms_p95<200ms` budget | Time `_fire_barge_in` waits for graceful stop before forcing `cancel_generation()`. Borderline — see §11 OQ-1. |
 | `p_speech_thresh` | 0.5 | `companion_harness/realtime_orchestrator.py:177` | spec-silent | Onset-detection gate for barge-in (`_should_emit_speech_onset`). |
 | `p_backchannel_thresh` | 0.7 | `companion_harness/realtime_orchestrator.py:178` | spec-silent | Post-onset gate to avoid stopping playback on a backchannel (`is_barge_in_trigger`). |
@@ -178,7 +178,7 @@ Three layers, in priority order:
 
 **Server-global vs per-session.** Server-global state (one `ConfigStore` singleton per server process). Per-session would require routing each session's threshold settings through the orchestrator's per-pipeline factory; that's more wiring than v0.1f needs. See §11 OQ-3.
 
-**Threshold flips and timing.** Configuration changes do **not** apply mid-utterance. They take effect on the next EOU boundary (the next iteration of `_policy_gate_task`'s `_t2_inbox.get()` loop in `companion_harness/realtime_orchestrator.py:349`). This is critical for replay (§6) — a threshold cannot change between the inputs and the decision of a single `policy_decision` event.
+**Threshold flips and timing.** Configuration changes do **not** apply mid-utterance. They take effect on the next EOU boundary (the next iteration of `_policy_gate_task`'s `_t2_inbox.get()` loop in `companion_harness/realtime_orchestrator.py:350`). This is critical for replay (§6) — a threshold cannot change between the inputs and the decision of a single `policy_decision` event.
 
 ---
 
