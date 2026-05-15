@@ -14,6 +14,19 @@ requires-python = ">=3.12"
 # `python -m manual_test_console.server`.
 manual_test_console = ["aiohttp>=3.9"]
 
+# Eval extras: pull with `pip install -e .[eval]`. Runtime install stays at
+# `pip install -e .` (no eval deps). Versions are floor-only (>=) for Phase A;
+# exact pinning deferred (OQ-A6.1). pytest-json-report is a Phase A addition
+# (not in eval-subsystem-spec.md Anchor 2) — required by A3's subprocess driver.
+eval = [
+  "datasets>=2.16",
+  "pandas>=2.2",
+  "matplotlib>=3.8",
+  "rich>=13.7",
+  "soundfile>=0.12",   # for fixture audio decode
+  "pytest-json-report>=1.5",
+]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["companion_harness*", "manual_test_console*"]
