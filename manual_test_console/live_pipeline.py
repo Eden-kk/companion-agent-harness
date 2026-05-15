@@ -211,21 +211,29 @@ class WebSocketAudioSink:
 def _live_policy_inputs_builder(
     signal: TurnSignal, signal_history: list[TurnSignal]
 ) -> PolicyInputs:
-    """Build PolicyInputs from a TurnSignal + sorted history (invariant #5).
+    """Build PolicyInputs from a TurnSignal + sorted history.
 
-    No wall-clock reads, no jitter. Mirrors realtime_loop._signals_to_policy_inputs
-    but uses the current `signal` directly.
+    No wall-clock reads, no jitter. Mirrors `realtime_loop._signals_to_policy_inputs`
+    but uses the current `signal` directly. Mode-field defaults follow the spec
+    enumerations (architecture-v0.1.md:793-803):
+      - `privacy_mode = "normal"` (spec default; not no_memory / no_camera_memory / etc.)
+      - `current_task_mode = "normal"` (spec default; not creative_focus / cooking / etc.)
+      - `social_mode = "user_addressing_agent"` (single-user manual-test default; multi-party
+        scenarios would set "user_addressing_other" / "group_conversation" / "background_presence"
+        and trip `_BLOCKING_SOCIAL_MODES` in speak_policy)
+      - `risk_mode = "normal"` (spec default)
 
-    `user_addressed_agent` is set to True for the manual-test rig so that a
-    completed utterance produces ``full_response``. Production should replace
-    this with a real addressing classifier (e.g., ASR-keyword heuristic,
-    foreground-proposal-derived flag, or trained classifier). This is a
-    manual-test stopgap to unblock end-to-end voice testing (Finding 6 from
-    2026-05-15 manual-test session).
+    `user_addressed_agent` is derived from `social_mode` per the spec's first-class
+    social signal — no per-utterance classifier is wired (the spec is silent on how to
+    derive `user_addressed_agent` independently; this mechanical derivation honors the
+    spec's enumerated signal). Future work could add per-utterance refinement (speaker
+    diarization, wake-word detection, foreground-derived addressing) — see issue #139.
     """
     max_p_done = max((s.p_done for s in signal_history), default=signal.p_done)
     max_p_continue = max((s.p_continue for s in signal_history), default=signal.p_continue)
     user_speaking = max_p_done <= max_p_continue
+
+    social_mode = "user_addressing_agent"
 
     return PolicyInputs(
         user_speaking=user_speaking,
@@ -233,13 +241,13 @@ def _live_policy_inputs_builder(
         assistant_speaking=False,
         scene_change_score=0.0,
         deictic_reference=False,
-        user_addressed_agent=True,  # STOPGAP: manual-test rig; replace with real signal (Finding 6)
+        user_addressed_agent=(social_mode == "user_addressing_agent"),
         urgency_score=0.0,
         proactivity_budget_remaining={},
-        privacy_mode="default",
-        current_task_mode="default",
-        social_mode="default",
-        risk_mode="default",
+        privacy_mode="normal",
+        current_task_mode="normal",
+        social_mode=social_mode,
+        risk_mode="normal",
         cooldown_state={},
         attachment_risk_level=0.0,
         audio_visual_conflict_score=0.0,
