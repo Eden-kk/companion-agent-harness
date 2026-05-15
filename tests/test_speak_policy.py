@@ -149,6 +149,63 @@ def test_alert_determinism():
     assert d1.action_type == "alert"
 
 
+# Task 9a — short_reaction path
+
+def test_short_reaction_trigger_with_budget():
+    """short_response_appropriate=True + budget available → short_reaction with PROACTIVITY_BUDGET_AVAILABLE."""
+    result = decide(
+        _inputs(
+            short_response_appropriate=True,
+            proactivity_budget_remaining={"short_reaction": 1},
+            user_addressed_agent=False,
+        ),
+        ["sig-1"],
+    )
+    assert result.action_type == "short_reaction"
+    assert result.primary_reason_code == ReasonCode.PROACTIVITY_BUDGET_AVAILABLE
+
+
+def test_short_reaction_budget_exhausted_yields_silence():
+    """short_response_appropriate=True but budget=0 → silence (budget gate, not trigger gate)."""
+    result = decide(
+        _inputs(
+            short_response_appropriate=True,
+            proactivity_budget_remaining={"short_reaction": 0},
+            user_addressed_agent=False,
+        ),
+        ["sig-1"],
+    )
+    assert result.action_type == "silence"
+    assert result.primary_reason_code == ReasonCode.COOLDOWN_BLOCKED
+
+
+def test_short_reaction_absent_trigger_falls_through_to_full_response():
+    """short_response_appropriate=False + user_addressed_agent=True → full_response, not short_reaction."""
+    result = decide(
+        _inputs(
+            short_response_appropriate=False,
+            proactivity_budget_remaining={"short_reaction": 1},
+            user_addressed_agent=True,
+        ),
+        ["sig-1"],
+    )
+    assert result.action_type == "full_response"
+    assert result.primary_reason_code == ReasonCode.EOU_CONFIRMED
+
+
+def test_short_reaction_determinism():
+    """Identical inputs → bit-identical SpeakDecision (invariant #5)."""
+    inputs = _inputs(
+        short_response_appropriate=True,
+        proactivity_budget_remaining={"short_reaction": 2},
+        user_addressed_agent=False,
+    )
+    d1 = decide(inputs, ["sig-1"])
+    d2 = decide(inputs, ["sig-1"])
+    assert d1 == d2
+    assert d1.action_type == "short_reaction"
+
+
 # Aesthetic reaction gate tests (Task 8)
 
 def _aesthetic_inputs(**overrides):
