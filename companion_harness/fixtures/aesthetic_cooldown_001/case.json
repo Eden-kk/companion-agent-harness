@@ -13,30 +13,135 @@
     "policy_decision"
   ],
   "expected_metrics": {
-    "aesthetic_cooldown_rate": "= 100% on fixture set (at most one expressive reaction per budget window)"
+    "aesthetic_cooldown_compliance_rate": 1.0
   },
   "consent_class": "synthetic_eval",
-  "description": "Two high-novelty visual events occur within 20 seconds. The speak policy must emit at most one aesthetic_reaction (the first), and block the second with silence because the per-mode rate limit (aesthetic_reaction_budget) is exhausted. In normal mode the budget is 1 per 60 min; in walking_outdoor mode it is 1 per 20 min. This fixture uses normal mode. After the first reaction fires, the cooldown blocks the second candidate.",
+  "description": "Two high-novelty visual events occur within 20 seconds. The speak policy must emit at most one aesthetic_reaction (the first), and block the second with silence because cooldown_state is fixture-scripted to reflect the consumed budget. Sub-case 1: first event fires (cooldown_state={\"aesthetic_reaction\": 0}). Sub-case 2: second event blocked (cooldown_state={\"aesthetic_reaction\": 1}, simulating the consumed budget). Per spec line 505: two high-novelty visual events within 20s → at most one expressive reaction.",
   "fixture_conventions": {
-    "skeleton_note": "Per-frame signal values are placeholders. Finalize at Stage 3 activation when the aesthetic_reaction_budget config and cooldown timer are specified.",
-    "task_mode": "normal — aesthetic_reaction_budget is 1 per 60 min per spec Part 6 Stage 3.",
-    "novelty_score": "Scripted visual novelty [0.0, 1.0]. Both events are high enough to qualify.",
-    "cooldown_remaining_ms": "Scripted cooldown timer value at each candidate frame. 0 at first event (budget available); > 0 at second event (budget exhausted).",
-    "expected_action_class_event1": "aesthetic_reaction — first candidate fires; budget consumed.",
-    "expected_action_class_event2": "silence — cooldown active; second candidate blocked.",
-    "expected_reason_code_event1": "PROACTIVITY_BUDGET_AVAILABLE",
-    "expected_reason_code_event2": "COOLDOWN_BLOCKED",
-    "inter_event_gap_ms": "< 20000 — both events within 20s to stress the rate limit.",
-    "frame_duration_ms": "33 — approximate 30fps; to be confirmed at Stage 3 activation.",
+    "sub_cases": "Two sub-cases share a contiguous signal_trace. Frames 000-002 are sub-case 1 (first event fires). Frames 003-005 are sub-case 2 (second event blocked by cooldown).",
+    "cooldown_state_scripting": "cooldown_state is fixture-scripted per OQ3 (option c) — decide() reads cooldown_state but does NOT decrement it. The fixture sets cooldown_state={\"aesthetic_reaction\": 0} for sub-case 1 and cooldown_state={\"aesthetic_reaction\": 1} for sub-case 2 to simulate the first event having consumed the budget.",
+    "inputs_reaching_aesthetic_gate": "To reach the aesthetic_reaction gate: social_mode=user_addressing_agent (not blocking), urgency_score=0.0 (no alert), user_speaking=False, eou_probability=0.9 (EOU confirmed), user_addressed_agent=False (skip full_response branch), short_response_appropriate=False (skip short_reaction branch). Only then does aesthetic gate evaluate aesthetic_novelty_score > 0.5.",
+    "task_mode": "normal — aesthetic_reaction is enabled in normal mode.",
+    "novelty_score": "0.7 — above the 0.5 threshold required for aesthetic_reaction gate.",
+    "inter_event_gap_ms": "10000 — both events within 20s to stress the rate limit per spec.",
     "expected_events_markers": "event_type strings are fixture-internal role labels, not Part 5 event_type values."
   },
-  "signal_trace": {
-    "status": "skeleton",
-    "frames": [
-      {"t_ms": 0,     "frame_id": "frame-000", "event_type": "raw_video_frame",             "task_mode": "normal", "novelty_score": null, "cooldown_remaining_ms": 0,    "notes": "PLACEHOLDER — first high-novelty visual event begins"},
-      {"t_ms": 33,    "frame_id": "frame-001", "event_type": "aesthetic_reaction_candidate","task_mode": "normal", "novelty_score": null, "cooldown_remaining_ms": 0,    "resolution_frame": true, "expected_action_class": "aesthetic_reaction", "expected_reason_code": "PROACTIVITY_BUDGET_AVAILABLE", "notes": "PLACEHOLDER — first candidate; budget available; reaction fires; budget consumed"},
-      {"t_ms": 10000, "frame_id": "frame-300", "event_type": "raw_video_frame",             "task_mode": "normal", "novelty_score": null, "cooldown_remaining_ms": null, "notes": "PLACEHOLDER — second high-novelty event within 20s; cooldown still active"},
-      {"t_ms": 10033, "frame_id": "frame-301", "event_type": "aesthetic_reaction_candidate","task_mode": "normal", "novelty_score": null, "cooldown_remaining_ms": null, "resolution_frame": true, "expected_action_class": "silence", "expected_reason_code": "COOLDOWN_BLOCKED", "notes": "PLACEHOLDER — second candidate; cooldown active; silence required"}
-    ]
-  }
+  "signal_trace": [
+    {
+      "t_ms": 0,
+      "frame_id": "frame-000",
+      "event_type": "raw_video_frame",
+      "sub_case": 1,
+      "current_task_mode": "normal",
+      "aesthetic_novelty_score": 0.7,
+      "cooldown_state": {"aesthetic_reaction": 0},
+      "user_speaking": false,
+      "eou_probability": 0.9,
+      "user_addressed_agent": false,
+      "short_response_appropriate": false,
+      "urgency_score": 0.0,
+      "social_mode": "user_addressing_agent",
+      "notes": "sub-case 1: high-novelty visual event; cooldown clear"
+    },
+    {
+      "t_ms": 33,
+      "frame_id": "frame-001",
+      "event_type": "aesthetic_reaction_candidate",
+      "sub_case": 1,
+      "current_task_mode": "normal",
+      "aesthetic_novelty_score": 0.7,
+      "cooldown_state": {"aesthetic_reaction": 0},
+      "user_speaking": false,
+      "eou_probability": 0.9,
+      "user_addressed_agent": false,
+      "short_response_appropriate": false,
+      "urgency_score": 0.0,
+      "social_mode": "user_addressing_agent",
+      "notes": "sub-case 1: candidate raised; cooldown_state=0 → budget available"
+    },
+    {
+      "t_ms": 66,
+      "frame_id": "frame-002",
+      "event_type": "policy_decision",
+      "sub_case": 1,
+      "current_task_mode": "normal",
+      "aesthetic_novelty_score": 0.7,
+      "cooldown_state": {"aesthetic_reaction": 0},
+      "user_speaking": false,
+      "eou_probability": 0.9,
+      "user_addressed_agent": false,
+      "short_response_appropriate": false,
+      "urgency_score": 0.0,
+      "social_mode": "user_addressing_agent",
+      "resolution_frame": true,
+      "expected_action_type": "aesthetic_reaction",
+      "expected_reason_code": "PROACTIVITY_BUDGET_AVAILABLE",
+      "notes": "sub-case 1 resolution: cooldown_state[aesthetic_reaction]=0 → fires"
+    },
+    {
+      "t_ms": 10000,
+      "frame_id": "frame-003",
+      "event_type": "raw_video_frame",
+      "sub_case": 2,
+      "current_task_mode": "normal",
+      "aesthetic_novelty_score": 0.7,
+      "cooldown_state": {"aesthetic_reaction": 1},
+      "user_speaking": false,
+      "eou_probability": 0.9,
+      "user_addressed_agent": false,
+      "short_response_appropriate": false,
+      "urgency_score": 0.0,
+      "social_mode": "user_addressing_agent",
+      "notes": "sub-case 2: second high-novelty event within 20s; cooldown_state scripted to 1 (budget consumed by sub-case 1)"
+    },
+    {
+      "t_ms": 10033,
+      "frame_id": "frame-004",
+      "event_type": "aesthetic_reaction_candidate",
+      "sub_case": 2,
+      "current_task_mode": "normal",
+      "aesthetic_novelty_score": 0.7,
+      "cooldown_state": {"aesthetic_reaction": 1},
+      "user_speaking": false,
+      "eou_probability": 0.9,
+      "user_addressed_agent": false,
+      "short_response_appropriate": false,
+      "urgency_score": 0.0,
+      "social_mode": "user_addressing_agent",
+      "notes": "sub-case 2: candidate raised; cooldown_state=1 → budget exhausted"
+    },
+    {
+      "t_ms": 10066,
+      "frame_id": "frame-005",
+      "event_type": "policy_decision",
+      "sub_case": 2,
+      "current_task_mode": "normal",
+      "aesthetic_novelty_score": 0.7,
+      "cooldown_state": {"aesthetic_reaction": 1},
+      "user_speaking": false,
+      "eou_probability": 0.9,
+      "user_addressed_agent": false,
+      "short_response_appropriate": false,
+      "urgency_score": 0.0,
+      "social_mode": "user_addressing_agent",
+      "resolution_frame": true,
+      "expected_action_type": "silence",
+      "expected_reason_code": "COOLDOWN_BLOCKED",
+      "notes": "sub-case 2 resolution: cooldown_state[aesthetic_reaction]=1 → blocked"
+    }
+  ],
+  "baseline_decisions": [
+    {
+      "frame_id": "frame-002",
+      "action_type": "aesthetic_reaction",
+      "primary_reason_code": "PROACTIVITY_BUDGET_AVAILABLE",
+      "supporting_reason_codes": []
+    },
+    {
+      "frame_id": "frame-005",
+      "action_type": "silence",
+      "primary_reason_code": "COOLDOWN_BLOCKED",
+      "supporting_reason_codes": []
+    }
+  ]
 }
