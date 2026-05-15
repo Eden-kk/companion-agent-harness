@@ -88,6 +88,8 @@ KEY_BACKCHANNEL_MODEL: web.AppKey[object] = web.AppKey("backchannel_model", obje
 KEY_DETECTOR_LABELS: web.AppKey[dict] = web.AppKey("detector_labels", dict)
 KEY_AUDIO_OUT_BROKER: web.AppKey[object] = web.AppKey("audio_out_broker", object)
 KEY_AUDIO_OUT_COUNTER: web.AppKey[dict] = web.AppKey("audio_out_counter", dict)
+KEY_TTS_ADAPTER: web.AppKey[object] = web.AppKey("tts_adapter", object)
+KEY_TTS_LABEL: web.AppKey[str] = web.AppKey("tts_label", str)
 
 
 def _event_to_json(event: Event) -> dict:
@@ -251,6 +253,7 @@ async def _handle_ingest_ws(request: web.Request) -> web.WebSocketResponse:
             backchannel_model=request.app[KEY_BACKCHANNEL_MODEL],
             use_stubs=request.app[KEY_USE_STUBS],
             audio_out_broker=request.app[KEY_AUDIO_OUT_BROKER],  # type: ignore[arg-type]
+            tts_adapter=request.app[KEY_TTS_ADAPTER],
         )
         active_pipelines[session.session_id] = pipeline
         await pipeline.start()
@@ -388,6 +391,7 @@ async def _handle_health(request: web.Request) -> web.Response:
     active_pipelines: dict[str, LivePipeline] = request.app[KEY_ACTIVE_PIPELINES]
     detector_labels: dict[str, str] = request.app[KEY_DETECTOR_LABELS]
     audio_out_counter: dict[str, int] = request.app[KEY_AUDIO_OUT_COUNTER]
+    tts_label: str = request.app[KEY_TTS_LABEL]
     return web.json_response({
         "status": "ok",
         "sessions_opened": chunk_counter.get("sessions_opened", 0),
@@ -403,6 +407,7 @@ async def _handle_health(request: web.Request) -> web.Response:
         "backchannel_model": detector_labels.get("backchannel", "unknown"),
         "audio_out_enabled": True,
         "audio_out_chunks_sent": audio_out_counter.get("chunks_sent", 0),
+        "tts_model": tts_label,
     })
 
 
@@ -421,6 +426,8 @@ def build_app(
     vad_model_factory: Optional[Callable[[], Any]] = None,
     smart_turn_model_factory: Optional[Callable[[], Any]] = None,
     backchannel_model_factory: Optional[Callable[[], Any]] = None,
+    tts_adapter: Any = None,
+    tts_adapter_factory: Optional[Callable[[], Any]] = None,
 ) -> web.Application:
     """Build the aiohttp Application. Caller is responsible for run/cleanup.
 
@@ -442,6 +449,11 @@ def build_app(
             zero-arg callables invoked at startup to construct each real
             detector singleton. When None (and `use_stubs=False`), the
             corresponding stub is used for that detector only.
+        tts_adapter: pre-constructed TtsAdapter singleton (tests inject a fake).
+        tts_adapter_factory: zero-arg callable invoked at startup to construct
+            the TTS singleton (used by main() to load Kokoro lazily). When both
+            are None or use_stubs=True, NoopTtsAdapter is used so no audio bytes
+            fire.
     """
     app = web.Application()
     broker = DisplayBroker()
@@ -471,6 +483,8 @@ def build_app(
         "smart_turn": "stub:SilenceSmartTurn" if use_stubs else "stub:SilenceSmartTurn",
         "backchannel": "stub:ZeroBackchannel" if use_stubs else "stub:ZeroBackchannel",
     }
+    app[KEY_TTS_ADAPTER] = tts_adapter
+    app[KEY_TTS_LABEL] = "stub:NoopTtsAdapter" if (tts_adapter is None or use_stubs) else "injected"
 
     app.router.add_get("/", _handle_index)
     app.router.add_get("/healthz", _handle_health)
@@ -495,7 +509,37 @@ def build_app(
             print(f"MiniCPM-o loaded in {elapsed:.1f}s", flush=True)
 
         if not _app[KEY_LIVE_PIPELINE_ENABLED] or _app[KEY_USE_STUBS]:
+            # Stub/disabled mode: ensure tts_adapter falls back to Noop.
+            if _app[KEY_TTS_ADAPTER] is None:
+                from manual_test_console.live_pipeline import NoopTtsAdapter  # noqa: WPS433
+                _app[KEY_TTS_ADAPTER] = NoopTtsAdapter()
+                _app[KEY_TTS_LABEL] = "stub:NoopTtsAdapter"
             return
+
+        # Load TTS singleton (Kokoro by default). Falls back to NoopTtsAdapter
+        # on failure so the server still starts (voice-back simply silent).
+        if _app[KEY_TTS_ADAPTER] is None and tts_adapter_factory is not None:
+            print("Loading Kokoro-82M-ONNX TTS adapter...", flush=True)
+            t0 = time.monotonic()
+            try:
+                _app[KEY_TTS_ADAPTER] = tts_adapter_factory()
+            except Exception as exc:
+                print(
+                    f"Kokoro TTS load FAILED: {type(exc).__name__}: {exc} "
+                    "— falling back to stub:NoopTtsAdapter (voice-back disabled)",
+                    flush=True,
+                )
+                from manual_test_console.live_pipeline import NoopTtsAdapter  # noqa: WPS433
+                _app[KEY_TTS_ADAPTER] = NoopTtsAdapter()
+                _app[KEY_TTS_LABEL] = "stub:NoopTtsAdapter"
+            else:
+                elapsed = time.monotonic() - t0
+                _app[KEY_TTS_LABEL] = f"Kokoro-82M-ONNX (loaded in {elapsed:.2f}s)"
+                print(f"Kokoro-82M-ONNX loaded in {elapsed:.2f}s", flush=True)
+        elif _app[KEY_TTS_ADAPTER] is None:
+            from manual_test_console.live_pipeline import NoopTtsAdapter  # noqa: WPS433
+            _app[KEY_TTS_ADAPTER] = NoopTtsAdapter()
+            _app[KEY_TTS_LABEL] = "stub:NoopTtsAdapter"
 
         # Load real detector models. Each one falls back to its stub on failure.
         for key, label_key, factory, stub_label, real_label in (
@@ -531,6 +575,7 @@ def build_app(
         print(f"  VAD:         {labels.get('vad', 'unknown')}", flush=True)
         print(f"  SmartTurn:   {labels.get('smart_turn', 'unknown')}", flush=True)
         print(f"  Backchannel: {labels.get('backchannel', 'unknown')}", flush=True)
+        print(f"  TTS:         {_app[KEY_TTS_LABEL]}", flush=True)
         print("=" * 72, flush=True)
 
     async def _on_cleanup(_app: web.Application) -> None:
@@ -577,6 +622,30 @@ def _load_asr_lexicon_backchannel_model() -> Any:
     return ASRLexiconBackchannelModel()
 
 
+# Default Kokoro model paths on b200. Override via env var if your install
+# location differs (mirrors tests/test_tts_kokoro_real.py).
+_KOKORO_DEFAULT_MODEL = "/raid/yid042/models/kokoro/kokoro-v0_19.onnx"
+_KOKORO_DEFAULT_VOICES = "/raid/yid042/models/kokoro/voices.json"
+
+
+def _load_kokoro_tts_adapter() -> Any:
+    """Lazy import + construct KokoroTtsAdapter singleton. b200 only.
+
+    Reads KOKORO_MODEL_PATH / KOKORO_VOICES_PATH env vars if set; otherwise uses
+    the canonical b200 paths. Imported lazily so the server module remains
+    importable on machines without kokoro_onnx installed.
+    """
+    import os  # noqa: WPS433
+    from companion_harness.tts_kokoro import KokoroTtsAdapter  # noqa: WPS433
+    model_path = os.environ.get("KOKORO_MODEL_PATH", _KOKORO_DEFAULT_MODEL)
+    voices_path = os.environ.get("KOKORO_VOICES_PATH", _KOKORO_DEFAULT_VOICES)
+    return KokoroTtsAdapter(
+        model_path=model_path,
+        voices_path=voices_path,
+        warmup=True,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="0.0.0.0")
@@ -621,8 +690,9 @@ def main(argv: list[str] | None = None) -> int:
         vad_factory: Optional[Callable[[], Any]] = _load_silero_vad_model
         smart_turn_factory: Optional[Callable[[], Any]] = _load_pipecat_smart_turn_model
         backchannel_factory: Optional[Callable[[], Any]] = _load_asr_lexicon_backchannel_model
+        tts_factory: Optional[Callable[[], Any]] = _load_kokoro_tts_adapter
     else:
-        vad_factory = smart_turn_factory = backchannel_factory = None
+        vad_factory = smart_turn_factory = backchannel_factory = tts_factory = None
 
     app = build_app(
         blob_dir,
@@ -632,6 +702,7 @@ def main(argv: list[str] | None = None) -> int:
         vad_model_factory=vad_factory,
         smart_turn_model_factory=smart_turn_factory,
         backchannel_model_factory=backchannel_factory,
+        tts_adapter_factory=tts_factory,
     )
 
     if not args.live_pipeline:

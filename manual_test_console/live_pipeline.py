@@ -244,6 +244,7 @@ class LivePipeline:
     session_id: str
     audio_in: asyncio.Queue[tuple[bytes, str]]
     orchestrator: StreamingRealtimeOrchestrator
+    tts_adapter: Any = None
 
     async def start(self) -> None:
         await self.orchestrator.start()
@@ -289,6 +290,7 @@ def build_live_pipeline(
     backchannel_model: Any = None,
     use_stubs: bool = False,
     audio_out_broker: AudioOutSinkTarget | None = None,
+    tts_adapter: Any = None,
 ) -> LivePipeline:
     """Construct a LivePipeline for one ingest session.
 
@@ -305,6 +307,11 @@ def build_live_pipeline(
     in place of any missing detector. Tests rely on this stubs-by-default
     behavior to avoid loading torch / ONNX.
 
+    `tts_adapter` is a `TtsAdapter` instance (typically a `KokoroTtsAdapter`
+    singleton constructed once at server startup). When `use_stubs=True` or
+    `tts_adapter is None`, a `NoopTtsAdapter` is used so tests and stub-mode
+    runs do not load Kokoro. Voice-back fires only when this is a real adapter.
+
     The shared `logger` is wrapped in a `SharedLoggerProxy` so this session's
     StreamingRealtimeOrchestrator.stop() cannot shut down the Application-owned
     EventLogger on disconnect.
@@ -316,6 +323,7 @@ def build_live_pipeline(
         vad_model = EnergyVADModel()
         smart_turn_model = SilenceSmartTurnModel()
         backchannel_model = ZeroBackchannelModel()
+        tts_adapter = NoopTtsAdapter()
     else:
         if vad_model is None:
             vad_model = EnergyVADModel()
@@ -323,6 +331,8 @@ def build_live_pipeline(
             smart_turn_model = SilenceSmartTurnModel()
         if backchannel_model is None:
             backchannel_model = ZeroBackchannelModel()
+        if tts_adapter is None:
+            tts_adapter = NoopTtsAdapter()
 
     vad = VADDetector(
         model=vad_model,
@@ -368,9 +378,14 @@ def build_live_pipeline(
         policy_inputs_builder=_live_policy_inputs_builder,
         foreground_model=foreground,
         audio_output=audio_output,
-        tts_adapter=NoopTtsAdapter(),
+        tts_adapter=tts_adapter,
         proposal_batch_window_ms=proposal_batch_window_ms,
         decision_trace_dir=decision_trace_dir,
     )
 
-    return LivePipeline(session_id=session_id, audio_in=audio_in, orchestrator=orch)
+    return LivePipeline(
+        session_id=session_id,
+        audio_in=audio_in,
+        orchestrator=orch,
+        tts_adapter=tts_adapter,
+    )
