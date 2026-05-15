@@ -122,3 +122,130 @@ def test_policy_replay_exact():
     assert replay_match_rate == 1.0, (
         f"policy_replay_match_rate (run1 vs run2) = {replay_match_rate:.0%}; gate = 100%"
     )
+
+
+# Stage 2 signal trace: manually-injected PolicyInputs carrying the three new
+# v0.1c fields.  No VisionSidecar or DeicticDetector is constructed — this is
+# a pure policy-layer determinism test (invariant #5).
+_STAGE2_TRACE = [
+    # clarification branch: audio_visual_conflict_score > 0.7
+    PolicyInputs(
+        user_speaking=False,
+        eou_probability=0.92,
+        assistant_speaking=False,
+        scene_change_score=0.3,
+        deictic_reference=True,
+        user_addressed_agent=True,
+        urgency_score=0.0,
+        proactivity_budget_remaining={},
+        privacy_mode="normal",
+        current_task_mode="normal",
+        social_mode="user_addressing_agent",
+        risk_mode="normal",
+        cooldown_state={},
+        attachment_risk_level=0.0,
+        audio_visual_conflict_score=0.85,
+    ),
+    # clarification branch: score exactly at boundary+epsilon
+    PolicyInputs(
+        user_speaking=False,
+        eou_probability=0.88,
+        assistant_speaking=False,
+        scene_change_score=0.0,
+        deictic_reference=False,
+        user_addressed_agent=True,
+        urgency_score=0.0,
+        proactivity_budget_remaining={},
+        privacy_mode="normal",
+        current_task_mode="normal",
+        social_mode="user_addressing_agent",
+        risk_mode="normal",
+        cooldown_state={},
+        attachment_risk_level=0.0,
+        audio_visual_conflict_score=0.71,
+    ),
+    # below conflict threshold with deictic_reference=True → full_response
+    PolicyInputs(
+        user_speaking=False,
+        eou_probability=0.80,
+        assistant_speaking=False,
+        scene_change_score=0.9,
+        deictic_reference=True,
+        user_addressed_agent=True,
+        urgency_score=0.0,
+        proactivity_budget_remaining={},
+        privacy_mode="normal",
+        current_task_mode="normal",
+        social_mode="user_addressing_agent",
+        risk_mode="normal",
+        cooldown_state={},
+        attachment_risk_level=0.0,
+        audio_visual_conflict_score=0.0,
+    ),
+    # at conflict threshold (0.70 is NOT > 0.7) → full_response; boundary check
+    PolicyInputs(
+        user_speaking=False,
+        eou_probability=0.91,
+        assistant_speaking=False,
+        scene_change_score=0.5,
+        deictic_reference=False,
+        user_addressed_agent=True,
+        urgency_score=0.0,
+        proactivity_budget_remaining={},
+        privacy_mode="normal",
+        current_task_mode="normal",
+        social_mode="user_addressing_agent",
+        risk_mode="normal",
+        cooldown_state={},
+        attachment_risk_level=0.0,
+        audio_visual_conflict_score=0.70,
+    ),
+]
+
+_STAGE2_BASELINE = [
+    {"action_type": "clarification", "primary_reason_code": "AUDIO_VISUAL_CONFLICT", "supporting_reason_codes": []},
+    {"action_type": "clarification", "primary_reason_code": "AUDIO_VISUAL_CONFLICT", "supporting_reason_codes": []},
+    {"action_type": "full_response",  "primary_reason_code": "EOU_CONFIRMED",         "supporting_reason_codes": ["USER_ADDRESSED_AGENT"]},
+    {"action_type": "full_response",  "primary_reason_code": "EOU_CONFIRMED",         "supporting_reason_codes": ["USER_ADDRESSED_AGENT"]},
+]
+
+
+def test_policy_replay_exact_stage2():
+    """Tier B: 100% bit-identical replay for Stage 2 PolicyInputs fields.
+
+    Manually injects deictic_reference, scene_change_score, and
+    audio_visual_conflict_score into SpeakPolicy.decide().  No VisionSidecar
+    or DeicticDetector constructed.  Covers the clarification branch
+    (audio_visual_conflict_score > 0.7) and boundary determinism for the
+    new threshold (invariant #5).
+    """
+    assert len(_STAGE2_TRACE) == len(_STAGE2_BASELINE)
+
+    run1 = [
+        speak_policy.decide(inputs, signal_event_ids=[f"s2-frame-{i:03d}"])
+        for i, inputs in enumerate(_STAGE2_TRACE)
+    ]
+    run2 = [
+        speak_policy.decide(inputs, signal_event_ids=[f"s2-frame-{i:03d}"])
+        for i, inputs in enumerate(_STAGE2_TRACE)
+    ]
+
+    for i, (baseline, d1, d2) in enumerate(zip(_STAGE2_BASELINE, run1, run2)):
+        frame_id = f"s2-frame-{i:03d}"
+
+        assert d1.action_type == baseline["action_type"], (
+            f"{frame_id}: action_type {d1.action_type!r} != baseline {baseline['action_type']!r}"
+        )
+        assert d1.primary_reason_code == ReasonCode(baseline["primary_reason_code"]), (
+            f"{frame_id}: primary_reason_code {d1.primary_reason_code!r} "
+            f"!= baseline {baseline['primary_reason_code']!r}"
+        )
+        expected_supporting = [ReasonCode(c) for c in baseline["supporting_reason_codes"]]
+        assert d1.supporting_reason_codes == expected_supporting, (
+            f"{frame_id}: supporting_reason_codes {d1.supporting_reason_codes!r} "
+            f"!= baseline {expected_supporting!r}"
+        )
+
+        assert astuple(d1) == astuple(d2), (
+            f"{frame_id}: run1 {astuple(d1)!r} != run2 {astuple(d2)!r}"
+        )
