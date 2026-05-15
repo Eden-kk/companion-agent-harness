@@ -21,7 +21,20 @@ from typing import Protocol, runtime_checkable
 
 from companion_harness.schemas import MemoryItem
 
-__all__ = ["MemoryManager", "MemoryManagerStub"]
+__all__ = ["EmbeddingAdapter", "MemoryManager", "MemoryManagerStub", "_NullEmbeddingAdapter"]
+
+
+@runtime_checkable
+class EmbeddingAdapter(Protocol):
+    def embed(self, text: str) -> list[float]:
+        """Return embedding vector. Stub returns empty for lexical fallback."""
+        ...
+
+
+class _NullEmbeddingAdapter:
+    # UNAVAILABLE: #183 — real embedding model pending selection (lexical baseline used)
+    def embed(self, text: str) -> list[float]:
+        return []
 
 
 @runtime_checkable

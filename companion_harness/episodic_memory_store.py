@@ -37,6 +37,7 @@ import os
 import pathlib
 from datetime import datetime, timezone
 
+from companion_harness.memory_manager import EmbeddingAdapter
 from companion_harness.privacy_gates import _SkipCommit, check_privacy_gate
 from companion_harness.schemas import MemoryItem, SensitiveField
 
@@ -96,8 +97,14 @@ class EpisodicMemoryStore:
         self._write(item)
 
     def retrieve(
-        self, query: str, top_k: int = 5, include_history: bool = False
+        self,
+        query: str,
+        top_k: int = 5,
+        include_history: bool = False,
+        embedder: EmbeddingAdapter | None = None,
     ) -> list[MemoryItem]:
+        # embedder non-None signals caller wants embedding-based retrieval;
+        # concrete implementation deferred — UNAVAILABLE: #183
         tokens = query.lower().split()
         results: list[MemoryItem] = []
         for fname in sorted(os.listdir(self._dir)):
