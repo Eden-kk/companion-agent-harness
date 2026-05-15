@@ -5,6 +5,12 @@ See docs/architecture-v0.1.md §Part 5 for the type signatures
 ThinkerProposal, MemoryItem, EvaluationCase, ReplayRun) and §Part 4 for
 the SensitiveField + companion_state schema.  ReasonCode is defined in
 companion_harness.reason_codes; import it from there.
+
+Schema split (docs/eval-subsystem-spec.md Anchor 3): types referenced by the
+runtime live here; eval-only types (MetricValue, BenchmarkResult,
+FailureSlice, etc.) live in companion_harness/evals/schemas.py.
+EvaluationCase and ReplayRun are generalised in-place with Optional eval
+fields (docs/plan-eval-phase-a-execution.md §F1, Task A1).
 """
 
 from __future__ import annotations
@@ -22,6 +28,7 @@ __all__ = [
     "TurnSignal",
     "PolicyInputs",
     "SpeakDecision",
+    "ResponseContentSource",
     "ThinkerProposal",
     "RubricViolation",
     "TrackedSignal",
@@ -164,6 +171,16 @@ class PolicyInputs:
     user_transcript:             str = ""  # ASR output for the current/just-completed turn. v0.1f addition.
 
 
+ResponseContentSource = Literal[
+    "foreground_response_proposal",
+    "thinker_proposal",
+    "template_backchannel",
+    "template_alert",
+    "template_tool_status",
+    "no_synthesis",
+]
+
+
 @dataclass
 class SpeakDecision:
     action_type:             Literal[
@@ -177,6 +194,7 @@ class SpeakDecision:
     budget_bucket:           str | None
     allowed_prosody_tags:    list[str]
     max_duration_ms:         int | None
+    response_content_source: ResponseContentSource = "no_synthesis"
 
 
 @dataclass

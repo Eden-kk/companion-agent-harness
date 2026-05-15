@@ -487,6 +487,7 @@ class StreamingRealtimeOrchestrator:
                     budget_bucket=None,
                     allowed_prosody_tags=[],
                     max_duration_ms=None,
+                    response_content_source="no_synthesis",
                 )
                 self._logger.log(self._make_event(
                     event_id=self._new_event_id(),
