@@ -119,7 +119,7 @@ class _InMemoryStore:
         self._items = items or []
         self.retrieve_calls: list[tuple[str, int]] = []
 
-    def commit(self, item: MemoryItem) -> None:
+    def commit(self, item: MemoryItem, privacy_mode: str = "normal") -> None:
         self.committed.append(item)
 
     def retrieve(self, query: str, top_k: int = 5) -> list[MemoryItem]:
@@ -504,7 +504,7 @@ async def test_retrieve_queries_both_stores_in_order(tmp_path: Path):
         def __init__(self, name: str) -> None:
             self._name = name
 
-        def commit(self, item: MemoryItem) -> None:
+        def commit(self, item: MemoryItem, privacy_mode: str = "normal") -> None:
             pass
 
         def retrieve(self, query: str, top_k: int = 5) -> list[MemoryItem]:
@@ -763,7 +763,7 @@ class _InMemoryStoreSTA:
     def __init__(self) -> None:
         self.committed: list[MemoryItem] = []
 
-    def commit(self, item: MemoryItem) -> None:
+    def commit(self, item: MemoryItem, privacy_mode: str = "normal") -> None:
         self.committed.append(item)
 
     def retrieve(self, query: str, top_k: int = 5) -> list[MemoryItem]:

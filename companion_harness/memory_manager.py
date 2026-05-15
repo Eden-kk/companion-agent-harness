@@ -26,7 +26,7 @@ __all__ = ["MemoryManager", "MemoryManagerStub"]
 
 @runtime_checkable
 class MemoryManager(Protocol):
-    def commit(self, item: MemoryItem) -> None: ...
+    def commit(self, item: MemoryItem, privacy_mode: str = "normal") -> None: ...
     def retrieve(self, query: str, top_k: int = 5) -> list[MemoryItem]: ...
     def forget(self, item_id: str) -> None: ...
     def hard_delete(self, item_id: str) -> None: ...
@@ -35,7 +35,7 @@ class MemoryManager(Protocol):
 class MemoryManagerStub:
     """Inert skeleton — all methods raise NotImplementedError until Stage 4."""
 
-    def commit(self, item: MemoryItem) -> None:
+    def commit(self, item: MemoryItem, privacy_mode: str = "normal") -> None:
         raise NotImplementedError("MemoryManager.commit: wired at Stage 4")
 
     def retrieve(self, query: str, top_k: int = 5) -> list[MemoryItem]:
