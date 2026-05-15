@@ -27,3 +27,21 @@ silero-vad==6.2.1
 # faster-whisper for the ASR+lexicon backchannel classifier; pulls onnxruntime.
 faster-whisper==1.2.1
 onnxruntime==1.26.0
+
+# TTS backend for live-loop Task 3 (KokoroTtsAdapter). Pure ONNX — does not
+# touch torchaudio, so it side-steps the libcudart.so.13 mismatch that blocks
+# MiniCPM-o's native as_duplex audio path in this venv. The 0.3.x line is
+# pinned because 0.4+ requires numpy 2.x, which conflicts with minicpmo-utils
+# (librosa==0.9.0 → numpy<2). Install order matters — install kokoro-onnx
+# AFTER minicpmo-utils, then pin librosa back to 0.9.0:
+#   pip install "kokoro-onnx==0.3.3" "numpy<2"
+#   pip install "librosa==0.9.0"
+# kokoro-onnx 0.3.3 requires librosa>=0.10.2.post1 at install-time but only
+# uses librosa.effects.trim at runtime, which exists in 0.9.0 — verified.
+# onnxruntime is already pinned above by the real-detectors track.
+kokoro-onnx==0.3.3
+# espeak-ng phonemizer backend (bundled binary; loaded by kokoro-onnx via
+# espeakng-loader). Installed transitively by kokoro-onnx; pinned here so
+# the canonical venv can be reconstructed deterministically.
+espeakng-loader==0.2.4
+phonemizer-fork==3.3.1
