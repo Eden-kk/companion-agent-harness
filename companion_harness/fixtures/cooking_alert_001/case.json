@@ -11,26 +11,117 @@
     "policy_decision"
   ],
   "expected_metrics": {
-    "safety_alert_rate": "= 100% on fixture set (alert fires despite proactivity budget)"
+    "alert_response_rate": 1.0
   },
   "consent_class": "synthetic_eval",
-  "description": "A visible smoke or boiling-over event is detected while the user is in cooking mode. The speak policy must produce an alert action even when the proactivity budget is exhausted — safety alerts override the aesthetic/proactivity budget. This tests that alert_threshold in cooking mode is 'low' (per the spec) and that ALERT_THRESHOLD_EXCEEDED fires before the budget gate. The expected action_type is 'alert' with primary_reason_code=ALERT_THRESHOLD_EXCEEDED.",
+  "description": "Sub-case 1 (cooking): urgency_score=0.5 in cooking mode (alert threshold 'low' = 0.3). Alert fires at gate 1b — ALERT_THRESHOLD_EXCEEDED — even before EOU is confirmed. Sub-case 2 (normal): same urgency_score=0.5 in normal mode (alert threshold 'medium' = 0.6). 0.5 < 0.6 so gate 1b passes; eou_probability=0.3 <= 0.5 so gate 3 returns silence (NOT_ADDRESSED_TO_AGENT). Positive/negative discriminator pair for alert_threshold mode-sensitivity.",
   "fixture_conventions": {
-    "skeleton_note": "Per-frame signal values are placeholders. Finalize at Stage 3 activation when the hazard-detection adapter and alert_threshold config are specified.",
-    "task_mode": "cooking — alert_threshold is 'low' per spec Part 6 Stage 3.",
-    "hazard_score": "Scripted hazard confidence [0.0, 1.0]. > alert_threshold => ALERT branch fires regardless of proactivity budget.",
-    "proactivity_budget_remaining": "Scripted units remaining. 0 = budget exhausted. Alert must still fire.",
-    "expected_action_class": "alert — safety override; budget does not block.",
-    "expected_reason_code": "ALERT_THRESHOLD_EXCEEDED",
-    "frame_duration_ms": "33 — approximate 30fps; to be confirmed at Stage 3 activation.",
+    "alert_threshold": 0.3,
+    "alert_threshold_note": "cooking mode maps to 'low' in AlertThresholdConfig; _LEVEL_TO_FLOAT_THRESHOLD['low'] = 0.3. normal mode maps to 'medium' = 0.6.",
+    "sub_cases": "cooking (alert fires at urgency_score=0.5 > 0.3) and normal (alert does NOT fire at urgency_score=0.5 < 0.6; silenced at EOU gate instead).",
+    "urgency_score": "0.5 for both sub-cases — the discriminating variable is current_task_mode.",
+    "social_mode": "direct — not in _BLOCKING_SOCIAL_MODES; gate 1 does not block.",
+    "user_speaking": "false — gate 2 does not block.",
+    "eou_probability": "0.3 (sub-case 2 only) — <= 0.5 threshold, so gate 3 returns silence.",
+    "frame_duration_ms": "33 — approximate 30fps.",
     "expected_events_markers": "event_type strings are fixture-internal role labels, not Part 5 event_type values."
   },
-  "signal_trace": {
-    "status": "skeleton",
-    "frames": [
-      {"t_ms": 0,  "frame_id": "frame-000", "event_type": "raw_video_frame",      "task_mode": "cooking", "hazard_score": null, "proactivity_budget_remaining": 0, "notes": "PLACEHOLDER — cooking mode active; proactivity budget exhausted"},
-      {"t_ms": 33, "frame_id": "frame-001", "event_type": "raw_video_frame",      "task_mode": "cooking", "hazard_score": null, "proactivity_budget_remaining": 0, "notes": "PLACEHOLDER — visual hazard developing (smoke/boil-over)"},
-      {"t_ms": 66, "frame_id": "frame-002", "event_type": "scene_hazard_detection","task_mode": "cooking", "hazard_score": null, "proactivity_budget_remaining": 0, "resolution_frame": true, "expected_action_class": "alert", "expected_reason_code": "ALERT_THRESHOLD_EXCEEDED", "notes": "PLACEHOLDER — hazard_score > low threshold; alert must fire even with budget=0"}
-    ]
-  }
+  "signal_trace": [
+    {
+      "t_ms": 0,
+      "frame_id": "frame-000",
+      "sub_case": "cooking",
+      "event_type": "raw_video_frame",
+      "current_task_mode": "cooking",
+      "urgency_score": 0.2,
+      "social_mode": "direct",
+      "user_speaking": false,
+      "eou_probability": 0.3,
+      "notes": "COOKING: urgency_score=0.2 below 0.3 threshold; no alert"
+    },
+    {
+      "t_ms": 33,
+      "frame_id": "frame-001",
+      "sub_case": "cooking",
+      "event_type": "raw_video_frame",
+      "current_task_mode": "cooking",
+      "urgency_score": 0.35,
+      "social_mode": "direct",
+      "user_speaking": false,
+      "eou_probability": 0.3,
+      "notes": "COOKING: urgency_score=0.35 above 0.3 threshold; alert would fire — not resolution frame"
+    },
+    {
+      "t_ms": 66,
+      "frame_id": "frame-002",
+      "sub_case": "cooking",
+      "event_type": "scene_hazard_detection",
+      "current_task_mode": "cooking",
+      "urgency_score": 0.5,
+      "social_mode": "direct",
+      "user_speaking": false,
+      "eou_probability": 0.3,
+      "resolution_frame": true,
+      "expected_action_class": "alert",
+      "expected_reason_code": "ALERT_THRESHOLD_EXCEEDED",
+      "notes": "COOKING GATE FRAME: urgency_score=0.5 > 0.3 (low threshold); alert fires; ALERT_THRESHOLD_EXCEEDED"
+    },
+    {
+      "t_ms": 5000,
+      "frame_id": "frame-100",
+      "sub_case": "normal",
+      "event_type": "raw_video_frame",
+      "current_task_mode": "normal",
+      "urgency_score": 0.2,
+      "social_mode": "direct",
+      "user_speaking": false,
+      "eou_probability": 0.3,
+      "notes": "NORMAL: urgency_score=0.2 below 0.6 medium threshold; no alert"
+    },
+    {
+      "t_ms": 5033,
+      "frame_id": "frame-101",
+      "sub_case": "normal",
+      "event_type": "raw_video_frame",
+      "current_task_mode": "normal",
+      "urgency_score": 0.4,
+      "social_mode": "direct",
+      "user_speaking": false,
+      "eou_probability": 0.3,
+      "notes": "NORMAL: urgency_score=0.4 below 0.6 medium threshold; no alert"
+    },
+    {
+      "t_ms": 5066,
+      "frame_id": "frame-102",
+      "sub_case": "normal",
+      "event_type": "scene_hazard_detection",
+      "current_task_mode": "normal",
+      "urgency_score": 0.5,
+      "social_mode": "direct",
+      "user_speaking": false,
+      "eou_probability": 0.3,
+      "resolution_frame": true,
+      "expected_action_class": "silence",
+      "expected_reason_code": "NOT_ADDRESSED_TO_AGENT",
+      "notes": "NORMAL GATE FRAME: urgency_score=0.5 < 0.6 (medium threshold); gate 1b passes; eou_probability=0.3 <= 0.5; gate 3 returns silence (NOT_ADDRESSED_TO_AGENT)"
+    }
+  ],
+  "baseline_decisions": [
+    {
+      "frame_id": "frame-002",
+      "sub_case": "cooking",
+      "action_type": "alert",
+      "primary_reason_code": "ALERT_THRESHOLD_EXCEEDED",
+      "supporting_reason_codes": [],
+      "notes": "cooking mode threshold 0.3; urgency_score=0.5 > 0.3; alert fires at gate 1b"
+    },
+    {
+      "frame_id": "frame-102",
+      "sub_case": "normal",
+      "action_type": "silence",
+      "primary_reason_code": "NOT_ADDRESSED_TO_AGENT",
+      "supporting_reason_codes": [],
+      "notes": "normal mode threshold 0.6; urgency_score=0.5 < 0.6; gate 1b passes; eou_probability=0.3 <= 0.5; silence at gate 3"
+    }
+  ]
 }
