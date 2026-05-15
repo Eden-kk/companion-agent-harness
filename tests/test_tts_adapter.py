@@ -7,15 +7,12 @@ Success criterion (verbatim):
   event chain.
 """
 
-import asyncio
-
 import pytest
 
 from companion_harness.audio_output_controller import AudioOutputController
 from companion_harness.causal_graph import CausalGraph
 from companion_harness.event_logger import EventLogger
-from companion_harness.reason_codes import ReasonCode
-from companion_harness.schemas import Event, SpeakDecision
+from companion_harness.schemas import Event
 from companion_harness.tts_adapter import SilentTtsAdapter, TtsAdapter
 
 
@@ -30,19 +27,6 @@ def _make_logger() -> tuple[EventLogger, list[Event]]:
         received.append(event)
 
     return EventLogger(sink, maxsize=256), received
-
-
-def _fake_speak_decision(caused_by: list[str]) -> SpeakDecision:
-    return SpeakDecision(
-        action_type="full_response",
-        primary_reason_code=ReasonCode.EOU_CONFIRMED,
-        supporting_reason_codes=[ReasonCode.USER_ADDRESSED_AGENT],
-        redacted_explanation=None,
-        caused_by=caused_by,
-        budget_bucket="full_response",
-        allowed_prosody_tags=[],
-        max_duration_ms=None,
-    )
 
 
 # ---------------------------------------------------------------------------

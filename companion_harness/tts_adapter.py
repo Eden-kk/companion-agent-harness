@@ -62,6 +62,6 @@ class SilentTtsAdapter:
         self._chunk = chunk_bytes
         self._count = chunk_count
 
-    async def synthesize(self, text: str, prosody_tags: list[str]) -> AsyncIterator[bytes]:  # type: ignore[override]
+    async def synthesize(self, text: str, prosody_tags: list[str]) -> AsyncIterator[bytes]:
         for _ in range(self._count):
             yield self._chunk
