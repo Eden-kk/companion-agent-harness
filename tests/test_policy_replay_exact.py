@@ -249,3 +249,359 @@ def test_policy_replay_exact_stage2():
         assert astuple(d1) == astuple(d2), (
             f"{frame_id}: run1 {astuple(d1)!r} != run2 {astuple(d2)!r}"
         )
+
+
+# Stage 3 signal trace: manually-injected PolicyInputs exercising every Stage 3
+# branch in speak_policy.decide().  No fixture-loader involvement per roadmap §16.
+# task_mode cycling, per-mode alert thresholds, proactivity budget, cooldown_state,
+# quiet_mode_active, and aesthetic_novelty_score are all covered.
+_STAGE3_TRACE = [
+    # alert: cooking mode (low=0.3), urgency_score=0.4 exceeds threshold
+    PolicyInputs(
+        user_speaking=False,
+        eou_probability=0.9,
+        assistant_speaking=False,
+        scene_change_score=0.0,
+        deictic_reference=False,
+        user_addressed_agent=True,
+        urgency_score=0.4,
+        proactivity_budget_remaining={},
+        privacy_mode="normal",
+        current_task_mode="cooking",
+        social_mode="user_addressing_agent",
+        risk_mode="normal",
+        cooldown_state={},
+        attachment_risk_level=0.0,
+    ),
+    # no alert: cooking mode (low=0.3), urgency_score=0.2 below threshold → full_response
+    PolicyInputs(
+        user_speaking=False,
+        eou_probability=0.9,
+        assistant_speaking=False,
+        scene_change_score=0.0,
+        deictic_reference=False,
+        user_addressed_agent=True,
+        urgency_score=0.2,
+        proactivity_budget_remaining={},
+        privacy_mode="normal",
+        current_task_mode="cooking",
+        social_mode="user_addressing_agent",
+        risk_mode="normal",
+        cooldown_state={},
+        attachment_risk_level=0.0,
+    ),
+    # alert: normal mode (medium=0.6), urgency_score=0.7 exceeds threshold
+    PolicyInputs(
+        user_speaking=False,
+        eou_probability=0.9,
+        assistant_speaking=False,
+        scene_change_score=0.0,
+        deictic_reference=False,
+        user_addressed_agent=True,
+        urgency_score=0.7,
+        proactivity_budget_remaining={},
+        privacy_mode="normal",
+        current_task_mode="normal",
+        social_mode="user_addressing_agent",
+        risk_mode="normal",
+        cooldown_state={},
+        attachment_risk_level=0.0,
+    ),
+    # no alert: normal mode (medium=0.6), urgency_score=0.5 below threshold → full_response
+    PolicyInputs(
+        user_speaking=False,
+        eou_probability=0.9,
+        assistant_speaking=False,
+        scene_change_score=0.0,
+        deictic_reference=False,
+        user_addressed_agent=True,
+        urgency_score=0.5,
+        proactivity_budget_remaining={},
+        privacy_mode="normal",
+        current_task_mode="normal",
+        social_mode="user_addressing_agent",
+        risk_mode="normal",
+        cooldown_state={},
+        attachment_risk_level=0.0,
+    ),
+    # alert: crisis_emergency mode (low=0.3), urgency_score=0.4 exceeds threshold
+    PolicyInputs(
+        user_speaking=False,
+        eou_probability=0.9,
+        assistant_speaking=False,
+        scene_change_score=0.0,
+        deictic_reference=False,
+        user_addressed_agent=True,
+        urgency_score=0.4,
+        proactivity_budget_remaining={},
+        privacy_mode="normal",
+        current_task_mode="crisis_emergency",
+        social_mode="user_addressing_agent",
+        risk_mode="normal",
+        cooldown_state={},
+        attachment_risk_level=0.0,
+    ),
+    # alert: creative_focus mode (high=0.85), urgency_score=0.9 exceeds threshold
+    PolicyInputs(
+        user_speaking=False,
+        eou_probability=0.9,
+        assistant_speaking=False,
+        scene_change_score=0.0,
+        deictic_reference=False,
+        user_addressed_agent=True,
+        urgency_score=0.9,
+        proactivity_budget_remaining={},
+        privacy_mode="normal",
+        current_task_mode="creative_focus",
+        social_mode="user_addressing_agent",
+        risk_mode="normal",
+        cooldown_state={},
+        attachment_risk_level=0.0,
+    ),
+    # aesthetic_reaction permitted: novelty>0.5, normal mode, no quiet, no cooldown, not addressed
+    PolicyInputs(
+        user_speaking=False,
+        eou_probability=0.9,
+        assistant_speaking=False,
+        scene_change_score=0.0,
+        deictic_reference=False,
+        user_addressed_agent=False,
+        urgency_score=0.0,
+        proactivity_budget_remaining={},
+        privacy_mode="normal",
+        current_task_mode="normal",
+        social_mode="user_addressing_agent",
+        risk_mode="normal",
+        cooldown_state={},
+        attachment_risk_level=0.0,
+        aesthetic_novelty_score=0.8,
+        quiet_mode_active=False,
+    ),
+    # aesthetic_reaction blocked by quiet_mode_active=True
+    PolicyInputs(
+        user_speaking=False,
+        eou_probability=0.9,
+        assistant_speaking=False,
+        scene_change_score=0.0,
+        deictic_reference=False,
+        user_addressed_agent=False,
+        urgency_score=0.0,
+        proactivity_budget_remaining={},
+        privacy_mode="normal",
+        current_task_mode="normal",
+        social_mode="user_addressing_agent",
+        risk_mode="normal",
+        cooldown_state={},
+        attachment_risk_level=0.0,
+        aesthetic_novelty_score=0.8,
+        quiet_mode_active=True,
+    ),
+    # aesthetic_reaction blocked by mode (cooking disables aesthetic_reaction)
+    PolicyInputs(
+        user_speaking=False,
+        eou_probability=0.9,
+        assistant_speaking=False,
+        scene_change_score=0.0,
+        deictic_reference=False,
+        user_addressed_agent=False,
+        urgency_score=0.2,
+        proactivity_budget_remaining={},
+        privacy_mode="normal",
+        current_task_mode="cooking",
+        social_mode="user_addressing_agent",
+        risk_mode="normal",
+        cooldown_state={},
+        attachment_risk_level=0.0,
+        aesthetic_novelty_score=0.8,
+        quiet_mode_active=False,
+    ),
+    # aesthetic_reaction blocked by cooldown_state (rate-limit active)
+    PolicyInputs(
+        user_speaking=False,
+        eou_probability=0.9,
+        assistant_speaking=False,
+        scene_change_score=0.0,
+        deictic_reference=False,
+        user_addressed_agent=False,
+        urgency_score=0.0,
+        proactivity_budget_remaining={},
+        privacy_mode="normal",
+        current_task_mode="normal",
+        social_mode="user_addressing_agent",
+        risk_mode="normal",
+        cooldown_state={"aesthetic_reaction": 1},
+        attachment_risk_level=0.0,
+        aesthetic_novelty_score=0.8,
+        quiet_mode_active=False,
+    ),
+    # short_reaction: budget replenished (short_reaction > 0)
+    PolicyInputs(
+        user_speaking=False,
+        eou_probability=0.9,
+        assistant_speaking=False,
+        scene_change_score=0.0,
+        deictic_reference=False,
+        user_addressed_agent=False,
+        urgency_score=0.0,
+        proactivity_budget_remaining={"short_reaction": 1},
+        privacy_mode="normal",
+        current_task_mode="normal",
+        social_mode="user_addressing_agent",
+        risk_mode="normal",
+        cooldown_state={},
+        attachment_risk_level=0.0,
+        short_response_appropriate=True,
+    ),
+    # short_reaction exhausted: budget empty → COOLDOWN_BLOCKED silence
+    PolicyInputs(
+        user_speaking=False,
+        eou_probability=0.9,
+        assistant_speaking=False,
+        scene_change_score=0.0,
+        deictic_reference=False,
+        user_addressed_agent=False,
+        urgency_score=0.0,
+        proactivity_budget_remaining={},
+        privacy_mode="normal",
+        current_task_mode="normal",
+        social_mode="user_addressing_agent",
+        risk_mode="normal",
+        cooldown_state={},
+        attachment_risk_level=0.0,
+        short_response_appropriate=True,
+    ),
+    # backchannel: p_backchannel >= 0.7 (injected via decide() argument)
+    PolicyInputs(
+        user_speaking=False,
+        eou_probability=0.9,
+        assistant_speaking=False,
+        scene_change_score=0.0,
+        deictic_reference=False,
+        user_addressed_agent=True,
+        urgency_score=0.0,
+        proactivity_budget_remaining={},
+        privacy_mode="normal",
+        current_task_mode="normal",
+        social_mode="user_addressing_agent",
+        risk_mode="normal",
+        cooldown_state={},
+        attachment_risk_level=0.0,
+    ),
+    # clarification: audio_visual_conflict_score > 0.7
+    PolicyInputs(
+        user_speaking=False,
+        eou_probability=0.9,
+        assistant_speaking=False,
+        scene_change_score=0.0,
+        deictic_reference=False,
+        user_addressed_agent=True,
+        urgency_score=0.0,
+        proactivity_budget_remaining={},
+        privacy_mode="normal",
+        current_task_mode="normal",
+        social_mode="user_addressing_agent",
+        risk_mode="normal",
+        cooldown_state={},
+        attachment_risk_level=0.0,
+        audio_visual_conflict_score=0.9,
+    ),
+    # full_response: EOU confirmed, user addressed agent
+    PolicyInputs(
+        user_speaking=False,
+        eou_probability=0.9,
+        assistant_speaking=False,
+        scene_change_score=0.0,
+        deictic_reference=False,
+        user_addressed_agent=True,
+        urgency_score=0.0,
+        proactivity_budget_remaining={},
+        privacy_mode="normal",
+        current_task_mode="normal",
+        social_mode="user_addressing_agent",
+        risk_mode="normal",
+        cooldown_state={},
+        attachment_risk_level=0.0,
+    ),
+    # silence fallthrough: EOU confirmed, agent not addressed, no proactive trigger
+    PolicyInputs(
+        user_speaking=False,
+        eou_probability=0.9,
+        assistant_speaking=False,
+        scene_change_score=0.0,
+        deictic_reference=False,
+        user_addressed_agent=False,
+        urgency_score=0.0,
+        proactivity_budget_remaining={},
+        privacy_mode="normal",
+        current_task_mode="normal",
+        social_mode="user_addressing_agent",
+        risk_mode="normal",
+        cooldown_state={},
+        attachment_risk_level=0.0,
+    ),
+]
+
+# p_backchannel per frame (0.0 for all except the backchannel frame at index 12)
+_STAGE3_P_BACKCHANNEL = [0.0] * 12 + [0.85] + [0.0] * 3
+
+_STAGE3_BASELINE = [
+    {"action_type": "alert",              "primary_reason_code": "ALERT_THRESHOLD_EXCEEDED",  "supporting_reason_codes": []},
+    {"action_type": "full_response",      "primary_reason_code": "EOU_CONFIRMED",              "supporting_reason_codes": ["USER_ADDRESSED_AGENT"]},
+    {"action_type": "alert",              "primary_reason_code": "ALERT_THRESHOLD_EXCEEDED",  "supporting_reason_codes": []},
+    {"action_type": "full_response",      "primary_reason_code": "EOU_CONFIRMED",              "supporting_reason_codes": ["USER_ADDRESSED_AGENT"]},
+    {"action_type": "alert",              "primary_reason_code": "ALERT_THRESHOLD_EXCEEDED",  "supporting_reason_codes": []},
+    {"action_type": "alert",              "primary_reason_code": "ALERT_THRESHOLD_EXCEEDED",  "supporting_reason_codes": []},
+    {"action_type": "aesthetic_reaction", "primary_reason_code": "PROACTIVITY_BUDGET_AVAILABLE", "supporting_reason_codes": []},
+    {"action_type": "silence",            "primary_reason_code": "QUIET_MODE_BLOCKED",         "supporting_reason_codes": []},
+    {"action_type": "silence",            "primary_reason_code": "QUIET_MODE_BLOCKED",         "supporting_reason_codes": []},
+    {"action_type": "silence",            "primary_reason_code": "COOLDOWN_BLOCKED",           "supporting_reason_codes": []},
+    {"action_type": "short_reaction",     "primary_reason_code": "PROACTIVITY_BUDGET_AVAILABLE", "supporting_reason_codes": []},
+    {"action_type": "silence",            "primary_reason_code": "COOLDOWN_BLOCKED",           "supporting_reason_codes": []},
+    {"action_type": "backchannel",        "primary_reason_code": "BACKCHANNEL_DETECTED",       "supporting_reason_codes": []},
+    {"action_type": "clarification",      "primary_reason_code": "AUDIO_VISUAL_CONFLICT",      "supporting_reason_codes": []},
+    {"action_type": "full_response",      "primary_reason_code": "EOU_CONFIRMED",              "supporting_reason_codes": ["USER_ADDRESSED_AGENT"]},
+    {"action_type": "silence",            "primary_reason_code": "NOT_ADDRESSED_TO_AGENT",     "supporting_reason_codes": []},
+]
+
+
+def test_policy_replay_exact_stage3():
+    """Tier B: 100% bit-identical replay for Stage 3 PolicyInputs branches.
+
+    Manually injects inputs covering every Stage 3 branch in decide():
+    alert (all four modes), aesthetic_reaction (permitted / quiet_mode_blocked /
+    mode_blocked / cooldown_blocked), short_reaction (budget replenished /
+    exhausted), backchannel, clarification, full_response, and silence fallthrough.
+    No fixture-loader involvement.  Verifies invariant #5 and POLICY_VERSION == "v0.1d".
+    """
+    assert speak_policy.POLICY_VERSION == "v0.1d"
+    assert len(_STAGE3_TRACE) == len(_STAGE3_BASELINE)
+    assert len(_STAGE3_TRACE) == len(_STAGE3_P_BACKCHANNEL)
+
+    run1 = [
+        speak_policy.decide(inputs, signal_event_ids=[f"s3-frame-{i:03d}"], p_backchannel=p_bc)
+        for i, (inputs, p_bc) in enumerate(zip(_STAGE3_TRACE, _STAGE3_P_BACKCHANNEL))
+    ]
+    run2 = [
+        speak_policy.decide(inputs, signal_event_ids=[f"s3-frame-{i:03d}"], p_backchannel=p_bc)
+        for i, (inputs, p_bc) in enumerate(zip(_STAGE3_TRACE, _STAGE3_P_BACKCHANNEL))
+    ]
+
+    for i, (baseline, d1, d2) in enumerate(zip(_STAGE3_BASELINE, run1, run2)):
+        frame_id = f"s3-frame-{i:03d}"
+
+        assert d1.action_type == baseline["action_type"], (
+            f"{frame_id}: action_type {d1.action_type!r} != baseline {baseline['action_type']!r}"
+        )
+        assert d1.primary_reason_code == ReasonCode(baseline["primary_reason_code"]), (
+            f"{frame_id}: primary_reason_code {d1.primary_reason_code!r} "
+            f"!= baseline {baseline['primary_reason_code']!r}"
+        )
+        expected_supporting = [ReasonCode(c) for c in baseline["supporting_reason_codes"]]
+        assert d1.supporting_reason_codes == expected_supporting, (
+            f"{frame_id}: supporting_reason_codes {d1.supporting_reason_codes!r} "
+            f"!= baseline {expected_supporting!r}"
+        )
+
+        assert astuple(d1) == astuple(d2), (
+            f"{frame_id}: run1 {astuple(d1)!r} != run2 {astuple(d2)!r}"
+        )
