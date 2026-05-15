@@ -34,6 +34,41 @@ def _make_event(i: int) -> Event:
 
 
 @pytest.mark.asyncio
+async def test_subscribe_fanout() -> None:
+    """Subscribers receive every event drained by the logger."""
+    received_primary: list[str] = []
+    received_sub: list[str] = []
+
+    async def primary_sink(event: Event) -> None:
+        received_primary.append(event.event_id)
+
+    async def subscriber(event: Event) -> None:
+        received_sub.append(event.event_id)
+
+    logger = EventLogger(primary_sink)
+    logger.subscribe(subscriber)
+    await logger.start()
+
+    for i in range(5):
+        logger.log(_make_event(i))
+
+    await logger.stop()
+
+    assert received_primary == [f"evt-{i}" for i in range(5)]
+    assert received_sub == [f"evt-{i}" for i in range(5)]
+
+
+@pytest.mark.asyncio
+async def test_subscribe_after_start_raises() -> None:
+    """subscribe() after start() raises RuntimeError."""
+    logger = EventLogger(lambda e: asyncio.sleep(0))
+    await logger.start()
+    with pytest.raises(RuntimeError, match="subscribe\\(\\) must be called before"):
+        logger.subscribe(lambda e: asyncio.sleep(0))
+    await logger.stop()
+
+
+@pytest.mark.asyncio
 async def test_high_rate_stream_does_not_block_on_slow_sink():
     """Enqueuing 2000 events into a queue maxsize=64 (with a 50ms-per-event sink)
     must complete in well under 1 second — confirming the realtime path never waits
