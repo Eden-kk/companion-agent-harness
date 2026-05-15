@@ -9,6 +9,8 @@ Drives fixture not_addressed_to_me_001 directly through SpeakPolicy.decide().
 Policy-layer isolation (invariant #5 determinism is testable in isolation).
 """
 
+from dataclasses import astuple
+
 from companion_harness.fixtures.loader import load_fixture
 from companion_harness.reason_codes import ReasonCode
 from companion_harness.schemas import PolicyInputs
@@ -54,7 +56,7 @@ class TestBlockingSubCase:
     """Gate frame-002: social_mode=user_addressing_other in _BLOCKING_SOCIAL_MODES."""
 
     _frame = _resolution_frame("blocking")
-    _inputs = _inputs_from_frame(_resolution_frame("blocking"))
+    _inputs = _inputs_from_frame(_frame)
 
     def test_action_type_is_silence(self):
         decision = speak_policy.decide(self._inputs, signal_event_ids=[self._frame["frame_id"]])
@@ -67,7 +69,6 @@ class TestBlockingSubCase:
         assert decision.primary_reason_code == ReasonCode.NOT_ADDRESSED_TO_AGENT
 
     def test_determinism(self):
-        from dataclasses import astuple
         d1 = speak_policy.decide(self._inputs, signal_event_ids=[self._frame["frame_id"]])
         d2 = speak_policy.decide(self._inputs, signal_event_ids=[self._frame["frame_id"]])
         assert astuple(d1) == astuple(d2)
@@ -81,7 +82,7 @@ class TestNonBlockingSubCase:
     """Gate frame-102: social_mode=user_addressing_agent NOT in _BLOCKING_SOCIAL_MODES."""
 
     _frame = _resolution_frame("non_blocking")
-    _inputs = _inputs_from_frame(_resolution_frame("non_blocking"))
+    _inputs = _inputs_from_frame(_frame)
 
     def test_action_type_is_full_response(self):
         decision = speak_policy.decide(self._inputs, signal_event_ids=[self._frame["frame_id"]])
@@ -94,7 +95,6 @@ class TestNonBlockingSubCase:
         assert decision.primary_reason_code == ReasonCode.EOU_CONFIRMED
 
     def test_determinism(self):
-        from dataclasses import astuple
         d1 = speak_policy.decide(self._inputs, signal_event_ids=[self._frame["frame_id"]])
         d2 = speak_policy.decide(self._inputs, signal_event_ids=[self._frame["frame_id"]])
         assert astuple(d1) == astuple(d2)
