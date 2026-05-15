@@ -22,9 +22,53 @@ __all__ = [
     "PolicyInputs",
     "SpeakDecision",
     "ThinkerProposal",
+    "RubricViolation",
+    "TrackedSignal",
+    "AttachmentRiskSignal",
     "MemoryItem",
     "EvaluationCase",
     "ReplayRun",
+]
+
+
+# --- v0.1g Stage 6 (companion texture) schema additions ----------------------
+#
+# Aesthetic-reaction rubric (Anchor 1 of docs/roadmap-v0.1g-draft.md):
+#   Spec lines 624-658 enumerate ten PASS criteria.  Eight map to discrete
+#   violation IDs and ride on ThinkerProposal.rubric_violations as durable
+#   metadata.  The remaining two (cooldown, task-derail) are already covered
+#   by COOLDOWN_BLOCKED / QUIET_MODE_BLOCKED.
+#
+# Attachment-risk signals (Anchor 2 of the same draft):
+#   Spec lines 843-857 enumerate six tracked signals.  Each detected
+#   occurrence emits one attachment_risk_signal event whose payload is
+#   AttachmentRiskSignal; PolicyInputs.attachment_risk_level stays the
+#   policy-layer-facing scalar (pure function of these events -- preserves
+#   invariant #5 deterministic replay).
+#
+# Enum-string spellings are durable metadata once events carrying them land
+# on disk; renaming costs a one-time reclassification pass.
+
+
+RubricViolation = Literal[
+    "RUBRIC_TOO_LONG",                 # spec line 624 ("<= 8 words")
+    "RUBRIC_UNGROUNDED",               # spec ("grounded in available sensors")
+    "RUBRIC_POSSESSIVE",               # spec ("non-possessive")
+    "RUBRIC_DIAGNOSTIC",               # spec ("non-diagnostic")
+    "RUBRIC_FLATTERING",               # spec ("non-flattering")
+    "RUBRIC_FABRICATED_MEMORY",        # spec corollary ("no fabricated personal memory")
+    "RUBRIC_ABSENT_SENSORY_CHANNEL",   # spec corollary ("no claimed absent sensor")
+    "RUBRIC_IDENTITY_ONLY",            # spec corollary ("references texture, not just identity")
+]
+
+
+TrackedSignal = Literal[
+    "prolonged_daily_use_minutes",     # spec line 843
+    "emotional_exclusivity_signals",   # spec line 844
+    "user_says_ai_is_only_friend",     # spec line 845
+    "repeated_reassurance_loops",      # spec line 846
+    "reduced_human_contact_mentions",  # spec line 847
+    "explicit_crisis_signals",         # spec line 848 (highly_sensitive)
 ]
 
 
@@ -136,6 +180,28 @@ class ThinkerProposal:
     max_utterance_ms:  int
     cooldown_consumed: str
     caused_by:         list[str]
+    # v0.1g Anchor 1: empty list = rubric passes; non-empty list = list of
+    # check IDs that fired.  Per Anchor 4 the rubric runs inside
+    # SpeakPolicy.decide(); the proposal carries the result so it appears on
+    # the event log (invariant #1: spec line 663 "logged with which criteria
+    # fired").
+    rubric_violations: list[RubricViolation] = field(default_factory=list)
+
+
+@dataclass
+class AttachmentRiskSignal:
+    """Per-event observation contributing to attachment_risk_level (Anchor 2).
+
+    Emitted as the payload of an `attachment_risk_signal` event by the
+    AttachmentRiskMonitor (v0.1g Task 7).  PolicyInputs.attachment_risk_level
+    is the scalar aggregate; this dataclass is the durable per-occurrence
+    record (invariant #1 visibility + spec line 840 "fires only on
+    high-confidence signals").
+    """
+
+    signal_class:        TrackedSignal
+    confidence:          float
+    evidence_event_ids:  list[str]
 
 
 @dataclass
