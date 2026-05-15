@@ -91,6 +91,7 @@ KEY_AUDIO_OUT_BROKER: web.AppKey[object] = web.AppKey("audio_out_broker", object
 KEY_AUDIO_OUT_COUNTER: web.AppKey[dict] = web.AppKey("audio_out_counter", dict)
 KEY_TTS_ADAPTER: web.AppKey[object] = web.AppKey("tts_adapter", object)
 KEY_TTS_LABEL: web.AppKey[str] = web.AppKey("tts_label", str)
+KEY_VISION_ENABLED: web.AppKey[bool] = web.AppKey("vision_enabled", bool)
 
 
 def _event_to_json(event: Event) -> dict:
@@ -109,6 +110,20 @@ async def _null_sink(_event: Event) -> None:
     every event live. Durability is a follow-up concern (storage backend).
     """
     return None
+
+
+class _NullSceneScorer:
+    """Returns 0.0 — scene-change scoring deferred to a follow-up issue."""
+
+    def __call__(self, prev_frame: bytes, curr_frame: bytes) -> float:
+        return 0.0
+
+
+class _NullGroundingModel:
+    """Returns ('', 0.0) — deictic grounding deferred to a follow-up issue."""
+
+    def __call__(self, frame: bytes, query: str) -> tuple[str, float]:
+        return "", 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -243,6 +258,20 @@ async def _handle_ingest_ws(request: web.Request) -> web.WebSocketResponse:
     # Per-connection live pipeline (if enabled and a foreground model is available).
     pipeline: LivePipeline | None = None
     if live_enabled and foreground_model is not None:
+        # Per-session VisionSidecar when --enable-vision is set. The sidecar
+        # buffers the most-recent frame; _bounded_frame_gen pairs it with the
+        # next audio chunk so the MiniCPM-o vision tower runs once per frame
+        # (not once per audio chunk).
+        sidecar: Any = None
+        if request.app[KEY_VISION_ENABLED]:
+            from companion_harness.vision_sidecar import VisionSidecar  # noqa: WPS433
+            sidecar = VisionSidecar(
+                scene_scorer=_NullSceneScorer(),
+                grounding_model=_NullGroundingModel(),
+                session_id=session.session_id,
+                logger=logger,
+            )
+
         pipeline = build_live_pipeline(
             session_id=session.session_id,
             logger=logger,
@@ -256,6 +285,7 @@ async def _handle_ingest_ws(request: web.Request) -> web.WebSocketResponse:
             use_stubs=request.app[KEY_USE_STUBS],
             audio_out_broker=request.app[KEY_AUDIO_OUT_BROKER],  # type: ignore[arg-type]
             tts_adapter=request.app[KEY_TTS_ADAPTER],
+            vision_sidecar=sidecar,
         )
         active_pipelines[session.session_id] = pipeline
         await pipeline.start()
@@ -294,8 +324,12 @@ async def _handle_ingest_ws(request: web.Request) -> web.WebSocketResponse:
                 if pipeline is not None:
                     pipeline.push_audio(payload_bytes, evt.event_id)
             else:  # raw_video
-                ingest.ingest_video_frame(session, payload_bytes, meta)
+                video_evt = ingest.ingest_video_frame(session, payload_bytes, meta)
                 chunk_counter["frames_ingested"] = chunk_counter.get("frames_ingested", 0) + 1
+                if pipeline is not None and pipeline.vision_sidecar is not None:
+                    pipeline.vision_sidecar.ingest_frame_bytes(
+                        payload_bytes, video_evt.event_id, ts_mono
+                    )
     finally:
         if pipeline is not None:
             try:
@@ -394,6 +428,18 @@ async def _handle_health(request: web.Request) -> web.Response:
     detector_labels: dict[str, str] = request.app[KEY_DETECTOR_LABELS]
     audio_out_counter: dict[str, int] = request.app[KEY_AUDIO_OUT_COUNTER]
     tts_label: str = request.app[KEY_TTS_LABEL]
+    # Aggregate vision-sidecar state across all active sessions.
+    vision_enabled: bool = request.app[KEY_VISION_ENABLED]
+    frames_buffered = 0
+    last_frame_event_id: str | None = None
+    if vision_enabled:
+        for p in active_pipelines.values():
+            if p.vision_sidecar is None:
+                continue
+            frames_buffered += p.vision_sidecar.frames_buffered()
+            efid = p.vision_sidecar.last_frame_event_id()
+            if efid is not None:
+                last_frame_event_id = efid
     return web.json_response({
         "status": "ok",
         "sessions_opened": chunk_counter.get("sessions_opened", 0),
@@ -411,6 +457,9 @@ async def _handle_health(request: web.Request) -> web.Response:
         "audio_out_enabled": True,
         "audio_out_chunks_sent": audio_out_counter.get("chunks_sent", 0),
         "tts_model": tts_label,
+        "vision_enabled": vision_enabled,
+        "frames_buffered": frames_buffered,
+        "last_frame_event_id": last_frame_event_id,
     })
 
 
@@ -432,6 +481,7 @@ def build_app(
     tts_adapter: Any = None,
     tts_adapter_factory: Optional[Callable[[], Any]] = None,
     asr_model_factory: Optional[Callable[[], Any]] = None,
+    vision_enabled: bool = False,
 ) -> web.Application:
     """Build the aiohttp Application. Caller is responsible for run/cleanup.
 
@@ -491,6 +541,7 @@ def build_app(
     }
     app[KEY_TTS_ADAPTER] = tts_adapter
     app[KEY_TTS_LABEL] = "stub:NoopTtsAdapter" if (tts_adapter is None or use_stubs) else "injected"
+    app[KEY_VISION_ENABLED] = vision_enabled
 
     app.router.add_get("/", _handle_index)
     app.router.add_get("/healthz", _handle_health)
@@ -603,14 +654,16 @@ def build_app(
     return app
 
 
-def _load_minicpm_streaming_model() -> Any:
+def _load_minicpm_streaming_model(*, init_vision: bool = False) -> Any:
     """Lazy import + construct MiniCPMStreamingModel. b200 only.
 
     Imported here (not at module top) so the server module remains importable
-    on machines without torch/CUDA. Tests never reach this path.
+    on machines without torch/CUDA. Tests never reach this path. When
+    `init_vision=True` the MiniCPM-o vision tower is loaded (+~18 GB VRAM
+    per b200 pre-verification).
     """
     from companion_harness.foreground_model_minicpm import MiniCPMStreamingModel  # noqa: WPS433
-    return MiniCPMStreamingModel()
+    return MiniCPMStreamingModel(init_vision=init_vision)
 
 
 def _load_silero_vad_model() -> Any:
@@ -700,12 +753,30 @@ def main(argv: list[str] | None = None) -> int:
             "/ whisper-tiny.en."
         ),
     )
+    parser.add_argument(
+        "--enable-vision",
+        dest="enable_vision",
+        action="store_true",
+        default=False,
+        help=(
+            "Load MiniCPM-o with init_vision=True (+~18 GB VRAM) and construct "
+            "a per-session VisionSidecar so video frames reach the foreground "
+            "model alongside audio. Default OFF — audio-only path unchanged."
+        ),
+    )
     args = parser.parse_args(argv)
 
     blob_dir: Path = args.blob_dir
     blob_dir.mkdir(parents=True, exist_ok=True)
 
-    factory = _load_minicpm_streaming_model if args.live_pipeline else None
+    if args.live_pipeline:
+        if args.enable_vision:
+            def factory() -> Any:  # noqa: WPS430
+                return _load_minicpm_streaming_model(init_vision=True)
+        else:
+            factory = _load_minicpm_streaming_model
+    else:
+        factory = None
     if args.live_pipeline and not args.use_stubs:
         vad_factory: Optional[Callable[[], Any]] = _load_silero_vad_model
         smart_turn_factory: Optional[Callable[[], Any]] = _load_pipecat_smart_turn_model
@@ -725,6 +796,7 @@ def main(argv: list[str] | None = None) -> int:
         backchannel_model_factory=backchannel_factory,
         tts_adapter_factory=tts_factory,
         asr_model_factory=asr_factory,
+        vision_enabled=args.enable_vision,
     )
 
     if not args.live_pipeline:
@@ -739,6 +811,11 @@ def main(argv: list[str] | None = None) -> int:
         else "capture-only"
     )
 
+    if args.enable_vision:
+        vision_label = "ENABLED (init_vision=True, +~18 GB VRAM)"
+    else:
+        vision_label = "disabled"
+
     print("=" * 72)
     print("manual-test console — Phase 3 (live-loop pipeline wiring, no voice-back)")
     print("-" * 72)
@@ -747,6 +824,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  python:      {sys.executable}")
     print(f"  live loop:   {pipeline_label}")
     print(f"  sessions:    {lanes_label}")
+    print(f"  Vision:      {vision_label}")
     print(f"  open page:   http://localhost:{args.port}/")
     print(f"  ingest WS:   ws://localhost:{args.port}/ws/ingest")
     print(f"  display WS:  ws://localhost:{args.port}/ws/display")

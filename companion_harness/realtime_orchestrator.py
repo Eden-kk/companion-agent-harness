@@ -66,6 +66,7 @@ from companion_harness.turn_detector_vad import VADDetector
 
 if TYPE_CHECKING:
     from companion_harness.memory_manager import MemoryManager
+    from companion_harness.vision_sidecar import VisionSidecar
 
 __all__ = ["StreamingRealtimeOrchestrator"]
 
@@ -179,6 +180,7 @@ class StreamingRealtimeOrchestrator:
         episodic_store: "MemoryManager | None" = None,
         semantic_store: "MemoryManager | None" = None,
         asr_model: ASRModel | None = None,
+        vision_sidecar: "VisionSidecar | None" = None,
     ) -> None:
         self._session_id = session_id
         self._logger = logger
@@ -238,6 +240,7 @@ class StreamingRealtimeOrchestrator:
         self._episodic_store = episodic_store
         self._semantic_store = semantic_store
         self._asr_model = asr_model
+        self._vision_sidecar = vision_sidecar
         # Per-turn audio buffer (PCM16 bytes). Appended on every audio frame in
         # _audio_tee_task; consumed + cleared in T2 on EOU when asr_model is set.
         # No-op (always empty / never consumed) when asr_model is None.
@@ -584,6 +587,17 @@ class StreamingRealtimeOrchestrator:
         """Return a bounded async generator that terminates when _batch_close_event fires."""
         return self._bounded_frame_gen()
 
+    def _consume_video_or_none(self) -> bytes | None:
+        """Return the most-recent buffered video frame bytes (if any) and clear the buffer.
+
+        When `vision_sidecar` is None (audio-only path), always returns None,
+        preserving bit-for-bit backward compat with the existing live loop.
+        """
+        if self._vision_sidecar is None:
+            return None
+        pair = self._vision_sidecar.consume_pending_frame()
+        return pair[0] if pair is not None else None
+
     async def _bounded_frame_gen(self):  # type: ignore[return]
         while not self._batch_close_event.is_set():
             # Race between next frame and batch-close.
@@ -606,12 +620,12 @@ class StreamingRealtimeOrchestrator:
                 # Batch is closed; try to drain any already-received frame.
                 if get_task in done:
                     frame_bytes, _ = get_task.result()
-                    yield frame_bytes, None
+                    yield frame_bytes, self._consume_video_or_none()
                 return
 
             # get_task completed.
             frame_bytes, _ = get_task.result()
-            yield frame_bytes, None
+            yield frame_bytes, self._consume_video_or_none()
 
     async def _synthesis_dispatch_task(self) -> None:
         """T4: Await policy_decision Future; grace window; snapshot; synthesize if approved."""

@@ -114,6 +114,12 @@ class VisionSidecar:
         self._buffer: deque[FrameRef] = deque()
         self._last_frame: bytes | None = None
         self._seq = 0
+        # Live-loop pairing buffer: single most-recent frame, consumed by
+        # StreamingRealtimeOrchestrator._bounded_frame_gen on the next audio
+        # chunk. Independent of the ring buffer above (which serves Stage 2
+        # deictic grounding). See plan-vision-sidecar-wiring.md Anchor 2.
+        self._pending_frame: tuple[bytes, str] | None = None
+        self._last_frame_event_id: str | None = None
 
     # ------------------------------------------------------------------
     # Frame ingest
@@ -135,6 +141,84 @@ class VisionSidecar:
         self._buffer.append(ref)
         self._evict(ref.timestamp_mono_ms)
         return score
+
+    # ------------------------------------------------------------------
+    # Live-loop pairing buffer (single most-recent frame for foreground model)
+
+    def ingest_frame_bytes(
+        self,
+        frame_bytes: bytes,
+        event_id: str,
+        timestamp_mono_ms: int,
+    ) -> None:
+        """Buffer a raw video frame for the next foreground audio chunk.
+
+        Logs a `vision_frame` event (caused_by=[event_id]) and stores the
+        (frame_bytes, vision_frame.event_id) pair so the next call to
+        `consume_pending_frame()` returns it. Under `no_camera_memory`
+        the frame is not stored and no event is logged.
+        """
+        if self._privacy_mode == "no_camera_memory":
+            return
+
+        seq = self._next_seq()
+        vision_event_id = f"{self._session_id}-vision-{seq}-{timestamp_mono_ms}"
+        if self._logger is not None:
+            payload_hash = hashlib.sha256(
+                f"vision_frame:{vision_event_id}:{event_id}".encode()
+            ).hexdigest()[:16]
+            evt = Event(
+                event_id=vision_event_id,
+                session_id=self._session_id,
+                schema_version=self.SCHEMA_VERSION,
+                seq_no=seq,
+                event_type="vision_frame",
+                timestamp_mono_ms=timestamp_mono_ms,
+                timestamp_wall=datetime.now(timezone.utc).isoformat(),
+                source=self.SOURCE,
+                caused_by=[event_id],
+                payload_hash=payload_hash,
+                payload_ref=None,
+                payload_kind="raw_video",
+                subject_class="self",
+                sensitivity="sensitive",
+                retention_policy_id="raw_media_default_300s",
+            )
+            self._logger.log(evt)
+
+        self._pending_frame = (frame_bytes, vision_event_id)
+        self._last_frame_event_id = vision_event_id
+
+    def consume_pending_frame(self) -> tuple[bytes, str] | None:
+        """Return + clear the pending frame, or None if none / privacy gate active.
+
+        Called by StreamingRealtimeOrchestrator._bounded_frame_gen on every
+        audio chunk. Single-frame pairing: a frame fires once and is then
+        cleared so MiniCPM-o does not re-run its vision tower on the same
+        frame for consecutive audio chunks.
+        """
+        if self._privacy_mode == "no_camera_memory":
+            return None
+        frame = self._pending_frame
+        self._pending_frame = None
+        return frame
+
+    def has_pending_frame(self) -> bool:
+        return self._pending_frame is not None
+
+    def frames_buffered(self) -> int:
+        """Number of frames currently in the live-loop pairing buffer (0 or 1)."""
+        return 1 if self._pending_frame is not None else 0
+
+    def last_frame_event_id(self) -> str | None:
+        """Event id of the most recently logged vision_frame, or None."""
+        return self._last_frame_event_id
+
+    def on_privacy_mode_change(self, new_mode: str) -> None:
+        """Update privacy mode; clear pending frame on transition to no_camera_memory."""
+        self._privacy_mode = new_mode
+        if new_mode == "no_camera_memory":
+            self._pending_frame = None
 
     # ------------------------------------------------------------------
     # Grounding pass (gated by deictic_reference)
