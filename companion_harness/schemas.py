@@ -10,6 +10,7 @@ companion_harness.reason_codes; import it from there.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Literal
 
 from companion_harness.reason_codes import ReasonCode  # intentionally not re-exported; import from reason_codes
@@ -256,6 +257,17 @@ class MemoryItem:
 
 @dataclass
 class EvaluationCase:
+    """Fixture/CI-oriented case descriptor (architecture-v0.1.md §Part 5).
+
+    The 8 required positional fields are the original spec-frozen shape.
+    The 5 optional fields below were added in Task A1 (eval-subsystem-spec.md
+    Anchor 3) to support benchmark adapters without breaking legacy call sites.
+
+    Key mapping note: fixture case.json files use the key ``sensitivity``; the
+    field name here is ``consent_class``.  When loading from JSON, callers must
+    map ``case_json["sensitivity"] -> EvaluationCase.consent_class``.
+    """
+
     case_id:          str
     stage:            int
     scenario:         str
@@ -264,10 +276,27 @@ class EvaluationCase:
     expected_events:  list[str]
     expected_metrics: dict
     consent_class:    str
+    # --- eval-subsystem fields (Task A1 / plan-eval-phase-a-execution.md) ---
+    benchmark_name:     str | None = None
+    benchmark_version:  str | None = None
+    inputs:             dict | None = None
+    expected_behavior:  dict | None = None
+    fixtures:           list[str] = field(default_factory=list)
 
 
 @dataclass
 class ReplayRun:
+    """Replay-run record (architecture-v0.1.md §Part 5).
+
+    The 8 required positional fields are the original spec-frozen shape.
+    The 6 optional fields below were added in Task A1 (eval-subsystem-spec.md
+    Anchor 3) to carry eval-subsystem metadata.
+
+    ``decisions`` defaults to an empty list and will be populated by
+    ``companion_harness.replay.run_tier_b_replay()`` (Phase A.5+); it remains
+    empty in Phase A.
+    """
+
     run_id:                       str
     case_id:                      str
     implementation_config_version: str
@@ -276,3 +305,10 @@ class ReplayRun:
     finished_at:                  str | None
     results:                      dict
     failures:                     list[dict]
+    # --- eval-subsystem fields (Task A1 / plan-eval-phase-a-execution.md) ---
+    event_log_path:       Path | None = None
+    decisions:            list["DecisionTrace"] = field(default_factory=list)
+    timing_mode:          Literal["synthetic_clock", "wall_clock"] | None = None
+    started_at_mono_ms:   int | None = None
+    completed_at_mono_ms: int | None = None
+    final_status:         Literal["completed", "skipped", "cancelled", "error"] | None = None
