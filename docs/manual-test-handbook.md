@@ -2,13 +2,15 @@
 
 Last updated: **2026-05-15** (post-manual-test-session). Originally written alongside Phase 1 service build; rewritten after the 2026-05-15 session against the live b200 deployment to reflect what actually happens.
 
-> ## Known headline issue: Finding 6 — the agent currently can't speak
+> ## Finding 6 — CLOSED by PR #149
 >
-> Across 588 recorded decision traces from the 2026-05-15 session, **zero** ever returned `action_selected=full_response`. 530 were `silence / NOT_ADDRESSED_TO_AGENT`; 58 were `backchannel`. The upstream pipeline (Silero VAD, Pipecat Smart Turn v3, whisper-tiny.en ASR, backchannel classifier, MiniCPM-o foreground, Kokoro TTS, browser AudioContext sink) is all wired and observable — but `user_addressed_agent` never flips True, so policy never approves a `full_response`.
+> Finding 6 (`user_addressed_agent` never flipping True) was resolved by PR #149, which wired `AddressingClassifier` into `StreamingRealtimeOrchestrator._policy_gate_task` (lines 423–431). The 3-tier classifier behavior:
 >
-> This is an open architectural issue, not a setup error. It is most likely in the `proposals_to_signals` path on the foreground model (`companion_harness/realtime_orchestrator.py` + `companion_harness/foreground_model_minicpm.py`): even with ASR now populating `PolicyInputs.user_transcript` (PR #136), the proposal-derived `user_addressed_agent` signal never asserts. A follow-up dispatch is needed to diagnose.
+> 1. **Wake-word tier**: `user_addressed_agent = True` iff "Claude" / "Claudia" is detected in the utterance (`AddressingClassifier` wake-word path; see `companion_harness/addressing_classifier.py`).
+> 2. **Diarization-derived `social_mode` tier**: when no wake-word is found, `user_addressed_agent` uses diarization-derived `social_mode` to infer whether the agent is the intended recipient.
+> 3. **Mechanical fallback**: when no wake-word and `social_mode` is `solo`, `user_addressed_agent = True` (single-human session; agent is the only available listener).
 >
-> Practical implication for the next session: scenarios B (address agent), D (thinking pause), E (backchannel) **will not** produce `full_response`. You can still verify the upstream pipeline (VAD/SmartTurn/ASR/Backchannel events fire, decision traces persist), but you will NOT hear synthesized speech. Treat the affected scenarios with the "⚠️ Finding-6 affected" marker noted in §2.5.
+> Scenarios B, D, E no longer carry the "⚠️ Finding-6 affected" caveat. Use the wake-word ("Claude" or "Claudia") to address the agent and expect `action_type=full_response` when EOU is confirmed and the utterance is addressed.
 
 This handbook is what the project lead reads when they want to actually use the harness with their voice (Phase 1: audio-only) and later with their voice + camera (Phase 2: audio + video). It is **not** a substitute for the architecture spec — it is the runbook that complements it.
 
@@ -41,7 +43,7 @@ What you can validate in Phase 1 today:
 | Direct-question latency end-to-end | ❌ Unmeasurable today | No `full_response` → no end-to-end timing yet. |
 | Barge-in cutting voice mid-utterance | ❌ Unmeasurable today | Requires `full_response` to interrupt. |
 
-**Phase 2 — Audio + video manual test.** Vision capture works (PR #123 — `raw_video_frame` events emitted). VisionSidecar wiring into the foreground model is **in flight** (a fix-coder is implementing it now; PR #137 is the converged plan). Until that merges, scenarios I/J/K/L stay cosmetic — frames are captured and `raw_video_frame` events emitted, but no vision-driven proposals reach MiniCPM-o. Once PR #137 lands, the server gains an `--enable-vision` flag (default OFF) that turns the sidecar on.
+**Phase 2 — Audio + video manual test.** Vision capture works (PR #123 — `raw_video_frame` events emitted). VisionSidecar wiring into the foreground model is **landed** (v0.1h Task 2). Pass `--enable-vision` (default OFF) to enable a per-session `VisionSidecar` that buffers the most-recent frame and pairs it with the next audio chunk so MiniCPM-o's vision tower runs once per frame. Scene-change scoring and deictic grounding are stubs (0.0 / False) until v0.1j.
 
 ---
 
@@ -142,6 +144,14 @@ Phase 1 server: it normally stays running. If you do need to stop it, `kill <PID
 
 The blob store does not auto-clean. Delete `/tmp/manual_test_blobs/<session_id>/` on b200 once you no longer need replay; it is ephemeral.
 
+**Memory slate hygiene.** Each session now creates per-session memory directories under `<blob_dir>/<session_id>/memory/{session,core,episodic,semantic}/`. If you want a completely clean memory slate before a new session (no residual store directories from prior runs), run:
+
+```bash
+rm -rf /tmp/manual_test_blobs/*   # before each session
+```
+
+This is operator-managed; the server does not auto-clean between sessions.
+
 ---
 
 ### 2.8 Threshold-tuning dashboard
@@ -156,7 +166,7 @@ On load the panel issues `GET /config` to populate each slider with the server's
 
 ### 2.8.2 The three sections
 
-The panel has three sections, matching the `TUNING_SECTIONS` grouping in `manual_test_console/config_schema.py` (12 knobs total; the set is spec-locked per Anchor 1 — see `docs/roadmap-v0.1i-draft.md`):
+The panel has three sections. The 3-section grouping (Policy / Detectors / Orchestrator) is defined in the dashboard UI source at `manual_test_console/index.html` (search for `const TUNING_SECTIONS`); the canonical key list + ranges live in `manual_test_console/config_schema.py::ALLOWLIST` (12 knobs total; the set is spec-locked per Anchor 1 — see `docs/roadmap-v0.1i-draft.md`):
 
 | Section | Count | Keys | Default expand |
 |---|---|---|---|
@@ -184,7 +194,7 @@ Rejection routing (PR #151):
 | Key unknown (not in Tier-B allowlist) | 403 | `Unknown key` |
 | Value out of `[min, max]` range | 400 | `Out of range: [min, max]` |
 
-Note: rejecting a request still emits one `operator_action` event (see §2.8.4). No `config_change` event is emitted for a rejected patch.
+Important: rejected patches emit **neither** `operator_action` nor `config_change` — all three rejection branches (Tier-A 403 / unknown-key 403 / out-of-range 400) return before the event-emission call in `manual_test_console/server.py`. Only the HTTP status code signals rejection; the event log is silent. To know whether a patch was rejected, check the HTTP response — not the audit tail.
 
 ### 2.8.4 Audit tail click-to-jump
 
@@ -237,20 +247,20 @@ The `operator_action_event_id` field in each `config_change` payload points back
 
 ## 3. Phase 2 — Audio + video walkthrough
 
-> Status (2026-05-15): vision capture works (PR #123 — `raw_video_frame` events emit), but **VisionSidecar wiring into the foreground model is in flight**. A fix-coder is implementing the sidecar→MiniCPM-o handoff per the converged plan in `docs/plan-vision-sidecar-wiring.md` (PR #137). Until that merges and the server is restarted with `--enable-vision`, scenarios I–L are cosmetic.
+> Status (2026-05-15): vision capture works (PR #123 — `raw_video_frame` events emit). VisionSidecar wiring into the foreground model is **landed** (v0.1h Task 2). Start the server with `--enable-vision` (default OFF) to activate per-session sidecar pairing. Scene-change scoring and deictic grounding return stub values (0.0 / False) until v0.1j real models land.
 
 ### 3.1 What changes from Phase 1
 
 - The capture page requests both `audio: true` and `video: true`.
 - A new video panel renders a thumbnail strip — the last N frames sent to the server, with their `event_id` and `payload_hash`.
 - `raw_video_frame` events appear in the left panel.
-- **Pre-VisionSidecar-merge:** that's all. Frames are captured but no `vision_*` events follow, no deictic detection, no audio-visual conflict scores.
-- **Post-VisionSidecar-merge (PR #137):** the right panel gains `vision_frame`, deictic-detection signals, and `audio_visual_conflict_score` events. The foreground model's proposals can carry `deictic_reference=True`. The audio-visual conflict path (`audio_visual_conflict_score > 0.7 → clarification`) becomes reachable.
+- When `--enable-vision` is **OFF** (default): frames are captured and `raw_video_frame` events emitted, but no `vision_frame` events follow — the foreground model receives `video=None` on every audio chunk.
+- When `--enable-vision` is **ON**: the right panel gains `vision_frame` events (one per ingested frame, `caused_by=[raw_video_frame.event_id]`). The foreground model receives `(audio, video_bytes)` pairs — the most-recent frame fires once then is cleared (consume-once semantics). Scene-change scoring (`scene_change_score`) and deictic grounding (`deictic_reference`) return stub values (0.0 / False) until v0.1j.
 - The video frame rate is intentionally low (~1 fps initially) — this is a manual-test rig, not a production camera path. Bandwidth is the constraint when streaming through `ssh -L`.
 
 ### 3.2 Start command
 
-Same as Phase 1, with one extra flag once PR #137 lands:
+Same as Phase 1 with `--enable-vision` added:
 
 ```sh
 HF_HUB_CACHE=/raid/huggingface/hub /raid/yid042/venvs/companion-harness/bin/python3 \
@@ -258,11 +268,11 @@ HF_HUB_CACHE=/raid/huggingface/hub /raid/yid042/venvs/companion-harness/bin/pyth
     --blob-dir /tmp/manual_test_blobs --enable-vision
 ```
 
-The startup banner should include a "VisionSidecar: wired" line. If it doesn't, the flag isn't recognized — PR #137 hasn't merged on b200 yet.
+The startup banner reports `Vision: ENABLED (init_vision=True, +~18 GB VRAM)`. The `/healthz` endpoint reports `vision_enabled`, `frames_buffered` (per-session count), and `last_frame_event_id`. Omit `--enable-vision` to stay on the audio-only path (startup banner shows `Vision: disabled`).
 
 ### 3.3 New scenarios to try
 
-Until PR #137 lands and the server is restarted with `--enable-vision`, **scenarios I–L are cosmetic** — you'll see `raw_video_frame` events in the left panel but no vision-derived signals on the right. After VisionSidecar merges, the expected behavior below becomes reachable.
+Scenarios I–L require `--enable-vision`. Without it you will see `raw_video_frame` events in the left panel but no `vision_frame` events and no vision-derived signals on the right. With `--enable-vision`, the expected behavior below is reachable (scoring/grounding stubs return 0.0/False until v0.1j).
 
 **I. Deictic reference with no visual context.** Speak only — no camera grant. Say "what is this?" Expected: the same Phase-1 behavior; no visual signal flows; `deictic_reference=False` or a fallback. ⚠️ **Finding-6 affected**: even with no visual ambiguity, `full_response` will not fire today.
 
@@ -277,7 +287,7 @@ Until PR #137 lands and the server is restarted with `--enable-vision`, **scenar
 - Frame rate is artificially low. Realistic vision performance is gated on the live-loop milestone, not this rig.
 - No video output panel (e.g., a "this is what the agent thinks it sees" overlay). That's a v-future enhancement.
 - VisionSidecar runs on b200 — the local browser only captures and sends. Browser CPU stays low.
-- Until PR #137 merges, `--enable-vision` does not exist as a CLI flag.
+- `--enable-vision` loads MiniCPM-o with `init_vision=True` (+~18 GB VRAM on b200). Default OFF preserves audio-only path unchanged.
 
 ---
 
@@ -332,7 +342,7 @@ HF_HUB_CACHE=/raid/huggingface/hub /raid/yid042/venvs/companion-harness/bin/pyth
     -m manual_test_console.server --host 0.0.0.0 --port 8800 \
     --blob-dir /tmp/manual_test_blobs
 
-# When VisionSidecar lands (PR #137), add the flag:
+# With VisionSidecar (v0.1h Task 2 — landed), enable via:
 HF_HUB_CACHE=/raid/huggingface/hub /raid/yid042/venvs/companion-harness/bin/python3 \
     -m manual_test_console.server --host 0.0.0.0 --port 8800 \
     --blob-dir /tmp/manual_test_blobs --enable-vision
@@ -360,7 +370,7 @@ open http://localhost:8800/        # macOS
 - `docs/plan-vision-sidecar-wiring.md` — the converged VisionSidecar plan (PR #137); pinned target for Phase 2 unblock.
 - `docs/architecture-v0.1.md` — the frozen spec. Everything in this handbook is consistent with it; nothing in this handbook overrides it.
 - `docs/remote-dev.md` — the local↔b200 workflow this handbook depends on.
-- `docs/design-config-and-dashboard.md` — the design doc behind the threshold-tuning dashboard, landed via PR #143.
+- `docs/design-config-and-dashboard.md` — the design doc behind the threshold-tuning dashboard (PR #143 is open; once merged, the doc will live at that path).
 
 **Relevant PRs that turned components real:**
 - PR #123 — vision capture (`raw_video_frame` events emitted).
