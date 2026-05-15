@@ -34,6 +34,16 @@ class EventLogger:
         self._task: asyncio.Task[None] | None = None
         self._seq = 0
         self._dropped = 0
+        self._subscribers: list[Sink] = []
+
+    def subscribe(self, callback: Sink) -> None:
+        if self._task is not None:
+            raise RuntimeError("subscribe() must be called before EventLogger.start()")
+        self._subscribers.append(callback)
+
+    def unsubscribe(self, callback: Sink) -> None:
+        if callback in self._subscribers:
+            self._subscribers.remove(callback)
 
     def log(self, event: Event) -> None:
         """Enqueue event without blocking. Counts drops for degrade flushing by drain loop."""
@@ -61,6 +71,11 @@ class EventLogger:
             event = await self._queue.get()
             try:
                 await self._sink(event)
+                for sub in self._subscribers:
+                    try:
+                        await sub(event)
+                    except Exception:
+                        pass
             finally:
                 self._queue.task_done()
             if self._dropped > 0:

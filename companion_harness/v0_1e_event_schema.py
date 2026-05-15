@@ -85,6 +85,18 @@ EVENT_TYPE_SCHEMAS: dict[str, MemoryEventSchema] = {
         ),
     ),
 
+    # skip-receipt; no content (guest_present gate)
+    "memory_commit_skipped": MemoryEventSchema(
+        payload_kind="memory_op",
+        subject_class=DERIVED_FROM_ITEM,    # from would-be MemoryItem
+        sensitivity="safe",
+        retention_policy_id="commit_audit_30d",
+        notes=(
+            "Skip receipt when guest_present gate suppresses a commit. "
+            "No content payload. subject_class derived from the would-be MemoryItem."
+        ),
+    ),
+
     # receipt only; no content
     "memory_commit_completed": MemoryEventSchema(
         payload_kind="memory_op",
