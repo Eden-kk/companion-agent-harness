@@ -43,7 +43,7 @@ async def test_deictic_utterance_produces_true():
     detector = DeicticDetector(model=model, session_id="test-task6-a", logger=logger)
 
     cause = ["upstream-asr-event-001"]
-    is_deictic, confidence = detector.classify("what is this?", caused_by=cause)
+    is_deictic, confidence, event_id = detector.classify("what is this?", caused_by=cause)
 
     await logger.stop()
 
@@ -54,7 +54,7 @@ async def test_deictic_utterance_produces_true():
     evt = received[0]
     assert evt.event_type == "deictic_classification"
     assert evt.caused_by == cause
-    assert len(evt.caused_by) > 0
+    assert event_id == evt.event_id
 
 
 @pytest.mark.asyncio
@@ -67,7 +67,7 @@ async def test_non_deictic_utterance_produces_false():
     detector = DeicticDetector(model=model, session_id="test-task6-b", logger=logger)
 
     cause = ["upstream-asr-event-002"]
-    is_deictic, confidence = detector.classify("what time is it?", caused_by=cause)
+    is_deictic, confidence, event_id = detector.classify("what time is it?", caused_by=cause)
 
     await logger.stop()
 
@@ -78,7 +78,7 @@ async def test_non_deictic_utterance_produces_false():
     evt = received[0]
     assert evt.event_type == "deictic_classification"
     assert evt.caused_by == cause
-    assert len(evt.caused_by) > 0
+    assert event_id == evt.event_id
 
 
 @pytest.mark.asyncio
@@ -91,11 +91,28 @@ async def test_each_invocation_logs_one_event():
     detector = DeicticDetector(model=model, session_id="test-task6-c", logger=logger)
 
     cause = ["evt-100"]
-    detector.classify("look at this", caused_by=cause)
-    detector.classify("what is the weather?", caused_by=cause)
+    _, _, eid0 = detector.classify("look at this", caused_by=cause)
+    _, _, eid1 = detector.classify("what is the weather?", caused_by=cause)
 
     await logger.stop()
 
     assert len(received) == 2
     assert all(e.event_type == "deictic_classification" for e in received)
     assert all(e.caused_by == cause for e in received)
+    assert eid0 == received[0].event_id
+    assert eid1 == received[1].event_id
+
+
+@pytest.mark.asyncio
+async def test_classify_raises_on_empty_caused_by():
+    """classify() with caused_by=[] raises ValueError (orphan-event guard)."""
+    logger, _ = _make_logger()
+    await logger.start()
+
+    model = _FakeDeicticModel([(True, 0.9)])
+    detector = DeicticDetector(model=model, session_id="test-task6-d", logger=logger)
+
+    with pytest.raises(ValueError):
+        detector.classify("look at this", caused_by=[])
+
+    await logger.stop()

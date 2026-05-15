@@ -73,15 +73,17 @@ class DeicticDetector:
         transcript: str,
         caused_by: list[str],
         audio_buffer: bytes | None = None,
-    ) -> tuple[bool, float]:
+    ) -> tuple[bool, float, str]:
         """Classify a completed utterance for deictic references.
 
         Calls self._model, logs a deictic_classification event (invariant #1),
-        and returns (is_deictic, confidence).
+        and returns (is_deictic, confidence, event_id).
         """
+        if not caused_by:
+            raise ValueError("caused_by must be non-empty")
         is_deictic, confidence = self._model(transcript, audio_buffer)
-        self._emit("deictic_classification", caused_by, is_deictic, confidence)
-        return is_deictic, confidence
+        evt = self._emit("deictic_classification", caused_by, is_deictic, confidence)
+        return is_deictic, confidence, evt.event_id
 
     # ------------------------------------------------------------------
 
