@@ -68,9 +68,11 @@ def _format_human(results: dict[str, MetricResult], show_trials: bool) -> str:
         else:
             lines.append(f"  [{status_str:<12}]  {name}")
             if r.p50_ms is not None:
-                lines.append(f"               p50:     {r.p50_ms}ms  (gate: {r.gate_threshold_p50_ms}ms)")
+                gate_p50 = f"  (gate: {r.gate_threshold_p50_ms}ms)" if r.gate_threshold_p50_ms is not None else ""
+                lines.append(f"               p50:     {r.p50_ms}ms{gate_p50}")
             if r.p95_ms is not None:
-                lines.append(f"               p95:     {r.p95_ms}ms  (gate: {r.gate_threshold_p95_ms}ms)")
+                gate_p95 = f"  (gate: {r.gate_threshold_p95_ms}ms)" if r.gate_threshold_p95_ms is not None else ""
+                lines.append(f"               p95:     {r.p95_ms}ms{gate_p95}")
             lines.append(f"               n:       {r.sample_count}")
             if r.status_reason and r.status_reason not in ("ok", "observational"):
                 lines.append(f"               note:    {r.status_reason}")

@@ -17,7 +17,7 @@ MIN_SAMPLES_FOR_GATE = 3.  Below this count → NOT_MEASURED.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal
 
 from companion_harness.schemas import Event
@@ -257,7 +257,7 @@ def _compute_vad_to_stop(events: list[Event]) -> MetricResult:
             last_generation_start_id = e.event_id
             onset_waiting = None
 
-        elif e.event_type in {"assistant_audio_buffer_flushed"}:
+        elif e.event_type == "assistant_audio_buffer_flushed":
             generation_open = False
             onset_waiting = None
 
