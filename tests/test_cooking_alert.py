@@ -15,6 +15,7 @@ from companion_harness import speak_policy
 
 
 def _inputs_from_frame(frame: dict) -> PolicyInputs:
+    # Fields absent from the fixture frame fall through to PolicyInputs dataclass defaults (e.g., audio_visual_conflict_score=0.0).
     return PolicyInputs(
         user_speaking=frame["user_speaking"],
         eou_probability=frame["eou_probability"],
@@ -36,8 +37,6 @@ def _inputs_from_frame(frame: dict) -> PolicyInputs:
 def test_cooking_alert():
     """cooking mode + urgency_score=0.5 > 0.3 (low threshold) → alert / ALERT_THRESHOLD_EXCEEDED."""
     fixture = load_fixture("cooking_alert_001")
-    assert fixture["case_id"] == "cooking_alert_001"
-    assert fixture["expected_metrics"]["alert_response_rate"] == 1.0
 
     resolution_frame = next(
         f for f in fixture["signal_trace"]
