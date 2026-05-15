@@ -22,7 +22,7 @@ from dataclasses import astuple
 
 from companion_harness.fixtures.loader import load_fixture
 from companion_harness.reason_codes import ReasonCode
-from companion_harness.schemas import PolicyInputs, SpeakDecision
+from companion_harness.schemas import MemoryItem, PolicyInputs, SensitiveField, SpeakDecision
 from companion_harness import speak_policy
 
 
@@ -604,4 +604,205 @@ def test_policy_replay_exact_stage3():
 
         assert astuple(d1) == astuple(d2), (
             f"{frame_id}: run1 {astuple(d1)!r} != run2 {astuple(d2)!r}"
+        )
+
+
+# Stage 4 signal trace: manually-injected PolicyInputs exercising the new v0.1e
+# retrieval plumbing.  Per converged v0.1e roadmap Task 24, decide() does NOT
+# read retrieved_items — retrieval is inert at the policy layer.  This test
+# asserts (a) feeding populated retrieved_items through decide() does not
+# perturb decisions, and (b) DecisionTrace.retrieval_used co-emission is
+# deterministic across repeated calls with identical inputs.
+def _mem_item(item_id: str, summary: str) -> MemoryItem:
+    return MemoryItem(
+        item_id=item_id,
+        store="session",
+        content={"key": summary},
+        source_event_id="evt-s4-001",
+        created_at="2026-01-01T00:00:00+00:00",
+        last_confirmed_at="2026-01-01T00:00:00+00:00",
+        confidence=0.9,
+        salience=0.8,
+        privacy_level="default",
+        mutability="system_revisable",
+        valid_from="2026-01-01T00:00:00+00:00",
+        valid_to=None,
+        superseded_by=None,
+        user_visible_summary=SensitiveField(retention_policy_id="default", value=summary),
+    )
+
+
+_STAGE4_TRACE = [
+    # frame 0: retrieved_items=[] (empty retrieval, typical v0.1e flow);
+    # EOU confirmed + agent addressed → full_response.
+    PolicyInputs(
+        user_speaking=False,
+        eou_probability=0.9,
+        assistant_speaking=False,
+        scene_change_score=0.0,
+        deictic_reference=False,
+        user_addressed_agent=True,
+        urgency_score=0.0,
+        proactivity_budget_remaining={},
+        privacy_mode="normal",
+        current_task_mode="normal",
+        social_mode="user_addressing_agent",
+        risk_mode="normal",
+        cooldown_state={},
+        attachment_risk_level=0.0,
+        retrieved_items=[],
+    ),
+    # frame 1: retrieved_items=[<MemoryItem>] (populated-retrieval branch);
+    # EOU confirmed + agent addressed → full_response (retrieval inert).
+    PolicyInputs(
+        user_speaking=False,
+        eou_probability=0.9,
+        assistant_speaking=False,
+        scene_change_score=0.0,
+        deictic_reference=False,
+        user_addressed_agent=True,
+        urgency_score=0.0,
+        proactivity_budget_remaining={},
+        privacy_mode="normal",
+        current_task_mode="normal",
+        social_mode="user_addressing_agent",
+        risk_mode="normal",
+        cooldown_state={},
+        attachment_risk_level=0.0,
+        retrieved_items=[_mem_item("mem-001", "user prefers tea")],
+    ),
+    # frame 2: empty retrieval, EOU sub-threshold → silence
+    # (NOT_ADDRESSED_TO_AGENT).  Verifies retrieval inertness does not unblock
+    # silence-winning branches.
+    PolicyInputs(
+        user_speaking=False,
+        eou_probability=0.3,
+        assistant_speaking=False,
+        scene_change_score=0.0,
+        deictic_reference=False,
+        user_addressed_agent=True,
+        urgency_score=0.0,
+        proactivity_budget_remaining={},
+        privacy_mode="normal",
+        current_task_mode="normal",
+        social_mode="user_addressing_agent",
+        risk_mode="normal",
+        cooldown_state={},
+        attachment_risk_level=0.0,
+        retrieved_items=[],
+    ),
+    # frame 3: mixed — populated retrieval + EOU confirmed + agent addressed
+    # → full_response.  Two MemoryItems exercise multi-item retrieval lists.
+    PolicyInputs(
+        user_speaking=False,
+        eou_probability=0.92,
+        assistant_speaking=False,
+        scene_change_score=0.0,
+        deictic_reference=False,
+        user_addressed_agent=True,
+        urgency_score=0.0,
+        proactivity_budget_remaining={},
+        privacy_mode="normal",
+        current_task_mode="normal",
+        social_mode="user_addressing_agent",
+        risk_mode="normal",
+        cooldown_state={},
+        attachment_risk_level=0.0,
+        retrieved_items=[
+            _mem_item("mem-002", "user lives in Tokyo"),
+            _mem_item("mem-003", "user is allergic to peanuts"),
+        ],
+    ),
+]
+
+_STAGE4_BASELINE = [
+    {"action_type": "full_response", "primary_reason_code": "EOU_CONFIRMED",          "supporting_reason_codes": ["USER_ADDRESSED_AGENT"]},
+    {"action_type": "full_response", "primary_reason_code": "EOU_CONFIRMED",          "supporting_reason_codes": ["USER_ADDRESSED_AGENT"]},
+    {"action_type": "silence",       "primary_reason_code": "NOT_ADDRESSED_TO_AGENT", "supporting_reason_codes": []},
+    {"action_type": "full_response", "primary_reason_code": "EOU_CONFIRMED",          "supporting_reason_codes": ["USER_ADDRESSED_AGENT"]},
+]
+
+# Per-frame retrieval_event_ids passed to build_decision_trace().  Empty when
+# retrieval is inert; one or more MRE event_ids when populated.
+_STAGE4_RETRIEVAL_EVENT_IDS: list[list[str]] = [
+    [],
+    ["mre-001"],
+    [],
+    ["mre-001", "mre-002"],
+]
+
+
+def test_policy_replay_exact_stage4():
+    """Tier B: 100% bit-identical replay for Stage 4 retrieval plumbing.
+
+    Per converged v0.1e roadmap Task 24, decide() does NOT read
+    retrieved_items at v0.1e (retrieval linkage lives in
+    DecisionTrace.retrieval_used, not PolicyInputs branching).  This test
+    asserts (a) feeding populated retrieved_items through decide() does not
+    perturb decisions, and (b) DecisionTrace.retrieval_used co-emission is
+    deterministic across repeated calls with identical inputs.
+    POLICY_VERSION stays at "v0.1d" — schema/metadata plumbing changes do
+    not bump policy_version (spec line 202–209).
+    """
+    assert speak_policy.POLICY_VERSION == "v0.1d"
+    assert len(_STAGE4_TRACE) == len(_STAGE4_BASELINE)
+    assert len(_STAGE4_TRACE) == len(_STAGE4_RETRIEVAL_EVENT_IDS)
+
+    run1 = [
+        speak_policy.decide(inputs, signal_event_ids=[f"s4-frame-{i:03d}"])
+        for i, inputs in enumerate(_STAGE4_TRACE)
+    ]
+    run2 = [
+        speak_policy.decide(inputs, signal_event_ids=[f"s4-frame-{i:03d}"])
+        for i, inputs in enumerate(_STAGE4_TRACE)
+    ]
+
+    for i, (inputs, baseline, d1, d2) in enumerate(
+        zip(_STAGE4_TRACE, _STAGE4_BASELINE, run1, run2)
+    ):
+        frame_id = f"s4-frame-{i:03d}"
+
+        # Baseline match: action_type + primary + supporting.
+        assert d1.action_type == baseline["action_type"], (
+            f"{frame_id}: action_type {d1.action_type!r} != baseline {baseline['action_type']!r}"
+        )
+        assert d1.primary_reason_code == ReasonCode(baseline["primary_reason_code"]), (
+            f"{frame_id}: primary_reason_code {d1.primary_reason_code!r} "
+            f"!= baseline {baseline['primary_reason_code']!r}"
+        )
+        expected_supporting = [ReasonCode(c) for c in baseline["supporting_reason_codes"]]
+        assert d1.supporting_reason_codes == expected_supporting, (
+            f"{frame_id}: supporting_reason_codes {d1.supporting_reason_codes!r} "
+            f"!= baseline {expected_supporting!r}"
+        )
+
+        # Decision bit-identical across replays.
+        assert astuple(d1) == astuple(d2), (
+            f"{frame_id}: decision run1 {astuple(d1)!r} != run2 {astuple(d2)!r}"
+        )
+
+        # DecisionTrace co-emission: retrieval_used reflects the input
+        # retrieval_event_ids, and trace1 == trace2 bit-identical.
+        retrieval_event_ids = _STAGE4_RETRIEVAL_EVENT_IDS[i]
+        trace1 = speak_policy.build_decision_trace(
+            decision=d1,
+            inputs=inputs,
+            signal_event_ids=[f"s4-frame-{i:03d}"],
+            decision_id=f"s4-decision-{i:03d}",
+            retrieval_event_ids=retrieval_event_ids,
+        )
+        trace2 = speak_policy.build_decision_trace(
+            decision=d2,
+            inputs=inputs,
+            signal_event_ids=[f"s4-frame-{i:03d}"],
+            decision_id=f"s4-decision-{i:03d}",
+            retrieval_event_ids=retrieval_event_ids,
+        )
+
+        assert trace1.retrieval_used == retrieval_event_ids, (
+            f"{frame_id}: retrieval_used {trace1.retrieval_used!r} "
+            f"!= expected {retrieval_event_ids!r}"
+        )
+        assert astuple(trace1) == astuple(trace2), (
+            f"{frame_id}: trace run1 {astuple(trace1)!r} != run2 {astuple(trace2)!r}"
         )
