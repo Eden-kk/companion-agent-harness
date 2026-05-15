@@ -103,6 +103,23 @@ class SmartTurnDetector:
 
     # ------------------------------------------------------------------
 
+    def update_thresholds(
+        self,
+        *,
+        silence_onset_ms: int | None = None,
+        silence_rms_threshold: int | None = None,
+    ) -> None:
+        """Update runtime-tunable thresholds.
+
+        Pass ``None`` to leave a field unchanged. Takes effect on the next
+        ``process_frame`` call (config_change applies at the next-frame boundary
+        — see docs/design-config-and-dashboard.md §3).
+        """
+        if silence_onset_ms is not None:
+            self._silence_onset_ms = silence_onset_ms
+        if silence_rms_threshold is not None:
+            self._silence_rms_threshold = silence_rms_threshold
+
     def process_frame(self, frame: bytes, caused_by: list[str]) -> TurnSignal | None:
         """Feed one audio frame; return a TurnSignal at silence-candidate moments.
 
