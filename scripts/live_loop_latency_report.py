@@ -1,11 +1,14 @@
-"""Live-loop offline latency report (v0.1d Task 7 main).
+"""Live-loop offline latency report (v0.1d Task 7 main, v0.1e Task 6 migration).
 
 Reads an events.json (or equivalent EventLogger-on-disk path), invokes
 companion_harness.live_loop_metrics.compute_metrics(), and prints a
 JSON-and-human report in the same format as scripts/v0_1a_replay_report.py.
 
 Usage:
-    python scripts/live_loop_latency_report.py --log-path PATH [--json-only] [--show-trials]
+    python scripts/live_loop_latency_report.py --log-path PATH [--trace-dir DIR] [--json-only] [--show-trials]
+
+--trace-dir: directory containing DecisionTrace JSON files (decision_traces/<id>.json).
+             Defaults to decision_traces/ relative to --log-path's parent directory.
 
 NOT_MEASURED legend:
   status_reason starting with "physical_audio_path" → PERMANENT (Task 8 dependency missing).
@@ -22,6 +25,7 @@ import sys
 import uuid
 from dataclasses import asdict
 from datetime import datetime, timezone
+from pathlib import Path
 
 from companion_harness.live_loop_metrics import MetricResult, compute_metrics
 from companion_harness.schemas import Event
@@ -123,12 +127,18 @@ def _build_report(results: dict[str, MetricResult], log_path: str) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Emit live-loop latency report.")
     parser.add_argument("--log-path", required=True, help="Path to events.json log file.")
+    parser.add_argument("--trace-dir", default=None, help="Path to decision_traces/ directory.")
     parser.add_argument("--json-only", action="store_true", help="Emit JSON only, no summary.")
     parser.add_argument("--show-trials", action="store_true", help="Print per-trial event pairs.")
     args = parser.parse_args()
 
+    if args.trace_dir is not None:
+        trace_dir = Path(args.trace_dir)
+    else:
+        trace_dir = Path(args.log_path).parent / "decision_traces"
+
     events = _load_events(args.log_path)
-    results = compute_metrics(events)
+    results = compute_metrics(events, trace_dir=trace_dir if trace_dir.exists() else None)
     report = _build_report(results, args.log_path)
 
     if not args.json_only:

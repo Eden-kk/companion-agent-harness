@@ -1,4 +1,4 @@
-"""Live-loop latency analyzer contract tests (v0.1d Task 7 main).
+"""Live-loop latency analyzer contract tests (v0.1d Task 7 main, v0.1e Task 6 migration).
 
 Four tests per plan §11:
   1. Event-pair existence contract — drives StreamingRealtimeOrchestrator,
@@ -7,13 +7,16 @@ Four tests per plan §11:
   3. Missing-event handling (zero full_response, and unpaired full_response).
   4. Trial filtering (silence/backchannel excluded; stop with no in-flight gen skipped).
 
-Prerequisite: PR #91 (7cae029) — typed policy_decision_action_<X> sub-events — on main.
+v0.1e Task 6: typed sub-events removed; analyzer reads action_selected from
+DecisionTrace.counterfactuals via DecisionTraceStore.  Scripted tests write
+trace files directly; orchestrator-driven test asserts policy_decision.payload_ref.
 All tests run without torch/GPU.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
@@ -24,6 +27,7 @@ import pytest
 
 from companion_harness.audio_output_controller import AudioOutputController
 from companion_harness.backchannel_classifier import BackchannelClassifier
+from companion_harness.decision_trace_store import DecisionTraceStore
 from companion_harness.event_logger import EventLogger
 from companion_harness.foreground_model import ForegroundModel
 from companion_harness.input_ingest import CaptureMetadata, InputIngest
@@ -34,6 +38,7 @@ from companion_harness.live_loop_metrics import (
 from companion_harness.realtime_orchestrator import StreamingRealtimeOrchestrator
 from companion_harness.reason_codes import ReasonCode
 from companion_harness.schemas import (
+    DecisionTrace,
     Event,
     PolicyInputs,
     SpeakDecision,
@@ -169,6 +174,7 @@ def _build_orch(
     audio_in: asyncio.Queue,
     vad_probs: list[float],
     speak_policy=None,
+    trace_dir: Path | None = None,
 ) -> StreamingRealtimeOrchestrator:
     vad = VADDetector(
         model=_FakeVADModel(vad_probs),
@@ -212,6 +218,7 @@ def _build_orch(
         audio_output=controller,
         tts_adapter=SilentTtsAdapter(chunk_count=1),
         proposal_batch_window_ms=200,
+        decision_trace_dir=trace_dir,
     )
 
 
@@ -236,6 +243,7 @@ def _evt(
     timestamp_mono_ms: int,
     caused_by: list[str] | None = None,
     event_id: str | None = None,
+    payload_ref: str | None = None,
 ) -> Event:
     eid = event_id or str(uuid.uuid4())
     return Event(
@@ -249,12 +257,32 @@ def _evt(
         source="test",
         caused_by=caused_by or [],
         payload_hash="",
-        payload_ref=None,
+        payload_ref=payload_ref,
         payload_kind="signal",
         subject_class="unknown",
         sensitivity="safe",
         retention_policy_id="default",
     )
+
+
+def _write_trace(trace_dir: Path, decision_id: str, action_selected: str) -> str:
+    """Write a minimal DecisionTrace JSON with the given action_selected; return payload_ref URI."""
+    trace = DecisionTrace(
+        decision_id=decision_id,
+        input_event_ids=[],
+        signal_event_ids=[],
+        threshold_path=["eou_threshold"],
+        primary_reason_code=ReasonCode.EOU_CONFIRMED,
+        supporting_reason_codes=[],
+        counterfactuals={"action_selected": action_selected},
+        redacted_explanation=None,
+        sensitive_explanation_ref=None,
+        policy_version="0.1",
+        config_version="test",
+        model_adapter_versions={},
+    )
+    store = DecisionTraceStore(trace_dir)
+    return store.write(trace)
 
 
 # ---------------------------------------------------------------------------
@@ -267,16 +295,18 @@ async def test_event_pair_existence_contract(tmp_path: Path):
     """Drives StreamingRealtimeOrchestrator to verify real emission of all §3 event types.
 
     Asserts:
-    - policy_decision event emitted with timestamp_mono_ms: int
-    - policy_decision_action_full_response co-emitted with caused_by containing policy_decision id
+    - policy_decision event emitted with timestamp_mono_ms: int and payload_ref pointing at trace
+    - DecisionTrace.counterfactuals["action_selected"] == "full_response" (via store.read)
     - assistant_audio_buffer_flushed emitted (from AudioOutputController.play())
     - orchestrator_started emitted
     - harness_init emitted (from InputIngest.open_session())
+    - No policy_decision_action_* typed sub-events in the log
     """
+    trace_dir = tmp_path / "decision_traces"
     logger, received = _make_logger()
     await logger.start()
 
-    ingest = InputIngest(logger=logger, blob_dir=tmp_path)
+    ingest = InputIngest(logger=logger, blob_dir=tmp_path / "blobs")
     session_id = "test-existence-contract"
     session = ingest.open_session("test-client")
     audio_in: asyncio.Queue[tuple[bytes, str]] = asyncio.Queue(maxsize=64)
@@ -289,6 +319,7 @@ async def test_event_pair_existence_contract(tmp_path: Path):
         audio_in=audio_in,
         vad_probs=vad_probs,
         speak_policy=_FixedActionPolicy("full_response"),
+        trace_dir=trace_dir,
     )
 
     await orch.start()
@@ -306,19 +337,27 @@ async def test_event_pair_existence_contract(tmp_path: Path):
     # orchestrator_started
     assert "orchestrator_started" in event_types, "orchestrator_started not emitted"
 
-    # policy_decision with timestamp_mono_ms: int
+    # policy_decision with payload_ref pointing at a trace file
     policy_evts = [e for e in received if e.event_type == "policy_decision"]
     assert policy_evts, "policy_decision not emitted"
     assert isinstance(policy_evts[0].timestamp_mono_ms, int)
+    assert policy_evts[0].payload_ref is not None, "policy_decision.payload_ref is None"
+    assert policy_evts[0].payload_ref.startswith("decision_trace://"), (
+        f"payload_ref {policy_evts[0].payload_ref!r} does not start with 'decision_trace://'"
+    )
 
-    # policy_decision_action_full_response co-emitted with correct caused_by
-    sub_evts = [e for e in received if e.event_type == "policy_decision_action_full_response"]
-    assert sub_evts, "policy_decision_action_full_response not emitted"
-    assert isinstance(sub_evts[0].timestamp_mono_ms, int)
-    parent_id = policy_evts[0].event_id
-    assert parent_id in sub_evts[0].caused_by, (
-        f"policy_decision_action_full_response caused_by {sub_evts[0].caused_by!r} "
-        f"does not contain policy_decision id {parent_id!r}"
+    # Trace file exists and has action_selected == "full_response"
+    store = DecisionTraceStore(trace_dir)
+    decision_id = policy_evts[0].event_id
+    trace = store.read(decision_id)
+    assert trace.counterfactuals.get("action_selected") == "full_response", (
+        f"action_selected={trace.counterfactuals.get('action_selected')!r}, expected 'full_response'"
+    )
+
+    # No typed sub-events emitted (v0.1e Task 6)
+    sub_evts = [e for e in received if e.event_type.startswith("policy_decision_action_")]
+    assert not sub_evts, (
+        f"typed sub-events must not be emitted after v0.1e Task 6; found: {[e.event_type for e in sub_evts]}"
     )
 
     # assistant_audio_buffer_flushed (from AudioOutputController)
@@ -340,16 +379,17 @@ async def test_event_pair_existence_contract(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-def test_scripted_event_stream_expected_percentiles():
+def test_scripted_event_stream_expected_percentiles(tmp_path: Path):
     """Scripted list[Event] with known timestamps → exact p50/p95/status/sample_count.
 
     Covers direct_question_latency AND vad_detected_user_speech_to_stop_ms.
     """
-    # Build a causal chain: policy_decision → policy_decision_action_full_response → flush
+    # Build a causal chain: policy_decision (with trace) → flush
     # 4 trials for direct_question_latency (>= MIN_SAMPLES_FOR_GATE=3)
     # Latencies: 500, 700, 900, 1100 ms
     # p50 = sorted[ceil(0.5*4)-1] = sorted[1] = 700
     # p95 = sorted[ceil(0.95*4)-1] = sorted[3] = 1100
+    trace_dir = tmp_path / "decision_traces"
     events: list[Event] = [
         _evt("harness_init", 0),
     ]
@@ -357,11 +397,10 @@ def test_scripted_event_stream_expected_percentiles():
     t = 100
     for latency in [500, 700, 900, 1100]:
         pd_id = str(uuid.uuid4())
-        fr_id = str(uuid.uuid4())
         flush_id = str(uuid.uuid4())
-        events.append(_evt("policy_decision", t, event_id=pd_id))
-        events.append(_evt("policy_decision_action_full_response", t + 1, caused_by=[pd_id], event_id=fr_id))
-        events.append(_evt("assistant_audio_buffer_flushed", t + 1 + latency, caused_by=[pd_id], event_id=flush_id))
+        ref = _write_trace(trace_dir, pd_id, "full_response")
+        events.append(_evt("policy_decision", t, event_id=pd_id, payload_ref=ref))
+        events.append(_evt("assistant_audio_buffer_flushed", t + latency, caused_by=[pd_id], event_id=flush_id))
         t += latency + 500
 
     # 3 VAD barge-in trials: latencies 50, 100, 150 ms
@@ -377,7 +416,7 @@ def test_scripted_event_stream_expected_percentiles():
         events.append(_evt("assistant_audio_buffer_flushed", t2 + 10 + latency + 10))  # clears gen state
         t2 += latency + 300
 
-    results = compute_metrics(events)
+    results = compute_metrics(events, trace_dir=trace_dir)
 
     dql = results["direct_question_latency"]
     assert dql.sample_count == 4, f"expected 4 trials, got {dql.sample_count}"
@@ -397,34 +436,35 @@ def test_scripted_event_stream_expected_percentiles():
 # ---------------------------------------------------------------------------
 
 
-def test_missing_event_handling_zero_full_response():
-    """Zero policy_decision_action_full_response → NOT_MEASURED with correct reason."""
+def test_missing_event_handling_zero_full_response(tmp_path: Path):
+    """No policy_decision with action_selected=='full_response' → NOT_MEASURED with correct reason."""
+    trace_dir = tmp_path / "decision_traces"
     events = [
         _evt("harness_init", 0),
         _evt("orchestrator_started", 10),
         _evt("assistant_generation_start", 100),
         _evt("assistant_audio_buffer_flushed", 300),
     ]
-    results = compute_metrics(events)
+    results = compute_metrics(events, trace_dir=trace_dir)
     dql = results["direct_question_latency"]
     assert dql.status == "NOT_MEASURED"
     assert dql.status_reason == "no_full_response_decisions_in_session"
     assert dql.sample_count == 0
 
 
-def test_missing_event_handling_unpaired_full_response():
-    """full_response sub-event with no causally-downstream flush → not a trial; advisory note."""
+def test_missing_event_handling_unpaired_full_response(tmp_path: Path):
+    """policy_decision with action_selected=='full_response' but no causally-downstream flush
+    → not a trial; advisory note."""
+    trace_dir = tmp_path / "decision_traces"
     pd_id = str(uuid.uuid4())
-    fr_id = str(uuid.uuid4())
+    ref = _write_trace(trace_dir, pd_id, "full_response")
     events = [
         _evt("harness_init", 0),
-        _evt("policy_decision", 100, event_id=pd_id),
-        _evt("policy_decision_action_full_response", 101, caused_by=[pd_id], event_id=fr_id),
+        _evt("policy_decision", 100, event_id=pd_id, payload_ref=ref),
         # No assistant_audio_buffer_flushed causally downstream of pd_id
-        # (This flush has no causal link to the policy_decision above)
         _evt("assistant_audio_buffer_flushed", 500, caused_by=[]),
     ]
-    results = compute_metrics(events)
+    results = compute_metrics(events, trace_dir=trace_dir)
     dql = results["direct_question_latency"]
     # 1 full_response decision but 0 paired flushes → 0 trials → NOT_MEASURED
     assert dql.status == "NOT_MEASURED"
@@ -439,26 +479,27 @@ def test_missing_event_handling_unpaired_full_response():
 # ---------------------------------------------------------------------------
 
 
-def test_trial_filtering_only_full_response_counted():
-    """Silence and backchannel sub-events do not contribute to direct_question_latency.
+def test_trial_filtering_only_full_response_counted(tmp_path: Path):
+    """Silence and backchannel decisions do not contribute to direct_question_latency.
 
-    Only full_response-derived flushes count.
+    Only full_response decisions (per DecisionTrace.counterfactuals['action_selected']) count.
     """
+    trace_dir = tmp_path / "decision_traces"
+
     # silence decision — no flush expected, not a trial
     pd_silence_id = str(uuid.uuid4())
+    ref_silence = _write_trace(trace_dir, pd_silence_id, "silence")
     events: list[Event] = [
         _evt("harness_init", 0),
-        _evt("policy_decision", 100, event_id=pd_silence_id),
-        _evt("policy_decision_action_silence", 101, caused_by=[pd_silence_id]),
+        _evt("policy_decision", 100, event_id=pd_silence_id, payload_ref=ref_silence),
     ]
 
     # backchannel decision — produces a flush, but must be excluded
     pd_bc_id = str(uuid.uuid4())
-    bc_sub_id = str(uuid.uuid4())
     flush_bc_id = str(uuid.uuid4())
+    ref_bc = _write_trace(trace_dir, pd_bc_id, "backchannel")
     events += [
-        _evt("policy_decision", 200, event_id=pd_bc_id),
-        _evt("policy_decision_action_backchannel", 201, caused_by=[pd_bc_id], event_id=bc_sub_id),
+        _evt("policy_decision", 200, event_id=pd_bc_id, payload_ref=ref_bc),
         _evt("assistant_audio_buffer_flushed", 300, caused_by=[pd_bc_id], event_id=flush_bc_id),
     ]
 
@@ -467,12 +508,12 @@ def test_trial_filtering_only_full_response_counted():
     t = 600
     for latency in [400, 600, 800]:
         pd_id = str(uuid.uuid4())
-        events.append(_evt("policy_decision", t, event_id=pd_id))
-        events.append(_evt("policy_decision_action_full_response", t + 1, caused_by=[pd_id]))
-        events.append(_evt("assistant_audio_buffer_flushed", t + 1 + latency, caused_by=[pd_id]))
+        ref = _write_trace(trace_dir, pd_id, "full_response")
+        events.append(_evt("policy_decision", t, event_id=pd_id, payload_ref=ref))
+        events.append(_evt("assistant_audio_buffer_flushed", t + latency, caused_by=[pd_id]))
         t += latency + 400
 
-    results = compute_metrics(events)
+    results = compute_metrics(events, trace_dir=trace_dir)
     dql = results["direct_question_latency"]
 
     # Only the 3 full_response-derived flushes count
@@ -492,7 +533,7 @@ def test_trial_filtering_stop_without_generation_skipped():
         _evt("vad_user_speech_onset", 100),
         _evt("assistant_audio_stop_completed", 150),
     ]
-    results = compute_metrics(events)
+    results = compute_metrics(events, trace_dir=None)
     vad = results["vad_detected_user_speech_to_stop_ms"]
     # No generation in flight when onset fired → 0 barge-in trials
     assert vad.sample_count == 0
