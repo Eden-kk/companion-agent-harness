@@ -2477,3 +2477,1102 @@ The test now appears under "Required contract tests (no numeric gate)" with `sta
 12. (Active) `ThinkerProposalGen` / `ForegroundModel` API ambiguity must be resolved when Stage 6 begins.
 15. (v0.1b) `test_thinking_pause` must be un-skipped and wired through `SmartTurnDetector` when v0.1b lands.
 16. (Active) `physical_user_speech_onset_to_stop_ms_p95 < 350ms` gate unmeasured. Remains open until real-audio integration measurement.
+
+---
+
+## PR #35 — v0.1b Task 13: revert detector_id from DecisionTrace + add test_detector_ablation  (reviewed 2026-05-14)
+**ROADMAP task:** v0.1b Task 13
+**Verdict:** CHANGES-REQUESTED
+
+**Summary:** The schema revert is correct and clean. The test is substantively non-vacuous — both detector paths use persistent instances, accumulate state across frames correctly, and the attribution assertions are genuinely load-bearing. However, three stale `detector_id` references remain in `companion_harness/fixtures/detector_ablation_001/case.json` after the revert (the fixture was authored when `detector_id` still existed on `DecisionTrace`). These dangling references must be corrected before merge.
+
+---
+
+### Schema revert — `companion_harness/schemas.py`
+
+`detector_id: str = ""` at `DecisionTrace` line 75 is removed. This is the correct revert of the non-spec field introduced in PR #21 (commit `c63826a`). Verified:
+- The spec (Part 5 ~line 186 `DecisionTrace`) has no `detector_id` field. PASS.
+- `DecisionTrace` is never instantiated at this milestone (policy layer returns `SpeakDecision`; `DecisionTrace` production is wired at Stage 4 Memory). The field had no live callers. PASS.
+- The spec-defined attribution mechanism is `TurnSignal.detector: str` (Part 5 ~line 212), which is already present and correctly populated in both `VADDetector` and `SmartTurnDetector`. PASS.
+- `roadmap-v0.1b-draft.md` references to `detector_id` are in prose explaining the revert history — these are intentional historical context, not dangling code references. PASS.
+
+---
+
+### Dangling `detector_id` references — `companion_harness/fixtures/detector_ablation_001/case.json`
+
+The fixture was authored in PR #31 (Task 12) while `detector_id` still existed on `DecisionTrace`. PR #35 reverts the field but does not update the fixture prose. Three stale references remain:
+
+**[BLOCKER 1]** `case.json:14` — `"expected_metrics": {"detector_id_attributable": "per_path"}`. The metric key name `detector_id_attributable` uses the reverted term. The actual mechanism under test is `TurnSignal.detector` (spec-defined), not `DecisionTrace.detector_id` (reverted). Rename to `"detector_attributable_per_path": "per_path"` or similar to match the spec field name.
+
+**[BLOCKER 2]** `case.json:17` — `description` field reads "…Each path produces a TurnSignal attributable to its detector via detector_id." This is now factually wrong: `detector_id` was reverted; attribution is via `TurnSignal.detector`. Change "via detector_id" to "via TurnSignal.detector".
+
+**[BLOCKER 3]** `case.json:22` — `fixture_conventions.divergence_design` reads "…each TurnSignal.detector is different, which is what Task 13 asserts. The scenario is not one where only one detector fires; the ablation tests that each fired signal carries the correct detector_id." The final phrase "the correct detector_id" should read "the correct TurnSignal.detector value".
+
+These three are all in the same file and require only string edits. They do not affect the test's behavior (the test asserts on `TurnSignal.detector`, not on any `detector_id` field), but they are misleading prose in the authoritative fixture record and constitute exactly the "dangling detector_id references" that the revert must clean up.
+
+---
+
+### Test non-vacuity — PASS
+
+**VAD path (persistent detector, accumulation verified):**
+- Speech frames 000–024: `_ScriptedVADModel` returns `p_speech=0.9 >= 0.5` threshold → `_in_speech=True`, `_silence_ms=0`, returns `None`. Correct.
+- Frame 025 (first silence): `p_speech=0.1` → `_silence_ms=32ms`. Frames 026–033: accumulates to `32+8×32=288ms`. Frame 034 (the silence candidate): `_silence_ms=320ms >= silence_onset_ms=300ms` → fires `TurnSignal(detector='vad')`.
+- The `VADDetector` instance is created ONCE before the loop. State accumulates across frames. This is not the fresh-per-frame mistake that sank PR #9 rounds 1–2. PASS.
+- `assert len(vad_signals) == 1`: Non-vacuous — would fail if VAD never fired (broken accumulation) or fired multiple times (broken reset). PASS.
+- `assert vad_sig.detector == "vad"`: Non-vacuous — would fail if `VADDetector` mislabeled its signal. PASS.
+- `assert vad_t >= 1088`: Non-vacuous — would fail if VAD fired prematurely. PASS.
+- `assert vad_sig.p_done > vad_sig.p_continue`: Non-vacuous — would fail if stub values were swapped. PASS.
+
+**SmartTurn path (persistent detector, model-invocation count verified):**
+- Speech frames 000–024: `_frame_rms` of amplitude-500 samples = 500.0 ≥ `silence_rms_threshold=100` → `_in_speech=True`, `_silence_ms=0`, returns `None`. Correct.
+- Silence frames 025–033: `_frame_rms=0.0 < 100` → accumulates `_silence_ms` to 288ms.
+- Frame 034: `_silence_ms=320ms >= silence_onset_ms=300ms`, `_candidate_fired=False` → fires model → `_ScriptedSmartTurnModel` returns `(0.85, 0.10)` → emits `TurnSignal(detector='smart_turn')`.
+- `SmartTurnDetector` instance created ONCE before the loop. PASS.
+- `assert smart_model.call_count == 1`: Non-vacuous and doubly load-bearing — would fail if model was called more than once (silence-candidate-once rule broken) or zero times (model never invoked, detection broken). PASS.
+- `assert smart_sig.detector == "smart_turn"`: Non-vacuous. PASS.
+- `assert smart_sig.p_done == candidate_p_done` and `assert smart_sig.p_continue == candidate_p_continue`: Non-vacuous — would fail if the stub's scripted values were ignored. PASS.
+
+**Negative path:** The test asserts exactly 1 signal from each path. If either detector fired 0 signals, the `assert len == 1` would fail. If a detector fired and mislabeled `TurnSignal.detector`, the string assertion would fail. The test would NOT survive a detector that emits signals with wrong labels. PASS.
+
+---
+
+### Adapter purity — PASS
+
+- `test_detector_ablation.py` imports: `struct`, `pytest` (stdlib), `companion_harness.event_logger`, `companion_harness.fixtures.loader`, `companion_harness.schemas`, `companion_harness.turn_detector_smart`, `companion_harness.turn_detector_vad`. No `torch`, `onnxruntime`, `pipecat`, or any model SDK. PASS.
+- Stub models (`_ScriptedVADModel`, `_ScriptedSmartTurnModel`) are pure Python with zero SDK dependency. PASS.
+- Module-level `assert isinstance(_ScriptedVADModel(), VADModel)` and `assert isinstance(_ScriptedSmartTurnModel([]), SmartTurnModel)` enforce Protocol conformance at import time — correct per adapter-first discipline. PASS.
+
+---
+
+### ROADMAP task ordering — PASS
+
+v0.1b tasks 1–12 are all merged to main (verified from git log): tasks 1–12 correspond to commits through PR #31 / PR #33. Task 13 is the current PR. No tasks skipped. PASS.
+
+---
+
+### Scope check — PASS
+
+PR diff touches exactly `companion_harness/schemas.py` (one-line deletion) and `tests/test_detector_ablation.py` (new file). The fixture `companion_harness/fixtures/detector_ablation_001/case.json` is NOT in the diff — it was authored in PR #31 and is already on main. The stale `detector_id` references in that file must be corrected by this PR (they are dangling references created by the revert).
+
+---
+
+### CONCERN: EventLogger never started
+
+Both `_make_logger()` calls create `EventLogger` instances that are never `.start()`-ed. The drain loop never runs; `received` lists (discarded as `_`) are never populated. This is not a correctness issue for this test (the test does not assert on logged events), but the pattern of constructing a logger and never starting/stopping it is structurally incomplete. A future developer who tries to add event-level assertions to this test (e.g., verifying `vad_frame` events have `caused_by` closes) would get an empty `received` list and a silently failing assertion. This is a CONCERN, not a blocker — the test as written is correct.
+
+---
+
+### Watch-item checks
+
+- Watch-item 3 (SensitiveField.retention_policy_id non-empty): No `SensitiveField` constructed in this PR. `VADDetector` and `SmartTurnDetector` use `retention_policy_id="default"` (non-empty). PASS.
+- Watch-item 8 (VAD numeric defaults not config-driven): `VADDetector` constructed with explicit `silence_onset_ms=300, frame_duration_ms=32` in the test. Constructor overrides are used correctly. Still active for the config-wiring task.
+- Watch-item 9 (quiet_mode not as privacy_mode string): Not touched. Still active.
+- Watch-item 12 (ThinkerProposalGen ambiguity): Not touched. Still active.
+- Watch-item 15 (test_thinking_pause un-skip at v0.1b): Not touched (this is test_detector_ablation, a different test). Still active.
+- Watch-item 16 (physical_user_speech_onset_to_stop_ms_p95 unmeasured): Not touched. Still active.
+
+---
+
+### Required changes (numbered, actionable)
+
+1. **`companion_harness/fixtures/detector_ablation_001/case.json:14`** — Rename `expected_metrics` key from `"detector_id_attributable"` to `"detector_attributable_per_path"` (or any name that does not reference the reverted `detector_id` field). The value `"per_path"` can remain.
+
+2. **`companion_harness/fixtures/detector_ablation_001/case.json:17`** — In the `description` field, replace "Each path produces a TurnSignal attributable to its detector via detector_id." with "Each path produces a TurnSignal attributable to its detector via TurnSignal.detector."
+
+3. **`companion_harness/fixtures/detector_ablation_001/case.json:22`** — In `fixture_conventions.divergence_design`, replace the final phrase "the ablation tests that each fired signal carries the correct detector_id" with "the ablation tests that each fired signal carries the correct TurnSignal.detector value".
+
+---
+
+### Cross-PR watch-items created
+
+None. Both findings (dangling fixture prose and logger-never-started concern) are self-contained within the fixture file. No new structural hazard introduced.
+
+---
+
+### Cross-PR watch-items — current active list
+
+3. (Ongoing) `SensitiveField.retention_policy_id` must be non-empty at all call sites.
+8. (Active) VAD numeric defaults (`_SPEECH_THRESHOLD=0.5`, `_SILENCE_ONSET_MS=300`) must become config reads when `implementation-config.yaml` gains numeric VAD fields.
+9. (Active) `quiet_mode` must NOT be implemented as a `privacy_mode` string.
+12. (Active) `ThinkerProposalGen` / `ForegroundModel` API ambiguity must be resolved when Stage 6 begins.
+15. (v0.1b) `test_thinking_pause` must be un-skipped and wired through `SmartTurnDetector` when v0.1b lands.
+16. (Active) `physical_user_speech_onset_to_stop_ms_p95 < 350ms` gate unmeasured. Documented in `test_barge_in.py` module docstring as Task 17 scope.
+
+---
+
+## PR #35 — re-review round 2  (reviewed 2026-05-14)
+**ROADMAP task:** 13
+**Verdict:** APPROVE
+
+### Round-1 findings — all resolved
+
+**[BLOCKER 1 — RESOLVED]** `companion_harness/fixtures/detector_ablation_001/case.json:14` — `expected_metrics` key renamed from `"detector_id_attributable"` to `"detector_attributable_per_path"`. Verified on PR branch (`origin/v0.1b-task-13-detector-ablation`, HEAD `ca7e14d`).
+
+**[BLOCKER 2 — RESOLVED]** `case.json:17` — `description` now reads "…attributable to its detector via TurnSignal.detector." The stale "via detector_id" phrase is gone.
+
+**[BLOCKER 3 — RESOLVED]** `case.json:22` — `fixture_conventions.divergence_design` now ends "…the ablation tests that each fired signal carries the correct TurnSignal.detector value." The stale "the correct detector_id" phrase is gone.
+
+### Repo-wide `detector_id` grep — PASS
+
+Grepped the PR worktree (`.claude/worktrees/agent-a39a54ab8950008b5`) for `detector_id` across all `.py`, `.json`, and `.md` files. Zero hits. The `docs/roadmap-v0.1b-draft.md` file with intentional historical prose is not present on the PR branch — it lives only on `main` and is unchanged by this PR. The only `detector_id`-related string on the PR branch is the corrected `"detector_attributable_per_path"` key in `case.json`.
+
+### `schemas.py` revert — PASS
+
+`DecisionTrace.detector_id: str = ""` is absent from the PR branch. Confirmed by grep returning exit code 1 (no match) on `origin/v0.1b-task-13-detector-ablation:companion_harness/schemas.py`.
+
+### `expected_metrics` rename — no test breakage — PASS
+
+No test file references `"detector_id_attributable"` or `"detector_attributable_per_path"` as a literal key. The `test_detector_ablation.py` test asserts on `TurnSignal.detector` directly; it does not read `expected_metrics` from the fixture JSON. Rename is safe and no test relies on the old key name.
+
+### Pytest — PASS
+
+`pytest` executed in the PR worktree: **44 passed, 1 skipped**. Matches the required gate. `test_detector_ablation` is among the passing tests.
+
+### New findings
+
+None. The fix is minimal, surgical, and introduces no new problems.
+
+### Watch-item checks
+
+All active watch-items (3, 8, 9, 12, 15, 16) are unchanged — this PR does not touch any of their relevant paths.
+
+### Cross-PR watch-items created
+
+None.
+
+### Cross-PR watch-items — current active list
+
+3. (Ongoing) `SensitiveField.retention_policy_id` must be non-empty at all call sites.
+8. (Active) VAD numeric defaults must become config reads when `implementation-config.yaml` gains numeric VAD fields.
+9. (Active) `quiet_mode` must NOT be implemented as a `privacy_mode` string.
+12. (Active) `ThinkerProposalGen` / `ForegroundModel` API ambiguity must be resolved when Stage 6 begins.
+15. (v0.1b) `test_thinking_pause` must be un-skipped when v0.1b lands.
+16. (Active) `physical_user_speech_onset_to_stop_ms_p95 < 350ms` gate unmeasured. Task 17 scope.
+
+---
+
+## PR #36 — v0.1b Task 14: ReplayRun milestone report  (reviewed 2026-05-14)
+**ROADMAP task:** v0.1b Task 14
+**Verdict:** APPROVE
+
+---
+
+### Format convention — PASS
+
+v0.1a Task 17 shipped `scripts/v0_1a_replay_report.py` — a generator script (no committed report document). PR #36 ships `scripts/v0_1b_replay_report.py` using the identical format. The convention is matched exactly; this is not a deviation. The PR body claim "mirrors the v0.1a report structure exactly" is accurate.
+
+---
+
+### Gate table completeness — PASS
+
+`docs/roadmap-v0.1b-draft.md §v0.1b numeric-gates table` lists 10 gates. All 10 are present in `_GATES` in the script:
+
+| Gate | PR #36 status | Accurate? |
+|---|---|---|
+| `thinking_pause_false_positive_rate` | MET | PASS — `test_thinking_pause` now passes (v0.1b Task 6); 3 non-vacuity assertions confirmed in PR #28 |
+| `backchannel_false_stop_rate` | MET | PASS — `test_backchannel_survival` passes (v0.1b Task 11, PR #33) |
+| `policy_replay_match_rate` | MET | PASS — `test_policy_replay_exact` extended for backchannel branch (v0.1b Task 7, PR #29) |
+| `orphan_action_count` | MET | PASS — `test_causal_graph_completeness` passes (PR #17) |
+| `assistant_audio_start_with_cause` | MET | PASS — `test_decision_provenance` passes (PR #16) |
+| `vad_detected_user_speech_to_stop_ms_p95` | MET | PASS — `test_barge_in` passes, p95 < 30ms (PR #11) |
+| `physical_user_speech_onset_to_stop_ms_p95` | NOT_MEASURED | PASS — re-homed per roadmap; supersedes watch-item 16 |
+| `direct_question_latency_p50` | MET | PASS — ~170ms on b200 (PR #15); test skips locally, honest attribution |
+| `direct_question_latency_p95` | MET | PASS — ~706ms on b200 (PR #15); same |
+| `false_interruption_count_per_10_min` | MET | PASS — `test_false_interruption_rate` passes (PR #13) |
+
+---
+
+### Honest attribution — PASS
+
+**`physical_user_speech_onset_to_stop_ms_p95`:** Correctly marked NOT_MEASURED with VisionClaw attribution per `docs/roadmap-v0.1b-draft.md §Re-homed gate`. The note accurately states "physical-world quantity; home is docs/visionclaw-adaptation-plan-draft.md." Watch-item 16 (gate unmeasured) is superseded by the roadmap's explicit re-homing decision — not by this report. Watch-item 16 RESOLVED at roadmap level; the report represents this correctly.
+
+**`direct_question_latency_p50/p95`:** Marked MET using b200 measurements carried from v0.1a PR #15 (~170ms / ~706ms). The test is the 1 skip (torch/CUDA — b200 only); the report explicitly states "test skips locally (no torch/CUDA); passes on b200 venv." This is the identical honest treatment used in the v0.1a report for these same gates. No gate is claimed MET without a corresponding measurement from a test that actually ran. PASS.
+
+---
+
+### `test_thinking_pause` — Watch-item 15 RESOLVED
+
+Watch-item 15 required `test_thinking_pause` to be un-skipped and wired through `SmartTurnDetector` when v0.1b lands. The gate table correctly shows `thinking_pause_false_positive_rate` as MET with `test_thinking_pause` as the backing test. The v0.1b Task 6 review (PR #28) confirmed the test passes non-vacuously with 3 load-bearing assertions. Watch-item 15 is RESOLVED.
+
+---
+
+### pytest — PASS
+
+Ran `pytest -q tests/` directly: **44 passed, 1 skipped** (the skip is `test_direct_question_latency` — `pytest.importorskip("torch")` fires on system Python). Zero failures. Matches the PR claim exactly.
+
+---
+
+### No `v0.1b` tag applied — PASS
+
+`git tag --list` output: only `v0.1a` exists. No `v0.1b` tag. The script's verdict block correctly states "Per ROADMAP: tag v0.1b is a separate step by the project lead." PASS.
+
+---
+
+### `_REQUIRED_NON_GATED_TESTS` — PASS
+
+Mirrors the v0.1a `_REQUIRED_NON_GATED_TESTS` pattern. Contains `test_explicit_turn_handoff` (ROADMAP-required non-gated, carried from v0.1a) and `test_detector_ablation` (new in v0.1b Task 13). Both are correctly classified as required tests with no numeric gate. PASS.
+
+---
+
+### Divergence documentation — PASS
+
+`_build_replay_run` (lines 226–230) contains an explicit comment documenting that the emitted dict is "ReplayRun-INSPIRED, not a strict schemas.ReplayRun instance" with two named intentional divergences (`pytest_summary` extra field; `results` is a nested object not a flat metric map). Same pattern established and reviewed in PR #18. PASS.
+
+---
+
+### Scope check — PASS
+
+Diff is exactly one file added (`scripts/v0_1b_replay_report.py`, 342 lines). No adapter modules touched, no contract tests modified, no fixtures modified. CLAUDE.md rule 4 (one-PR-one-outcome): the script is a milestone documentation artifact, consistent with option (c). PASS.
+
+---
+
+### Adapter purity — PASS
+
+`scripts/v0_1b_replay_report.py` imports only stdlib (`argparse`, `json`, `re`, `subprocess`, `sys`, `uuid`, `datetime`). No `companion_harness` module imported (correct — the script invokes pytest as a subprocess, not by importing test modules). No model SDK anywhere. PASS.
+
+---
+
+### Findings
+
+**[NIT] `scripts/v0_1b_replay_report.py:210–221` — `_run_pytest` only parses `failed` and `skipped` counts on lines that contain `" passed"`.** If a run produces only failures with no passes (i.e., the summary line is `"1 failed"` with no `" passed"` substring), `passed`, `failed`, and `skipped` remain 0 in the returned dict, and the report would misrepresent the suite result as 0/0/0 rather than 0/0/1. This is an edge case that cannot occur on a passing milestone (a passing milestone by definition has `passed > 0`), and the v0.1a script has the identical limitation. Not a blocker; the behavior is correct for all expected milestone states. No action required.
+
+---
+
+### Watch-item checks
+
+- Watch-item 3 (SensitiveField.retention_policy_id non-empty): No SensitiveField constructed in this script. N/A. PASS.
+- Watch-item 8 (VAD numeric defaults not config-driven): Not touched by this PR. Still active.
+- Watch-item 9 (quiet_mode not as privacy_mode string): Not touched. Still active.
+- Watch-item 12 (ThinkerProposalGen ambiguity): Not touched. Still active.
+- Watch-item 15 (test_thinking_pause un-skip at v0.1b): **RESOLVED** — `test_thinking_pause` passes non-vacuously in v0.1b; the gate is correctly listed as MET.
+- Watch-item 16 (physical_user_speech_onset_to_stop_ms_p95 unmeasured): Superseded by the roadmap's explicit re-homing of this gate to the VisionClaw track. The report correctly marks it NOT_MEASURED with accurate attribution. Watch-item 16 **RESOLVED** at roadmap level.
+
+---
+
+### Cross-PR watch-items created
+
+None. All findings are self-contained within the script.
+
+---
+
+### Cross-PR watch-items — current active list
+
+3. (Ongoing) `SensitiveField.retention_policy_id` must be non-empty at all call sites.
+8. (Active) VAD numeric defaults (`_SPEECH_THRESHOLD=0.5`, `_SILENCE_ONSET_MS=300`) must become config reads when `implementation-config.yaml` gains numeric VAD fields.
+9. (Active) `quiet_mode` must NOT be implemented as a `privacy_mode` string.
+12. (Active) `ThinkerProposalGen` / `ForegroundModel` API ambiguity must be resolved when Stage 6 begins.
+15. RESOLVED — `test_thinking_pause` un-skipped and passing in v0.1b.
+16. RESOLVED at roadmap level — `physical_user_speech_onset_to_stop_ms_p95` re-homed to VisionClaw track per `docs/roadmap-v0.1b-draft.md`.
+
+**v0.1b milestone final status:**
+- 9 of 10 numeric gates MET.
+- 1 gate NOT_MEASURED (physical_user_speech_onset — re-homed, not a milestone failure).
+- All v0.1a tests still green.
+- 3 new v0.1b contract tests passing: `test_thinking_pause`, `test_backchannel_survival`, `test_detector_ablation`.
+- Tag `v0.1b` is a separate project-lead action — correctly NOT applied by this PR.
+
+---
+
+## PR #37 — fix: make test_no_torch_import order-independent via subprocess isolation  (reviewed 2026-05-14)
+**ROADMAP task:** bugfix (no ROADMAP task number — test isolation fix)
+**Verdict:** APPROVE
+
+---
+
+### Bug confirmed on main
+
+`/raid/yid042/venvs/companion-harness/bin/python3 -m pytest tests/ -q` on `main` branch (unfixed):
+```
+FAILED tests/test_foreground_model.py::test_no_torch_import - AssertionError: ...
+1 failed, 44 passed, 2 warnings in 21.23s
+```
+The test fails when any torch-importing test (here `test_direct_question_latency`, which imports torch transitively via `pytest.importorskip`) runs before it in the same process, polluting `sys.modules`. The buggy assertion `assert "torch" not in sys.modules` reads from the process-global registry — order-dependent by construction.
+
+---
+
+### Fix verified on PR branch (`fix-test-no-torch-import-isolation`)
+
+**Command 1 — full suite:**
+```
+/raid/yid042/venvs/companion-harness/bin/python3 -m pytest tests/ -q
+45 passed, 2 warnings in 21.31s
+```
+0 failed. PASS.
+
+**Command 2 — order-sensitive ordering (torch-importing test first):**
+```
+/raid/yid042/venvs/companion-harness/bin/python3 -m pytest tests/test_direct_question_latency.py tests/test_foreground_model.py -q
+5 passed, 2 warnings in 17.56s
+```
+0 failed. PASS. This is the exact ordering that previously triggered the failure.
+
+---
+
+### Subprocess check non-vacuousness — CONFIRMED
+
+The subprocess command is:
+```python
+"import companion_harness.foreground_model, sys; sys.exit('torch' in sys.modules)"
+```
+
+`sys.exit(bool)` behavior: `sys.exit(True)` → exit code 1; `sys.exit(False)` → exit code 0. Empirically verified on the canonical venv:
+- `/raid/yid042/venvs/companion-harness/bin/python3 -c "import sys; sys.exit(True)"` → exit code 1.
+- `/raid/yid042/venvs/companion-harness/bin/python3 -c "import sys; sys.exit(False)"` → exit code 0.
+
+If `companion_harness.foreground_model` transitively imported `torch`, `'torch' in sys.modules` would be `True`, `sys.exit(True)` would fire, `result.returncode` would be 1, and `assert result.returncode == 0` would fail. The check is genuinely load-bearing — it is not vacuous. A `foreground_model.py` that contained `import torch` at module scope would cause this test to fail.
+
+---
+
+### Brevity, style, correctness findings
+
+**Brevity:** No redundant fallbacks, no dead code, no speculative helpers. The diff is 17 lines: 1 added import, 2 deleted lines (the old single-assertion function body), 14 new lines (docstring + subprocess call + assertion). The subprocess block is the minimum required for fresh-process isolation. `capture_output=True` is correct to prevent subprocess output from polluting pytest's terminal. No excess.
+
+**Style:**
+- `import subprocess` inserted alphabetically before `import sys` (correct: 'sub' < 'sys' by ASCII). Matches stdlib-first import group convention. PASS.
+- Docstring accurately describes the new behavior and the rationale. PASS.
+- No scope creep: only `tests/test_foreground_model.py` modified. No adapter modules, no spec, no draft docs.
+
+**Correctness:** One nit-level imprecision: if `companion_harness.foreground_model` were unimportable (e.g., wrong virtualenv, path issue), the subprocess would also exit non-zero due to `ImportError`, and the assertion message "importing foreground_model pulled in torch" would be misleading — it would not distinguish between "torch was pulled in" and "package not importable." Including `result.stderr.decode()` in the assertion message would make failures diagnostic. In a properly configured canonical venv this scenario does not occur, and the test just verified it does not occur. Not raised as a finding.
+
+---
+
+### Adapter-first invariant intent preserved
+
+The test still genuinely verifies that `companion_harness/foreground_model.py` does not transitively import torch. The subprocess starts with a clean `sys.modules`, imports the module, then checks the registry. The prior version was structurally correct in intent but broken in practice by process-global state. The fix restores the correct behavior. PASS.
+
+---
+
+### No v0.1b tag
+
+`git tag --list` returns only `v0.1a`. No `v0.1b` tag applied. PASS.
+
+---
+
+### Watch-item checks
+
+- Watch-item 3 (SensitiveField.retention_policy_id non-empty): No `SensitiveField` constructed. N/A. PASS.
+- Watch-item 8 (VAD numeric defaults not config-driven): Not touched. Still active.
+- Watch-item 9 (quiet_mode not as privacy_mode string): Not touched. Still active.
+- Watch-item 12 (ThinkerProposalGen ambiguity): Not touched. Still active.
+- Watch-item 15: RESOLVED in PR #36.
+- Watch-item 16: RESOLVED at roadmap level in PR #36.
+
+---
+
+### Cross-PR watch-items created
+
+None. The fix is self-contained within one test function in one test file.
+
+---
+
+### Cross-PR watch-items — current active list
+
+3. (Ongoing) `SensitiveField.retention_policy_id` must be non-empty at all call sites.
+8. (Active) VAD numeric defaults (`_SPEECH_THRESHOLD=0.5`, `_SILENCE_ONSET_MS=300`) must become config reads when `implementation-config.yaml` gains numeric VAD fields.
+9. (Active) `quiet_mode` must NOT be implemented as a `privacy_mode` string.
+12. (Active) `ThinkerProposalGen` / `ForegroundModel` API ambiguity must be resolved when Stage 6 begins.
+15. RESOLVED — `test_thinking_pause` un-skipped and passing in v0.1b (PR #36).
+16. RESOLVED at roadmap level — `physical_user_speech_onset_to_stop_ms_p95` re-homed to VisionClaw track (PR #36).
+
+
+---
+
+## PR #38 — fix: make stale skip note conditional on actual skip count  (reviewed 2026-05-14)
+**ROADMAP task:** cosmetic fix to `scripts/v0_1b_replay_report.py`
+**Verdict:** APPROVE
+
+### Diff examined
+
+`scripts/v0_1b_replay_report.py` — `_gate_summary()` only. 2 lines removed, 8 lines added. The unconditional `f"  (1 skip = test_direct_question_latency…)"` line is replaced with a `*([note] if report["pytest_summary"]["skipped"] > 0 else [])` spread into the list literal.
+
+### Verification — canonical venv `/raid/yid042/venvs/companion-harness/bin/python3`
+
+**Command 1 — replay report (PR branch script, canonical venv):**
+```
+  pytest suite: 45 passed, 0 skipped, 0 failed
+
+  Gate detail:
+```
+Stale `(1 skip = …)` line does NOT appear when skips = 0. PASS.
+
+**Command 2 — pytest suite:**
+```
+45 passed, 2 warnings in 21.06s
+```
+0 failed. Script change does not affect the test suite. PASS.
+
+**Command 3 — skip note still renders when skipped > 0 (injected fake pytest summary):**
+```
+'  pytest suite: 44 passed, 1 skipped, 0 failed'
+'  (1 skip = test_direct_question_latency, no torch/CUDA locally — passes on b200, carried from v0.1a)'
+```
+Note still appears when skips > 0. The fix did not suppress the note unconditionally. PASS.
+
+### Brevity / style / correctness
+
+**Brevity:** Clean. `*([item] if cond else [])` is the idiomatic minimum for a conditional element in a list literal at one call site. No helper, no wrapper, no dead code.
+
+**Style:** Matches surrounding list-of-f-strings idiom. No new imports. Indentation consistent.
+
+**Correctness:** Condition `report["pytest_summary"]["skipped"] > 0` maps directly to the parsed skip count from `_run_pytest` — correct gate. Hardcoded note text ("1 skip = test_direct_question_latency") would be mildly stale if a future run produced 2 skips, but that is a pre-existing limitation outside this PR's scope and not a finding against this change.
+
+**Scope check:** Only `scripts/v0_1b_replay_report.py` touched. Gate definitions, `_run_pytest` parsing, `_build_replay_run`, exit behavior — all unchanged. PASS.
+
+**Invariant checks:** Not applicable (script-only cosmetic fix; no event logging, policy, or schema code modified).
+
+### Cross-PR watch-items created
+
+None.
+
+### Cross-PR watch-items — current active list
+
+3. (Ongoing) `SensitiveField.retention_policy_id` must be non-empty at all call sites.
+8. (Active) VAD numeric defaults must become config reads when `implementation-config.yaml` gains numeric VAD fields.
+9. (Active) `quiet_mode` must NOT be implemented as a `privacy_mode` string.
+12. (Active) `ThinkerProposalGen` / `ForegroundModel` API ambiguity must be resolved when Stage 6 begins.
+
+---
+
+## PR #39 — docs: refresh ROADMAP.md — mark v0.1a/v0.1b complete, point at v0.1c  (reviewed 2026-05-14)
+**ROADMAP task:** docs-only (CLAUDE.md rule 4 category (c))
+**Verdict:** APPROVE
+
+**Scope check (verification 1):**
+`gh pr diff 39 --name-only` returns exactly one file: `ROADMAP.md`. No code, no spec (`docs/architecture-v0.1.md`), no draft docs touched. PASS.
+
+**Accuracy (verification 2):**
+
+- Tags: `git tag` lists `v0.1a` and `v0.1b`. PR claims both as "tagged `v0.1a`" and "tagged `v0.1b`". PASS.
+- v0.1b task count: `git log v0.1a..v0.1b --oneline` shows 17 commits; 14 are v0.1b-labeled tasks (per `docs/roadmap-v0.1b-draft.md` §NEXT TASKS tasks 1–14), plus 2 post-milestone fix PRs and 1 parallel Manual-test Task 1. PR says "14 v0.1b tasks merged" — accurate for the task sequence. PASS.
+- 45 tests: PR diff states "45 tests green in the canonical venv." Ledger entry for PR #38 (last merged) confirms `45 passed, 0 skipped, 0 failed`. PASS.
+- v0.1c draft file: `docs/roadmap-v0.1c-draft.md` exists. Its status line reads "DRAFT — awaiting final project-lead sign-off." PR correctly reflects this. PASS.
+- v0.1c pinned success criterion: verbatim copy of `docs/roadmap-v0.1c-draft.md` lines 27–36. Exact match. PASS.
+- v0.1c scope delta items (VisionSidecar, DeicticDetector, ForegroundModel Protocol extension, three new ReasonCode members, Stages 0+1 carried, Stage 2 enabled, Open Question 1 on `clarification` wiring): all accurately sourced from `docs/roadmap-v0.1c-draft.md`. PASS.
+- 7 new contract tests named: exact match to `docs/roadmap-v0.1c-draft.md` §Contract-test stages. PASS.
+- Live-Loop Integration: `docs/milestone-live-loop-integration-draft.md` exists; PR's description (extra-spec, DRAFT, awaiting sign-off, fully parallel to v0.1c, one DuplexModel coordination point) accurately summarizes the file. PASS.
+- Later-stages header updated from "2–6" to "3–6": accurate — Stage 2 is now the active v0.1c milestone. PASS.
+- Stage 2 line under "Later stages" now reads "Active in v0.1c (see above)": accurate. PASS.
+
+**No invented scope (verification 3):**
+Diff removes 48 stale lines, adds 33 refreshed lines. No new task lists invented. v0.1c scope delta is sourced from `docs/roadmap-v0.1c-draft.md`; live-loop section is summarized from `docs/milestone-live-loop-integration-draft.md`. No milestone created by this PR. PASS.
+
+**Consistency (verification 4):**
+v0.1b summary is consistent with `docs/roadmap-v0.1b-draft.md` (two detectors, three new tests, stages 0–1). v0.1c success criterion is verbatim from the draft. PASS.
+
+**Frozen-spec untouched (verification 5):**
+Only `ROADMAP.md` in the diff. `docs/architecture-v0.1.md` not touched. PASS.
+
+**Findings:**
+
+- [NIT] `ROADMAP.md` v0.1b section — The b200-specific absolute path `/raid/yid042/venvs/companion-harness/bin/python3 -m pytest tests/ -q` is embedded in a reader-facing roadmap entry. On any machine other than b200 this path does not exist; a reader following the command would get a not-found error. The value was copied verbatim from the approved v0.1b ReplayRun report (PR #36); it is factually accurate for that context but is misleading in a general-audience doc. This does not rise to a blocker or a CHANGES-REQUESTED finding because the doc is an accurate record of where the canonical test run happened, and the CLAUDE.md `docs/remote-dev.md` reference already scopes b200 tooling. Noted for awareness; no action required before merge.
+
+**New cross-PR watch-items:** none.
+
+**Cross-PR watch-items — current active list (unchanged by this doc-only PR):**
+3. (Ongoing) `SensitiveField.retention_policy_id` must be non-empty at all call sites.
+8. (Active) VAD numeric defaults must become config reads when `implementation-config.yaml` gains numeric VAD fields.
+9. (Active) `quiet_mode` must NOT be implemented as a `privacy_mode` string.
+12. (Active) `ThinkerProposalGen` / `ForegroundModel` API ambiguity must be resolved when Stage 6 begins.
+15. (v0.1b — deferred from PR #9 round 3) `test_thinking_pause` must be un-skipped and wired through `SmartTurnDetector` when v0.1b lands. Already documented; repeated here for completeness.
+16. (Active) `physical_user_speech_onset_to_stop_ms_p95 < 350ms` gate unmeasured. Documented in `test_barge_in.py` module docstring as Task 17 scope.
+
+---
+
+## PR #40 — Foundational DuplexModel Protocol extension  (reviewed 2026-05-14)
+**Tracks:** v0.1c Stage 2 (Task 2) + Live-Loop Integration (Task 1)
+**Verdict:** APPROVE
+
+**Canonical-venv pytest result:** `48 passed, 2 warnings in 21.45s` (on PR branch). Baseline on `main` before this PR: `45 passed`. Delta: +3 new tests. Exact match with coder's claimed count.
+
+---
+
+### Checklist
+
+**1. Adapter-first (no SDK import):**
+`companion_harness/foreground_model.py` imports only: `hashlib`, `time`, `datetime`, `timezone`, `typing` (stdlib), `companion_harness.event_logger`, `companion_harness.schemas`. No `torch`, `transformers`, `MiniCPM`, or any model SDK anywhere in the import chain. Verified via subprocess `"torch" in sys.modules` test (test_no_torch_import — already passing). PASS.
+
+**2. `@runtime_checkable` correctness:**
+Both Protocols carry `@runtime_checkable`. Verified empirically:
+- `AudioOnlyFake` (has `infer(audio_frame)`, no `video_frame` param, no `infer_stream`): `isinstance(fake, DuplexModel)` = True. `isinstance(fake, StreamingDuplexModel)` = False. PASS.
+- `_FakeStreamingModel` (has both `infer` and `infer_stream`): `isinstance(fake, DuplexModel)` = True. `isinstance(fake, StreamingDuplexModel)` = True. PASS.
+- The ADR note claim holds: audio-only fakes still satisfy `DuplexModel` after the extension; the separate `StreamingDuplexModel` Protocol prevents false positives on `isinstance`. PASS.
+
+**3. Invariant #1 — process_stream logs every yielded proposal with non-empty caused_by[]:**
+- `frame_evt` is emitted once (before model call) with caller's `caused_by`.
+- For each proposal yielded by the model: (a) if `proposal.caused_by` is empty, it is repaired to `[frame_evt.event_id]`; (b) a `foreground_proposal` event is emitted with `caused_by=[frame_evt.event_id]`.
+- `test_process_stream_proposals_carry_caused_by` is non-vacuous: the second yielded proposal has `caused_by=[]` (will be repaired); removing the repair code would cause the assertion `assert p.caused_by` to fail on that proposal. The test would also fail if `event_types.count("foreground_proposal") == 2` were not satisfied — confirmed by code trace: two proposals yield two loop iterations, each emitting one `foreground_proposal` event. PASS.
+
+**4. No concrete model touched:**
+`gh pr diff 40 | grep "^diff --git"` shows exactly two files changed: `companion_harness/foreground_model.py` and `tests/test_foreground_model.py`. `foreground_model_minicpm.py` is absent from the diff. PASS.
+
+**5. Surgical scope — only the two named files, no opportunistic refactor:**
+Every changed line traces directly to one of: (a) adding the `video_frame` optional param to `DuplexModel.infer` and the `process_frame` call-site; (b) adding `StreamingDuplexModel` Protocol; (c) adding `ForegroundModel.process_stream()`; (d) adding the ADR module docstring block; (e) the 3 new tests exercising the above. No adjacent code reformatted, no unrelated helpers introduced. PASS.
+
+**6. Non-vacuous new tests:**
+- `test_audio_only_fake_satisfies_duplex_model_protocol` — would fail if `isinstance(fake, DuplexModel)` returned False (regression on the video_frame extension) or if `isinstance(fake, StreamingDuplexModel)` returned True (false positive from the separate-Protocol design). Both assertions are live.
+- `test_streaming_fake_satisfies_both_protocols` — would fail if either `isinstance` returned the wrong bool. Live assertions.
+- `test_process_stream_proposals_carry_caused_by` — would fail if: (i) proposals count != 2, (ii) any proposal has empty `caused_by`, (iii) `foreground_frame` not in log, (iv) `foreground_proposal` count != 2. The second proposal is explicitly seeded with `caused_by=[]` to exercise the repair path. All four assertions are non-vacuous. PASS.
+
+**7. No spec edit:**
+`docs/architecture-v0.1.md` not in the diff. PASS.
+
+**8. ADR note present and accurate:**
+The `## Protocol structure (ADR note)` block in the module docstring is present (lines ~28–52 of the PR diff). It documents: (a) the optional-parameter strategy for `video_frame` and why it preserves audio-only fake compatibility under `@runtime_checkable`; (b) the separate-Protocol strategy for `StreamingDuplexModel` and why it prevents false `isinstance` failures on audio-only fakes; (c) `process_stream()` logging semantics (invariant #1, `caused_by[]`). The claims are accurate as verified above. PASS.
+
+---
+
+### Findings
+
+**[concern / correctness] `companion_harness/foreground_model.py:138`** — `ForegroundModel.__init__` accepts `model: DuplexModel`, but `process_stream()` requires the injected model to satisfy `StreamingDuplexModel`. No runtime guard exists: calling `process_stream()` with an audio-only `DuplexModel` raises `AttributeError` at the `self._model.infer_stream(...)` line, suppressed at type-check time by `# type: ignore[attr-defined]`. The docstring says "The injected model must satisfy StreamingDuplexModel" — the contract is documented but not enforced and the type annotation of `__init__` does not communicate the distinction. This is not a defensive-shim request (the scenario where a caller passes an audio-only model and calls `process_stream()` IS possible), but it is an undetected contract violation that will produce a confusing `AttributeError` rather than a meaningful `TypeError`. A lighter fix than adding a guard: the `model` parameter annotation on `__init__` could be annotated `DuplexModel` with a note, OR the ADR could call this out explicitly. Per CLAUDE.md rule 2 ("No error handling for impossible scenarios") — this IS a possible scenario, so a guard is appropriate — but given the DRAFT status of both tracks and the stub framing of this PR, elevating to CHANGES-REQUESTED is disproportionate. Flag for the concrete-model PR (Live-Loop Task 2 / v0.1c Task 2 impl) when the real `StreamingDuplexModel` is injected.
+
+**[nit / style] `companion_harness/foreground_model.py` module docstring** — The new `## Protocol structure (ADR note)` section uses `##` (two hashes) while the existing `# SPEC AMBIGUITY` section uses `#` (one hash). Both are inside a Python docstring where `#` characters are plaintext, not parsed Markdown — but the inconsistent heading levels are a minor style nit. Not a behavior issue; not a blocker.
+
+**[nit / brevity] `tests/test_foreground_model.py:235`** — The `_frames()` async generator yields exactly one frame and is defined as a named function used in exactly one test. Could be replaced with an inline async generator expression `(f async for f in [(b"\x00" * 512, None)])` — but the named function reads more clearly. Style preference; not a finding that blocks merge.
+
+---
+
+### Rule 4 analysis
+
+CLAUDE.md rule 4: "each PR ships exactly one of: (a) stub, (b) skip-to-green, (c) docs update. No mixing."
+
+This PR ships: (1) the `video_frame` optional param extension on `DuplexModel.infer` (v0.1c task 2), and (2) `StreamingDuplexModel` + `ForegroundModel.process_stream()` (live-loop task 1). The live-loop integration draft explicitly classifies live-loop task 1 as **"stub PR (a): interface only."** The v0.1c task 2 (optional param) is inseparably coupled to live-loop task 1 in a single file — the live-loop draft and ROADMAP both document the coordination point ("one owns the change, the other consumes it"). Bundling them avoids a merge conflict between two parallel-track PRs and is explicitly contemplated by the ROADMAP language. Both tracks are DRAFT (awaiting project-lead sign-off), and the task-ordering strictness applied in PR #12 (BLOCKER) was against finalized v0.1a milestones. The bundled seam PR is the ROADMAP-specified solution to the coordination constraint. Rule 4 is satisfied under option (a) at the track level for both tasks.
+
+---
+
+### Correctness of Protocol design — key technical verification
+
+`StreamingDuplexModel.infer_stream` is typed `async def ... -> AsyncGenerator[ThinkerProposal, None]` — meaning it is a coroutine that RETURNS an async generator. Callers must `await` the call to get the generator, then `async for` over it. `process_stream()` correctly does `async for proposal in await self._model.infer_stream(...)`. This is the correct Python idiom. If an implementor instead made `infer_stream` an async generator function (using `yield` directly), calling it would return an `async_generator` object and `await` on that would raise `TypeError`. This constraint is implicit in the Protocol signature — the ADR note does not call it out. Consider flagging for the concrete-model PR (Live-Loop Task 2).
+
+`ForegroundModel.process_stream` is itself an async generator function (`yield` inside `async def`). Callers must `async for p in fm.process_stream(...)` — no `await`. The test does this correctly. No mismatch.
+
+---
+
+### Watch-item checks
+
+- Watch-item 3 (SensitiveField.retention_policy_id non-empty): `_emit()` hardcodes `retention_policy_id="default"`. Non-empty. PASS.
+- Watch-item 8 (VAD numeric defaults): not touched. Still active.
+- Watch-item 9 (quiet_mode not as privacy_mode string): not touched. Still active.
+- Watch-item 12 (ThinkerProposalGen ambiguity): not touched. Still active.
+- Watch-item 15 (test_thinking_pause un-skip): not touched. Still active.
+- Watch-item 16 (physical barge-in gate unmeasured): not touched. Still active.
+
+---
+
+### Cross-PR watch-items created
+
+17. (Live-Loop Task 2 / v0.1c Task 2 impl) When the concrete `StreamingDuplexModel` implementation is written (in `foreground_model_minicpm.py`): (a) verify `infer_stream` is a coroutine that RETURNS an async generator (not an async generator function itself — the two are not interchangeable under the `await ... then async for` call pattern); (b) verify `ForegroundModel.__init__` or the concrete construction site enforces that the injected model satisfies `StreamingDuplexModel` (not just `DuplexModel`) when `process_stream()` will be called.
+
+---
+
+### Cross-PR watch-items — current active list
+
+3. (Ongoing) `SensitiveField.retention_policy_id` must be non-empty at all call sites.
+8. (Active) VAD numeric defaults must become config reads when `implementation-config.yaml` gains numeric VAD fields.
+9. (Active) `quiet_mode` must NOT be implemented as a `privacy_mode` string.
+12. (Active) `ThinkerProposalGen` / `ForegroundModel` API ambiguity must be resolved when Stage 6 begins.
+15. (v0.1b) `test_thinking_pause` must be un-skipped and wired through `SmartTurnDetector` when v0.1b lands.
+16. (Active) `physical_user_speech_onset_to_stop_ms_p95 < 350ms` gate unmeasured. Documented in `test_barge_in.py` module docstring as Task 17 scope.
+17. (New) Concrete `StreamingDuplexModel` impl must use coroutine-returns-generator pattern for `infer_stream` and the construction site must enforce the `StreamingDuplexModel` contract. Flag on the b200 model implementation PR.
+
+
+---
+
+## PR #41 — stub DeicticDetector: Protocol + skeleton (v0.1c Task 5)  (reviewed 2026-05-14)
+**ROADMAP task:** v0.1c Task 5
+**Verdict:** CHANGES-REQUESTED
+
+### Pytest summary (canonical venv)
+
+`/raid/yid042/venvs/companion-harness/bin/python3 -m pytest tests/ -q` — **65 passed**, 0 failed, 2 warnings in 21.71s. New tests: `tests/test_deictic_detector_stub.py` — 3 passed. No regressions.
+
+(Note: PR description claims "52 passed (49 prior + 3 new)" — the actual baseline before this PR was 62 tests, not 49. The claim is wrong but the tests themselves pass. The body is stale copy from an earlier PR template.)
+
+---
+
+### Findings
+
+**1. BLOCKER — brevity / scope creep**
+`companion_harness/deictic_detector.py:71–84` (`classify()`) and `companion_harness/deictic_detector.py:88–123` (`_next_seq()`, `_emit()`)
+
+Task 5 success criterion (roadmap §Task 5): "imports cleanly; isinstance Protocol check passes with a fake `DeicticModel`." Task 6 is "Implement `DeicticDetector`. Invokes the injected `DeicticModel`, classifies deictic vs non-deictic, logs every invocation as an event (invariant #1)." This PR ships Task 6's body (a working `classify()` with full event construction and logging) inside the Task 5 stub PR. CLAUDE.md rule 2 is explicit: "No features beyond what the current ROADMAP task asks for" and "One PR, one outcome." The `classify()` implementation and the entire `_emit()` machinery are Task 6 scope.
+
+Fix: Replace `classify()` with a `raise NotImplementedError` body and delete `_next_seq()` and `_emit()` entirely. The Protocol and class constructor belong here; the implementation does not.
+
+---
+
+**2. BLOCKER — correctness (non-vacuous test claim violated)**
+`tests/test_deictic_detector_stub.py:45–57` (`test_classify_returns_model_result`)
+
+The `_make_logger()` helper creates a `received: list[Event]` and returns it, but `EventLogger.log()` enqueues onto an `asyncio.Queue` — the drain task never runs without `await logger.start()`. The `received` list is always empty after `classify()` returns. The test claims to exercise "return plumbing" but the event-logging half of classify() is completely invisible to the test. This is a non-vacuous test that is vacuous in practice: it asserts only the model's return values, not the event emission that the PR description claims it covers.
+
+Additionally, if finding 1 is resolved and `classify()` becomes `raise NotImplementedError`, this test needs to be a `pytest.skip` or removed until Task 6.
+
+Fix (after resolving finding 1): Remove `test_classify_returns_model_result` and the `_make_logger` helper entirely. The Task 5 tests should be exactly two: `test_fake_satisfies_protocol` (required by success criterion) and `test_deictic_detector_construction` (Protocol + injection check). No event-logging test until Task 6 wires an async loop correctly.
+
+---
+
+**3. Concern — brevity / dead annotation**
+`companion_harness/deictic_detector.py:92–98` (`_emit()` return type `-> Event`)
+
+`_emit()` is declared `-> Event` but `classify()` on line 83 discards the return value. Every other detector in the codebase that declares `-> Event` on `_emit()` captures the result for downstream causal chaining (`BackchannelClassifier` uses it in `evidence_event_ids`, `SmartTurnDetector` uses it in a chained `caused_by`). Here the returned `Event` goes nowhere. This is either dead annotation (the return type should be `-> None`) or a latent bug (Task 6 needs the event_id for downstream `caused_by` and will have to restructure the call anyway).
+
+This finding becomes moot if finding 1 is resolved and `_emit()` is deleted.
+
+---
+
+### Adapter-first check
+
+PASS. No import of `torch`, `onnxruntime`, `pipecat`, or any model SDK. `DeicticModel` Protocol is the injection seam.
+
+### Style consistency check
+
+The Protocol shape, class constructor, `SOURCE` / `SCHEMA_VERSION` constants, and module docstring ADR note all match the established detector-adapter pattern. The ADR note is accurate and complete.
+
+### Spec fidelity check
+
+`deictic_reference: bool` is present in `PolicyInputs` (`companion_harness/schemas.py:93`). The classifier returns `(bool, float)` and maps cleanly to that field. No invented fields or enums outside the spec. PASS.
+
+### Scope check
+
+Two new files only: `companion_harness/deictic_detector.py` and `tests/test_deictic_detector_stub.py`. No edits to existing files. Surgical. PASS.
+
+---
+
+### Cross-PR watch-items created
+
+18. (v0.1c Task 6 / DeicticDetector impl) When Task 6 is written: (a) `_emit()` return value must be captured and used — either in `evidence_event_ids` on a structured return type, or chained into a follow-on event's `caused_by`. (b) The Task 6 test must use `@pytest.mark.asyncio`, `await logger.start()` / `await logger.stop()`, and assert `len(received) == 1` with the correct `event_type` and `caused_by`, matching the pattern in `test_backchannel_classifier_stub.py:56–106`.
+
+---
+
+### Cross-PR watch-items — current active list
+
+3. (Ongoing) `SensitiveField.retention_policy_id` must be non-empty at all call sites.
+8. (Active) VAD numeric defaults must become config reads when `implementation-config.yaml` gains numeric VAD fields.
+9. (Active) `quiet_mode` must NOT be implemented as a `privacy_mode` string.
+12. (Active) `ThinkerProposalGen` / `ForegroundModel` API ambiguity must be resolved when Stage 6 begins.
+15. (v0.1b) `test_thinking_pause` must be un-skipped and wired through `SmartTurnDetector` when v0.1b lands.
+16. (Active) `physical_user_speech_onset_to_stop_ms_p95 < 350ms` gate unmeasured. Documented in `test_barge_in.py` module docstring as Task 17 scope.
+17. (Active) Concrete `StreamingDuplexModel` impl must use coroutine-returns-generator pattern for `infer_stream` and the construction site must enforce the `StreamingDuplexModel` contract. Flag on the b200 model implementation PR.
+18. (New) DeicticDetector Task 6: capture `_emit()` return for causal chaining; test must use asyncio harness and assert event emission count, type, and caused_by.
+
+---
+
+## PR #43 — v0.1c Task 4: add Stage 2 ReasonCode members  (reviewed 2026-05-14)
+**ROADMAP task:** v0.1c Task 4
+**Verdict:** APPROVE
+
+**Canonical-venv pytest result:** `48 passed, 2 warnings` — zero delta over baseline. No new test file required (spec says "enum members import cleanly; no existing tests broken; each new member has a docstring" — static verification only).
+
+**Spec fidelity — PASS:**
+Three members added exactly as named in v0.1c Task 4: `DEICTIC_AMBIGUOUS`, `VISUAL_LOW_CONFIDENCE`, `AUDIO_VISUAL_CONFLICT`. Values are self-named strings (consistent with all 10 existing members). No members reordered, no existing member modified. Surgical append only. PASS.
+
+**Docstrings — PASS:**
+`__doc__` assignment post-class-definition is a valid Python idiom for enum members (confirmed: all three `__doc__` attributes are set and readable). Content matches the spec verbatim: "cannot be resolved to a single candidate" / "hallucination-resistance threshold" / "contradict." PASS.
+
+**Adapter purity — PASS:**
+Only `enum.Enum` imported. No model SDK. PASS.
+
+**Style consistency — PASS:**
+Post-class `__doc__` assignment is the only available per-member docstring pattern that actually works for Python `Enum` (inline string literals after enum values are NOT assigned to `__doc__`). Verified empirically. Existing members have no `__doc__` set — the new members being the first to have docs is an intentional spec requirement, not inconsistency. Alignment of the `=` signs in the `__doc__` assignments uses trailing spaces to line up values — this matches the surrounding enum's leading-space alignment style. PASS.
+
+**Findings:** none.
+
+**Scope check:** Diff is exactly 8 lines added to `companion_harness/reason_codes.py`. No other files modified. PASS.
+
+**Invariant checks:**
+- Every `SpeakDecision` carries a `primary_reason_code` from `ReasonCode` (CLAUDE.md invariant): the three new members are now available for tasks 12, 13, and 15. PASS.
+- "Why did you say that?" invariant #7: each new member has a `__doc__` string documenting the policy concept. PASS.
+
+**Watch-item checks:**
+- Watch-item 3 (SensitiveField.retention_policy_id non-empty): No SensitiveField constructed. PASS.
+- Watch-items 8, 9, 12, 17, 18: not touched. Still active.
+
+**Cross-PR watch-items created:** none.
+
+**Cross-PR watch-items — current active list (unchanged):**
+3. (Ongoing) `SensitiveField.retention_policy_id` must be non-empty at all call sites.
+8. (Active) VAD numeric defaults must become config reads when `implementation-config.yaml` gains numeric VAD fields.
+9. (Active) `quiet_mode` must NOT be implemented as a `privacy_mode` string.
+12. (Active) `ThinkerProposalGen` / `ForegroundModel` API ambiguity must be resolved when Stage 6 begins.
+17. (Active) Concrete `StreamingDuplexModel` impl must use coroutine-returns-generator pattern; construction site must enforce the contract.
+18. (Active) DeicticDetector Task 6: capture `_emit()` return for causal chaining; test must use asyncio harness and assert event emission.
+
+---
+
+## PR #45 — feat(audio): AudioOutputController.play() async-generator API (live-loop Task 4b)  (reviewed 2026-05-14)
+**ROADMAP task:** live-loop Task 4b
+**Verdict:** APPROVE
+
+**Canonical-venv pytest result:** `49 passed, 2 warnings` — +1 over baseline (48). Exactly the one new test added. PASS.
+
+**Spec fidelity — PASS:**
+Task 4b spec: "Adapt `AudioOutputController.play()` to accept an async generator / queue of `bytes` so each chunk can be forwarded to the playback sink as it arrives without waiting for the full utterance to buffer." The signature change is `list[bytes]` → `AsyncIterable[bytes]`; `for chunk in chunks:` → `async for chunk in chunks:`. All six event semantics (`assistant_audio_buffer_flushed`, `assistant_audio_stop_completed`, etc.) are preserved; the underlying event logic is not touched. PASS.
+
+**Success criterion — PASS:**
+"Existing `AudioOutputController` contract tests still pass" — confirmed: all 5 prior tests in `test_audio_output_controller.py` pass; 1 test in `test_barge_in.py` and 1 in `test_decision_provenance.py` pass after call-site migration. "New contract test drives `play()` with an async generator and confirms first-chunk playback begins before the generator is exhausted" — `test_play_async_gen_no_full_collection` uses a 20ms inter-yield `slow_gen()` generator. `sink_times[0] < yield_times[-1]` asserts the first chunk is delivered before the generator finishes. Non-vacuous: if `play()` collected the full list first, `sink_times[0]` would occur AFTER `yield_times[-1]` and the assertion would fail. PASS.
+
+**Caller migration — PASS:**
+All three call sites that previously passed `list[bytes]` are updated to pass `_agen(chunks)` — an async generator that yields from the list without buffering. Each file defines its own `_agen` locally (consistent with the project pattern of local helpers per file). No call sites in `companion_harness/` (none existed — controllers are driven by tests only at this point). PASS.
+
+**Adapter purity — PASS:**
+`AsyncIterable` imported from `collections.abc` (stdlib). No SDK added. PASS.
+
+**Scope check:** Diff touches exactly `companion_harness/audio_output_controller.py` (2-line signature + docstring change), `tests/test_audio_output_controller.py` (1 new import, 1 new helper, 2 call-site updates, 1 new 50-line test), `tests/test_barge_in.py` (1 new import, 1 new helper, 1 call-site update), `tests/test_decision_provenance.py` (1 new import, 1 new helper, 1 call-site update). No adapter logic changed, no schema changes. PASS.
+
+**Findings:**
+
+- [nit / style] `tests/test_audio_output_controller.py:211,215` — `asyncio.get_event_loop().time()` inside `async def` functions. In Python 3.12 the correct idiom inside a running async context is `asyncio.get_running_loop().time()` (the running loop is guaranteed to exist; `get_event_loop()` is deprecated for this usage). Behavior is identical on all current CPython versions because inside an async function the running loop IS the event loop, but `get_running_loop()` is the modern and non-deprecated form. No behavior risk — functional test passes. Severity: nit.
+
+**Invariant checks:**
+- Invariant #10 (EventLogger non-blocking): `play()` `async for` loop still calls `self._sink(chunk)` (an awaited async call) and `self._emit()` (synchronous, non-blocking). No logger await added to the hot path. PASS.
+- Invariant #1 (no unlogged behavior): event semantics unchanged — same six events emitted on same conditions. PASS.
+
+**Watch-item checks:**
+- Watch-item 3 (SensitiveField.retention_policy_id non-empty): No SensitiveField constructed. `retention_policy_id="default"` on all events (unchanged from PR #4). PASS.
+- Watch-items 8, 9, 12, 17, 18: not touched. Still active.
+
+**Cross-PR watch-items created:** none.
+
+**Cross-PR watch-items — current active list (unchanged):**
+3. (Ongoing) `SensitiveField.retention_policy_id` must be non-empty at all call sites.
+8. (Active) VAD numeric defaults must become config reads when `implementation-config.yaml` gains numeric VAD fields.
+9. (Active) `quiet_mode` must NOT be implemented as a `privacy_mode` string.
+12. (Active) `ThinkerProposalGen` / `ForegroundModel` API ambiguity must be resolved when Stage 6 begins.
+17. (Active) Concrete `StreamingDuplexModel` impl must use coroutine-returns-generator pattern; construction site must enforce the contract.
+18. (Active) DeicticDetector Task 6: capture `_emit()` return for causal chaining; test must use asyncio harness.
+
+VERDICT: nits-only
+
+---
+
+## PR #44 — feat(ingest): add ingest_video_frame with per-modality causal pointers (v0.1c Task 1)  (reviewed 2026-05-14)
+**ROADMAP task:** v0.1c Task 1
+**Verdict:** APPROVE
+
+**Canonical-venv pytest result:** `49 passed, 2 warnings` — +1 over baseline (48). Exactly one new test. PASS.
+
+**Spec fidelity — PASS:**
+Task 1 spec: "Add `ingest_video_frame(session, frame_bytes, meta)` that writes the frame blob and emits a `raw_video_frame` event with `payload_kind='raw_video'`. Maintain separate `_prev_audio_chunk_id` and `_prev_video_chunk_id` per session; each modality's `caused_by[]` chain is independent." Verified in the diff: `_prev_chunk_id` → `_prev_audio_chunk_id` (surgical rename, 2 call sites); `_prev_video_chunk_id` added; `ingest_video_frame()` with `event_type="raw_video_frame"`, `payload_kind="raw_video"`, `source=f"{client_id}.video"`. All three spec verification requirements — (a) no orphans across modalities, (b) video `caused_by` never points to audio chunk id, (c) audio `caused_by` never points to video frame id — are directly asserted in the test. PASS.
+
+**Causal structure — PASS:**
+`ingest_video_frame()` causal logic: first video frame traces to `session.session_open_id` (not to any audio chunk id — the audio chain is a sibling, not a parent); subsequent frames trace to the prior video frame's id. This is the correct parallel-chain design. The test explicitly asserts `video_events[0].caused_by == [session_open.event_id]` and `cur.caused_by == [prev.event_id]` within the video chain. Verified by CausalGraph(report.orphan_count == 0). PASS.
+
+**Surgical scope — PASS:**
+The audio path is unchanged except for the rename `_prev_chunk_id` → `_prev_audio_chunk_id`. No audio logic is modified. The two call sites in `ingest_chunk()` that read/set the old name are updated. No opportunistic refactor. PASS.
+
+**Test quality — PASS:**
+`test_interleaved_audio_video_causal_chains` exercises the three spec assertions plus: event_type and payload_kind on video events, payload_hash vs stored blob, and seq_no monotonicity. N=4 interleaved pairs. The cross-modal assertions check every `caused_by` ref in every video event against the full set of audio event ids, and vice versa — not a spot check. Non-vacuous: if `_prev_video_chunk_id` were never assigned and the video chain used `_prev_audio_chunk_id` instead, assertion (b) would fail on the second video frame (its `caused_by` would contain an audio chunk id). PASS.
+
+**Adapter purity — PASS:**
+`input_ingest.py` imports are stdlib (`asyncio`, `hashlib`, `json`, `time`, `uuid`, `dataclasses`, `datetime`, `pathlib`) + `companion_harness.event_logger` + `companion_harness.schemas`. No SDK. PASS.
+
+**Invariant checks:**
+- Invariant #1 (no unlogged behavior): `ingest_video_frame()` calls `self._logger.log(event)` synchronously (non-blocking `put_nowait`). PASS.
+- Invariant #10 (EventLogger non-blocking): same pattern as `ingest_chunk()` — synchronous non-blocking call. PASS.
+- `caused_by[]` non-empty: every video frame has `caused_by` = either `[session.session_open_id]` or `[session._prev_video_chunk_id]` — never empty. PASS.
+
+**Findings:** none.
+
+**Watch-item checks:**
+- Watch-item 3 (SensitiveField.retention_policy_id non-empty): `ingest_video_frame()` uses `retention_policy_id=_RETENTION` (`"raw_media_default_300s"` — non-empty). PASS.
+- Watch-items 8, 9, 12, 17, 18: not touched. Still active.
+
+**Cross-PR watch-items created:** none.
+
+**Cross-PR watch-items — current active list (unchanged):**
+3. (Ongoing) `SensitiveField.retention_policy_id` must be non-empty at all call sites.
+8. (Active) VAD numeric defaults must become config reads when `implementation-config.yaml` gains numeric VAD fields.
+9. (Active) `quiet_mode` must NOT be implemented as a `privacy_mode` string.
+12. (Active) `ThinkerProposalGen` / `ForegroundModel` API ambiguity must be resolved when Stage 6 begins.
+17. (Active) Concrete `StreamingDuplexModel` impl must use coroutine-returns-generator pattern; construction site must enforce the contract.
+18. (Active) DeicticDetector Task 6: capture `_emit()` return for causal chaining; test must use asyncio harness.
+
+VERDICT: clean
+
+---
+
+## PR #42 — feat: stub VisionSidecar with ring buffer + privacy guard (v0.1c Task 3)  (reviewed 2026-05-14)
+**ROADMAP task:** v0.1c Task 3
+**Verdict:** APPROVE
+
+**Canonical-venv pytest result:** `61 passed, 2 warnings` — +13 over baseline (48). Exactly the 13 new tests in `test_vision_sidecar_stub.py`. PASS.
+
+**Spec fidelity — PASS:**
+Task 3 spec requires: (1) ring buffer bounded to 60s window keyed on `timestamp_mono_ms`, not `time.monotonic()` — verified: eviction uses `ref.timestamp_mono_ms` throughout `_evict()`; no `time.monotonic()` call anywhere in the class; (2) scene-change scorer injectable via Protocol — `SceneScorer` is `@runtime_checkable` Protocol; test injects `_FakeSceneScorer`; `isinstance` check passes; (3) deictic gate: `resolve(query, deictic_reference=False)` returns not-resolvable immediately; (4) `no_camera_memory` guard disables buffer entirely — `ingest_frame()` returns 0.0 and stores nothing; `resolve()` with gate open also returns not-resolvable. All four spec requirements verified. PASS.
+
+**Ring-buffer eviction correctness — PASS:**
+`_evict(current_ts_ms)` pops from the left while `self._buffer[0].timestamp_mono_ms <= cutoff` where `cutoff = current_ts_ms - self._window_ms`. The `<=` means a frame exactly `window_ms` old is evicted (the window is an exclusive-left, inclusive-right interval). The test `test_ring_buffer_evicts_old_frames_by_event_timestamp` uses `ref_a` at t=0, `ref_c` at t=61_000, `window_ms=60_000` → cutoff=1000; 0 <= 1000 → evicted. Correct. The boundary semantics (a frame exactly at the edge is evicted, not retained) are deterministic and consistent. PASS.
+
+**Privacy guard non-vacuousness — PASS:**
+`test_no_camera_memory_buffer_stays_empty`: ingests a frame, asserts buffer_size() == 0. If `ingest_frame()` failed to check `privacy_mode`, buffer_size would be 1 and this test would fail. PASS.
+`test_no_camera_memory_resolve_returns_not_resolvable`: calls `resolve()` with `deictic_reference=True` and no frames ingested. This is structurally the same as the empty-buffer case — the two cases are not fully disentangled (the existing `test_resolve_with_empty_buffer_returns_not_resolvable` also covers empty-buffer + `deictic_reference=True`). A stronger test would ingest a frame under `no_camera_memory` and then attempt `resolve()` — verifying both that the frame was not stored AND that the guard blocks resolution independently. Existing tests together cover the behavior correctly (both branches of the guard in `resolve()` are hit) but the `no_camera_memory` resolve test provides only marginal additional coverage. This is a concern about test expressiveness, not correctness.
+
+**Adapter purity — PASS:**
+Imports: `collections.deque`, `dataclasses.dataclass`, `typing.Protocol`, `typing.runtime_checkable` — all stdlib. No model SDK. PASS.
+
+**Protocols `@runtime_checkable` — PASS:**
+Both `SceneScorer` and `GroundingModel` carry `@runtime_checkable`. `isinstance(_FakeSceneScorer([0.5]), SceneScorer)` and `isinstance(_FakeGroundingModel("mug", 0.9), GroundingModel)` are tested explicitly. PASS.
+
+**Scope check:**
+Two new files: `companion_harness/vision_sidecar.py` (167 lines) and `tests/test_vision_sidecar_stub.py` (217 lines). No existing files modified. No spec (`docs/architecture-v0.1.md`) edited. PASS.
+
+**CLAUDE.md rule 4 (stub PR):**
+Task 3 is explicitly a stub task. The class establishes the skeleton, ring-buffer logic, privacy guard, and protocol interfaces. Full grounding wiring (event logging, `caused_by` chain) is Task 7. The stub correctly omits `EventLogger` integration — no invariant #1 violation because Task 7 is where the grounding events are wired. PASS.
+
+**`_last_frame` / eviction ordering — minor observation:**
+`_last_frame` is updated for every `ingest_frame()` call regardless of whether the frame was evicted from the buffer. This means the scene-change scorer always computes against the most recent frame byte blob. This is correct for the scorer's purpose (scoring the change from the prior frame to the current one) and does not require the prior frame to still be in the ring buffer. No finding.
+
+**Findings:**
+
+- [concern / test-expressiveness] `tests/test_vision_sidecar_stub.py:199–206` — `test_no_camera_memory_resolve_returns_not_resolvable` calls `resolve()` without having ingested any frame under `no_camera_memory`. The test covers the same code path as `test_resolve_with_empty_buffer_returns_not_resolvable` (empty buffer → not-resolvable) plus the `privacy_mode == "no_camera_memory"` short-circuit in `resolve()`. A more expressive test would ingest a frame first, then call resolve, to demonstrate the guard independently from the empty-buffer case. The combined coverage from the existing two `no_camera_memory` tests (buffer stays empty + resolve returns not-resolvable) is correct but marginally weaker than a combined ingest-then-resolve test. Not a blocker — the existing tests do cover the spec requirement as stated ("ring buffer is empty and non-resolvable under `no_camera_memory` mode").
+
+**Watch-item checks:**
+- Watch-item 3 (SensitiveField.retention_policy_id non-empty): No SensitiveField constructed in the stub. N/A. PASS.
+- Watch-items 8, 9, 12, 17, 18: not touched. Still active.
+
+**Cross-PR watch-items created:**
+19. (v0.1c Task 7 — VisionSidecar wiring) When Task 7 implements `ingest_frame()` with event logging and a closed `caused_by` chain into `raw_video_frame` events: (a) verify every grounding event's `caused_by` chain traces to the `raw_video_frame` event whose `event_id` is stored in the `FrameRef.event_id` field; (b) verify no grounding event has an empty `caused_by`; (c) confirm `EventLogger` is started before any `ingest_frame()` call and stopped after, matching the pattern in `test_video_ingest.py`.
+
+**Cross-PR watch-items — current active list:**
+3. (Ongoing) `SensitiveField.retention_policy_id` must be non-empty at all call sites.
+8. (Active) VAD numeric defaults must become config reads when `implementation-config.yaml` gains numeric VAD fields.
+9. (Active) `quiet_mode` must NOT be implemented as a `privacy_mode` string.
+12. (Active) `ThinkerProposalGen` / `ForegroundModel` API ambiguity must be resolved when Stage 6 begins.
+17. (Active) Concrete `StreamingDuplexModel` impl must use coroutine-returns-generator pattern; construction site must enforce the contract.
+18. (Active) DeicticDetector Task 6: capture `_emit()` return for causal chaining; test must use asyncio harness.
+19. (New) VisionSidecar Task 7: every grounding event `caused_by` must trace to the triggering `raw_video_frame` event; EventLogger must be started/stopped correctly in tests.
+
+VERDICT: nits-only
+
+---
+
+## PR #41 — stub DeicticDetector: Protocol + skeleton (v0.1c Task 5) — round 2  (reviewed 2026-05-14)
+**ROADMAP task:** v0.1c Task 5
+**Verdict:** APPROVE — PR #41 CONVERGED
+
+### Canonical-venv pytest result
+
+`/raid/yid042/venvs/companion-harness/bin/python3 -m pytest tests/test_deictic_detector_stub.py -v`
+→ **2 passed** in 0.01s.
+
+Full suite (PR branch): **50 passed, 2 warnings** in 21.75s. No regressions.
+
+---
+
+### Round-1 BLOCKER 1 — RESOLVED
+
+**Scope creep (`classify()` shipping Task 6 implementation, `_next_seq()` / `_emit()` present).**
+
+`classify()` now contains exactly `raise NotImplementedError` and a docstring that specifies what Task 6 will implement. `_next_seq()` and `_emit()` are absent from the file. Confirmed by direct read of `companion_harness/deictic_detector.py`. The class body is now: `SOURCE`, `SCHEMA_VERSION`, `__init__`, and `classify()` stub only. PASS.
+
+### Round-1 BLOCKER 2 — RESOLVED
+
+**Vacuous test (`test_classify_returns_model_result` + `_make_logger` helper, logger never started).**
+
+`test_classify_returns_model_result` and `_make_logger` are absent from `tests/test_deictic_detector_stub.py`. Exactly 2 tests remain:
+1. `test_fake_satisfies_protocol` — `isinstance(_FakeDeicticModel([(True, 0.9)]), DeicticModel)` asserted True. Non-vacuous: if `DeicticModel` Protocol method signature changed or `@runtime_checkable` were removed, this would fail. PASS.
+2. `test_deictic_detector_construction` — constructs `DeicticDetector` with fake model, `session_id`, and a live `EventLogger` instance; asserts `isinstance(detector, DeicticDetector)`. Non-vacuous: if the constructor signature were broken, this would raise `TypeError`. PASS.
+
+Both tests are the tests the round-1 review required. No stale imports, no vacuous assertions, no logger-never-started hazard (no event-logging assertion attempted). PASS.
+
+---
+
+### Holistic pass — Task 5 success criterion
+
+"imports cleanly; isinstance Protocol check passes with a fake `DeicticModel`." Both verified by test. No invented scope, no forward-looking Task 6 scaffolding. PASS.
+
+### Adapter purity — PASS
+
+`companion_harness/deictic_detector.py` imports only: `__future__.annotations`, `typing.Protocol`, `typing.runtime_checkable`, `companion_harness.event_logger.EventLogger`. No torch, no onnxruntime, no model SDK. PASS.
+
+### ADR note and Protocol shape — PASS (unchanged from round 1)
+
+`DeicticModel` Protocol, `DeicticDetector` class constructor, `SOURCE`/`SCHEMA_VERSION` constants, module docstring ADR note — all carry over unchanged from round 1, all correct and consistent with the established detector-adapter pattern.
+
+### Scope check — PASS
+
+Two new files only: `companion_harness/deictic_detector.py` and `tests/test_deictic_detector_stub.py`. No existing files modified. Clean.
+
+### New findings
+
+None.
+
+---
+
+### Watch-item 17 — checked
+
+Watch-item 17 (concrete `StreamingDuplexModel` implementation) is not touched by this PR. Still active.
+
+### Watch-item 18 — status confirmed
+
+Watch-item 18 (DeicticDetector Task 6 — capture `_emit()` return for causal chaining; test must use asyncio harness) remains active. The round-2 fix correctly defers all of that to Task 6. No new finding on this PR.
+
+### Cross-PR watch-items — current active list
+
+3. (Ongoing) `SensitiveField.retention_policy_id` must be non-empty at all call sites.
+8. (Active) VAD numeric defaults must become config reads when `implementation-config.yaml` gains numeric VAD fields.
+9. (Active) `quiet_mode` must NOT be implemented as a `privacy_mode` string.
+12. (Active) `ThinkerProposalGen` / `ForegroundModel` API ambiguity must be resolved when Stage 6 begins.
+17. (Active) Concrete `StreamingDuplexModel` impl must use coroutine-returns-generator pattern; construction site must enforce the contract.
+18. (Active) DeicticDetector Task 6: capture `_emit()` return for causal chaining; test must use asyncio harness.
+19. (Active) VisionSidecar Task 7: every grounding event `caused_by` must trace to the triggering `raw_video_frame` event; EventLogger must be started/stopped correctly in tests.
+
+VERDICT: clean
+
+---
+
+## PR #46 — feat: MiniCPMStreamingModel — as_duplex streaming path (live-loop Task 2) — round 1  (reviewed 2026-05-14)
+**ROADMAP task:** Live-Loop Task 2
+**Verdict:** CHANGES-REQUESTED
+
+### Canonical-venv pytest result
+
+`/raid/yid042/venvs/companion-harness/bin/python3 -m pytest tests/ -q` (PR branch, b200 venv, CUDA available)
+→ **51 passed, 2 warnings** in 49.86s. Zero failures. PR's own claim of 51 passed confirmed.
+
+`/raid/yid042/venvs/companion-harness/bin/python3 -m pytest tests/test_minicpm_streaming_duplex.py -v`
+→ **3 passed** in 34.80s.
+
+---
+
+### Findings
+
+**[BLOCKER — brevity / correctness] `companion_harness/foreground_model_minicpm.py:133` — `self._lock = threading.Lock()` is created but never acquired anywhere.**
+
+`threading.Lock()` is assigned to `self._lock` with a comment "duplex state is stateful; one stream at a time." But `_gen()` never calls `with self._lock:` or `self._lock.acquire()`. The lock provides zero concurrent-access protection — a second concurrent call to `infer_stream()` while the first `_gen()` is running will reach `duplex.prepare(...)` on the same `self._duplex` object without any serialization. The comment overpromises what the code delivers. This is not a "defensive shim against an impossible case" — the PR's own comment identifies concurrent use as a real risk. Either (a) delete `self._lock` and remove the comment (honest: concurrent calls are not guarded), or (b) acquire the lock inside `_gen()` (but this will block the event loop since `threading.Lock` is not async-aware — use `asyncio.Lock` instead and `async with` it inside `_gen()`). Option (a) is the minimum correct fix for a stub that does not yet wire the live loop; concurrent safety is Task 5 scope. Option (b) is the correct production fix but introduces an `asyncio.Lock` that was not in scope. Per CLAUDE.md rule 2 ("Minimum code that solves the problem. Nothing speculative"), option (a) is correct for Task 2.
+
+**[BLOCKER — brevity] `companion_harness/foreground_model_minicpm.py:36` — `import threading` is now dead code if `self._lock` is removed (option a above). Delete the import alongside the field.**
+
+Note: If the coder instead implements option (b) (`asyncio.Lock`), `import threading` is replaced by a `asyncio.Lock` construction; `threading` is still deleted.
+
+**[CONCERN — correctness] `companion_harness/foreground_model_minicpm.py:168` — `caused_by=list(caused_by)` freezes the caller's `caused_by` list at the time each chunk is processed.**
+
+This is correct behavior for the first proposal yielded in a stream. However, for all subsequent proposals within the same `_gen()` invocation the `caused_by` remains the original caller's list, pointing at the top-level stream event (e.g. the `foreground_frame` event from `ForegroundModel.process_stream()`). The spec (invariant #1, `caused_by[]`) requires every event to point at its proximate causal predecessor — successive `ThinkerProposal` candidates within a streaming window should ideally trace to the prior chunk's events, not all to the same root event. For a Task 2 stub driving a basic stream this is acceptable (Task 5 orchestration will impose proper causal threading), but the PR description claims full invariant #1 compliance via `caused_by=list(caused_by)`. It satisfies structural non-emptiness but not strict causal proximity. This is a CONCERN, not a BLOCKER for Task 2, but the PR description's claim should be accurate.
+
+**[CONCERN — brevity] `companion_harness/foreground_model_minicpm.py:139–201` — `infer_stream` body and the `_gen()` inner function are inside the method even though `_gen()` captures nothing from `infer_stream`'s local scope that could not be passed as arguments.**
+
+`_gen()` captures `self._duplex` via `duplex = self._duplex` and `caused_by` from the outer `infer_stream` scope. The `caused_by` argument is already available at definition time. The `frame_iter` argument could be passed directly. This closure is the correct Python idiom for the coroutine-returns-generator pattern (watch-item 17 constraint), so the nested definition is not gratuitous. Not a finding — flagging for awareness only. No action required.
+
+**[NIT — style] `tests/test_minicpm_streaming_duplex.py:71–72` — `assert isinstance(proposals, list)` is vacuously true.**
+
+`proposals = [p async for p in gen]` produces a `list` by construction. Asserting `isinstance(proposals, list)` cannot fail. Delete this assertion; the test already has a non-vacuous check (`assert hasattr(gen, "__aiter__")`) and the behavioral assertions in the third test are the meaningful gates.
+
+**[NIT — style] `tests/test_minicpm_streaming_duplex.py:37–44` — `_make_pcm16_tone` builds the sample list with a Python list comprehension then packs with `struct.pack(f"<{n_samples}h", *samples)`. For large `n_samples` (e.g. `int(2.0 * 16000) = 32000`), unpacking 32000 items as `*samples` into `struct.pack` may hit CPython argument-count limits on some platforms. `numpy` is already imported in the production code; using `np.array(..., dtype=np.int16).tobytes()` in the test helper would be both shorter and safe. Not a blocker — current CPython limits are typically 2^24 args, well above 32000 — but the np approach is idiomatic given the dependency is available.**
+
+---
+
+### Adapter-first check — PASS
+
+`companion_harness/foreground_model.py` is not modified by this PR (confirmed by `gh pr diff 46 --name-only`: exactly `companion_harness/foreground_model_minicpm.py` and `tests/test_minicpm_streaming_duplex.py`). No torch/SDK anywhere in `foreground_model.py`. PASS.
+
+### Additive/surgical check — PASS
+
+`MiniCPMDuplexModel` and its `chat()` method are unchanged. The PR appends `MiniCPMStreamingModel` as a separate class after the existing class. No modification to `_MODEL_ID`, `MiniCPMDuplexModel.__init__`, `chat()`, or `infer()`. The existing `__all__` gains `"MiniCPMStreamingModel"` and the module-level constants `_SAMPLE_RATE` / `_CHUNK_SAMPLES` are added. PASS.
+
+### Async-generator pattern — PASS
+
+`inspect.isasyncgenfunction(MiniCPMStreamingModel.infer_stream)` → False.
+`inspect.iscoroutinefunction(MiniCPMStreamingModel.infer_stream)` → True.
+`infer_stream` is correctly a coroutine that returns `_gen()`, where `_gen` is the async generator function. The caller uses `gen = await model.infer_stream(...)` then `async for p in gen:`. This matches the `StreamingDuplexModel` Protocol contract and avoids `TypeError` on `await`. PASS. Watch-item 17 constraint satisfied.
+
+### `StreamingDuplexModel` Protocol satisfaction — PASS
+
+`isinstance(MiniCPMStreamingModel(), StreamingDuplexModel)` evaluated True in the test (confirmed by `test_streaming_model_satisfies_protocol` passing). The `infer` method signature on `MiniCPMStreamingModel` (`infer(self, audio_frame: bytes, video_frame: bytes | None = None)`) matches the Protocol's extended signature (PR #40 added the optional `video_frame` parameter). PASS.
+
+### `ThinkerProposal.caused_by` non-empty — PASS (structural)
+
+`caused_by=list(caused_by)` ensures the list is non-empty for any non-empty caller `caused_by`. `ForegroundModel.process_stream()` passes `[frame_evt.event_id]` as `caused_by` — non-empty by construction. Watch-item 11 (caused_by repair at adapter layer) is also present in `ForegroundModel` as backstop.
+
+### CUDA gate pattern — PASS
+
+`torch = pytest.importorskip("torch", reason="torch not available — b200 venv required")` + `if not torch.cuda.is_available(): pytest.skip(...)`. Mirrors `tests/test_direct_question_latency.py` exactly. PASS.
+
+### No pip-install — PASS
+
+`gh pr diff 46 --name-only` returns exactly two files. `requirements-b200.txt` is not modified. No new pip install in the PR. PASS.
+
+### Rule 4 check — PASS (option b: skip-to-green)
+
+The PR description identifies success as "51 passed, 0 failed" with the streaming integration tests passing on b200. A prior `pytest.skip` on the streaming model is converted to 3 passing tests. CLAUDE.md rule 4(b) satisfied.
+
+---
+
+### Watch-item 17 — RESOLVED (partially)
+
+Watch-item 17 required: "(a) verify `infer_stream` is a coroutine that RETURNS an async generator (not an async generator function); (b) construction site enforces `StreamingDuplexModel` contract."
+
+(a) RESOLVED — verified empirically via `inspect.iscoroutinefunction` + `isinstance(model, StreamingDuplexModel)` test.
+(b) PARTIALLY OPEN — `ForegroundModel.__init__` still accepts `model: DuplexModel` and does not enforce `StreamingDuplexModel` at construction time (the PR #40 concern). This was pre-existing before Task 2; Task 2 does not make it worse. Watch-item 17(b) remains active for the Task 5 orchestrator PR that actually wires `MiniCPMStreamingModel` into `ForegroundModel`.
+
+### Cross-PR watch-items created
+
+20. (Live-loop Task 5 — orchestrator) When `MiniCPMStreamingModel` is injected into `ForegroundModel` in the Task 5 orchestrator: (a) verify `self._lock = threading.Lock()` is either deleted (no concurrent-call guarantee) or replaced with `asyncio.Lock` acquired inside `_gen()` (production concurrent-call guard); (b) verify successive `ThinkerProposal` `caused_by` in a multi-chunk stream points at intermediate chunk events, not always the root stream event, if invariant #1 strict causal-proximity is required by that point.
+
+---
+
+### Cross-PR watch-items — current active list
+
+3. (Ongoing) `SensitiveField.retention_policy_id` must be non-empty at all call sites.
+8. (Active) VAD numeric defaults must become config reads when `implementation-config.yaml` gains numeric VAD fields.
+9. (Active) `quiet_mode` must NOT be implemented as a `privacy_mode` string.
+12. (Active) `ThinkerProposalGen` / `ForegroundModel` API ambiguity must be resolved when Stage 6 begins.
+17. (Active — (a) RESOLVED, (b) partially open) `StreamingDuplexModel` impl coroutine-returns-generator pattern confirmed; construction-site enforcement deferred to Task 5 orchestrator.
+18. (Active) DeicticDetector Task 6: capture `_emit()` return for causal chaining; test must use asyncio harness.
+19. (Active) VisionSidecar Task 7: every grounding event `caused_by` must trace to the triggering `raw_video_frame` event; EventLogger must be started/stopped correctly in tests.
+20. (New) Task 5 orchestrator: (a) `self._lock = threading.Lock()` in `MiniCPMStreamingModel` is dead — delete or replace with `asyncio.Lock` + `async with`; (b) successive proposal `caused_by` in multi-chunk stream should point at intermediate events if strict causal proximity is enforced.
+
+### Required changes (numbered, actionable)
+
+1. `companion_harness/foreground_model_minicpm.py:133` — Delete `self._lock = threading.Lock()` and its comment.
+2. `companion_harness/foreground_model_minicpm.py:36` — Delete `import threading`.
+3. `tests/test_minicpm_streaming_duplex.py:72` — Delete `assert isinstance(proposals, list)`.
+
+The two BLOCKERs (1 and 2 above) are a single-commit fix: delete 2 lines from `foreground_model_minicpm.py`. The NIT (3) is optional but clean.
+
+VERDICT: dirty
+
+---
+
+## PR #46 — round-2 review (2026-05-14)
+
+**Reviewer:** spec-gatekeeper (Claude Sonnet 4.6)
+**Branch:** `liveloop-task-2-minicpm-as-duplex` @ `9a22b45`
+**Verdict: APPROVE**
+
+### Fix-commit scope — CONFIRMED CLEAN
+
+Fix commit `9a22b45` ("fix: remove unused threading import and unacquired lock from MiniCPMStreamingModel") touches exactly:
+- `companion_harness/foreground_model_minicpm.py` — 3 lines deleted, 0 lines added, 1 file only.
+
+Deleted lines verified:
+1. `import threading` (was line 36 in round-1 diff) — gone.
+2. `self._lock = threading.Lock()  # duplex state is stateful; one stream at a time` (was line 133) — gone.
+
+No other files were touched. Nothing else changed.
+
+### `threading` verification — CONFIRMED ABSENT
+
+`grep -n "threading" companion_harness/foreground_model_minicpm.py` → exit 1 (no matches). The word `threading` does not appear anywhere in the file.
+
+### Round-1 approved content — STILL INTACT
+
+The full `MiniCPMStreamingModel` class, async-gen pattern, CUDA-gated tests, `MiniCPMDuplexModel.chat()` text path, `__all__` export, and `StreamingDuplexModel` Protocol satisfaction are all unchanged from round-1. No scope creep introduced in the fix commit.
+
+### Watch-item 20 update
+
+Watch-item 20(a) — "delete or replace `self._lock`" — is now RESOLVED. The lock was deleted. Watch-item 20(b) (successive `caused_by` in multi-chunk stream) remains active for the Task 5 orchestrator.
+
+### Canonical-venv pytest
+
+```
+/raid/yid042/venvs/companion-harness/bin/python3 -m pytest /tmp/gk-pr46/tests/ -q
+51 passed, 2 warnings in 50.00s
+```
+
+Worktree: `git worktree add /tmp/gk-pr46 origin/liveloop-task-2-minicpm-as-duplex` (detached HEAD `9a22b45`). Removed after run.
+
+### Findings
+
+None. Both round-1 blockers are resolved. The round-1 nit (`assert isinstance(proposals, list)` redundancy) was not required; its presence is unchanged and acceptable.
+
+VERDICT: clean
