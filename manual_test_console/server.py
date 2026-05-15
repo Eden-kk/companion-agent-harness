@@ -85,6 +85,7 @@ KEY_USE_STUBS: web.AppKey[bool] = web.AppKey("use_stubs", bool)
 KEY_VAD_MODEL: web.AppKey[object] = web.AppKey("vad_model", object)
 KEY_SMART_TURN_MODEL: web.AppKey[object] = web.AppKey("smart_turn_model", object)
 KEY_BACKCHANNEL_MODEL: web.AppKey[object] = web.AppKey("backchannel_model", object)
+KEY_ASR_MODEL: web.AppKey[object] = web.AppKey("asr_model", object)
 KEY_DETECTOR_LABELS: web.AppKey[dict] = web.AppKey("detector_labels", dict)
 KEY_AUDIO_OUT_BROKER: web.AppKey[object] = web.AppKey("audio_out_broker", object)
 KEY_AUDIO_OUT_COUNTER: web.AppKey[dict] = web.AppKey("audio_out_counter", dict)
@@ -251,6 +252,7 @@ async def _handle_ingest_ws(request: web.Request) -> web.WebSocketResponse:
             vad_model=request.app[KEY_VAD_MODEL],
             smart_turn_model=request.app[KEY_SMART_TURN_MODEL],
             backchannel_model=request.app[KEY_BACKCHANNEL_MODEL],
+            asr_model=request.app[KEY_ASR_MODEL],
             use_stubs=request.app[KEY_USE_STUBS],
             audio_out_broker=request.app[KEY_AUDIO_OUT_BROKER],  # type: ignore[arg-type]
             tts_adapter=request.app[KEY_TTS_ADAPTER],
@@ -405,6 +407,7 @@ async def _handle_health(request: web.Request) -> web.Response:
         "vad_model": detector_labels.get("vad", "unknown"),
         "smart_turn_model": detector_labels.get("smart_turn", "unknown"),
         "backchannel_model": detector_labels.get("backchannel", "unknown"),
+        "asr_model": detector_labels.get("asr", "unknown"),
         "audio_out_enabled": True,
         "audio_out_chunks_sent": audio_out_counter.get("chunks_sent", 0),
         "tts_model": tts_label,
@@ -428,6 +431,7 @@ def build_app(
     backchannel_model_factory: Optional[Callable[[], Any]] = None,
     tts_adapter: Any = None,
     tts_adapter_factory: Optional[Callable[[], Any]] = None,
+    asr_model_factory: Optional[Callable[[], Any]] = None,
 ) -> web.Application:
     """Build the aiohttp Application. Caller is responsible for run/cleanup.
 
@@ -478,10 +482,12 @@ def build_app(
     app[KEY_VAD_MODEL] = None
     app[KEY_SMART_TURN_MODEL] = None
     app[KEY_BACKCHANNEL_MODEL] = None
+    app[KEY_ASR_MODEL] = None
     app[KEY_DETECTOR_LABELS] = {
         "vad": "stub:EnergyVAD" if use_stubs else "stub:EnergyVAD",
         "smart_turn": "stub:SilenceSmartTurn" if use_stubs else "stub:SilenceSmartTurn",
         "backchannel": "stub:ZeroBackchannel" if use_stubs else "stub:ZeroBackchannel",
+        "asr": "stub:EmptyTranscript" if use_stubs else "stub:EmptyTranscript",
     }
     app[KEY_TTS_ADAPTER] = tts_adapter
     app[KEY_TTS_LABEL] = "stub:NoopTtsAdapter" if (tts_adapter is None or use_stubs) else "injected"
@@ -549,6 +555,8 @@ def build_app(
              "stub:SilenceSmartTurn", "Pipecat SmartTurn v3 (ONNX, CPU)"),
             (KEY_BACKCHANNEL_MODEL, "backchannel", backchannel_model_factory,
              "stub:ZeroBackchannel", "whisper-tiny + lexicon"),
+            (KEY_ASR_MODEL, "asr", asr_model_factory,
+             "stub:EmptyTranscript", "whisper-tiny.en (faster-whisper)"),
         ):
             if factory is None:
                 _app[KEY_DETECTOR_LABELS][label_key] = stub_label
@@ -576,6 +584,7 @@ def build_app(
         print(f"  SmartTurn:   {labels.get('smart_turn', 'unknown')}", flush=True)
         print(f"  Backchannel: {labels.get('backchannel', 'unknown')}", flush=True)
         print(f"  TTS:         {_app[KEY_TTS_LABEL]}", flush=True)
+        print(f"  ASR:         {labels.get('asr', 'unknown')}", flush=True)
         print("=" * 72, flush=True)
 
     async def _on_cleanup(_app: web.Application) -> None:
@@ -646,6 +655,16 @@ def _load_kokoro_tts_adapter() -> Any:
     )
 
 
+def _load_asr_model() -> Any:
+    """Lazy import + construct FasterWhisperASRModel (whisper-tiny.en). b200 only.
+
+    Imported here (not at module top) so the server module remains importable
+    on machines without faster_whisper. Mirrors _load_minicpm_streaming_model.
+    """
+    from companion_harness.asr_faster_whisper import FasterWhisperASRModel  # noqa: WPS433
+    return FasterWhisperASRModel(device="cuda", compute_type="float16")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="0.0.0.0")
@@ -676,8 +695,9 @@ def main(argv: list[str] | None = None) -> int:
         default=False,
         help=(
             "Fall back to CPU-only stub detectors "
-            "(EnergyVAD / SilenceSmartTurn / ZeroBackchannel) "
-            "instead of loading Silero / Pipecat SmartTurn v3 / whisper-tiny."
+            "(EnergyVAD / SilenceSmartTurn / ZeroBackchannel / EmptyTranscript) "
+            "instead of loading Silero / Pipecat SmartTurn v3 / whisper-tiny "
+            "/ whisper-tiny.en."
         ),
     )
     args = parser.parse_args(argv)
@@ -691,8 +711,9 @@ def main(argv: list[str] | None = None) -> int:
         smart_turn_factory: Optional[Callable[[], Any]] = _load_pipecat_smart_turn_model
         backchannel_factory: Optional[Callable[[], Any]] = _load_asr_lexicon_backchannel_model
         tts_factory: Optional[Callable[[], Any]] = _load_kokoro_tts_adapter
+        asr_factory: Optional[Callable[[], Any]] = _load_asr_model
     else:
-        vad_factory = smart_turn_factory = backchannel_factory = tts_factory = None
+        vad_factory = smart_turn_factory = backchannel_factory = tts_factory = asr_factory = None
 
     app = build_app(
         blob_dir,
@@ -703,6 +724,7 @@ def main(argv: list[str] | None = None) -> int:
         smart_turn_model_factory=smart_turn_factory,
         backchannel_model_factory=backchannel_factory,
         tts_adapter_factory=tts_factory,
+        asr_model_factory=asr_factory,
     )
 
     if not args.live_pipeline:
