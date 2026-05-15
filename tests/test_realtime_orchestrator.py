@@ -4,7 +4,7 @@ Success criterion (verbatim):
   pytest -k realtime_orchestrator passes non-vacuously:
   (a) the end-to-end scripted run produces a closed causal graph from
       harness_init through assistant_audio_buffer_flushed, zero orphan
-      actions, every assistant_generation_start traceable to a SpeakDecision;
+      actions, every assistant_generation_start traceable to a policy_decision;
   AND
   (b) the gating-invariant test passes — proving SpeakPolicy.decide() is
       called BEFORE any synthesis byte, and the orchestrator holds the
@@ -35,9 +35,10 @@ from companion_harness.causal_graph import CausalGraph
 from companion_harness.event_logger import EventLogger
 from companion_harness.foreground_model import ForegroundModel
 from companion_harness.input_ingest import CaptureMetadata, InputIngest
-from companion_harness.realtime_loop import RealtimeOrchestrator
-from companion_harness.schemas import Event, PolicyInputs, SpeakDecision, ThinkerProposal
+from companion_harness.realtime_orchestrator import StreamingRealtimeOrchestrator
+from companion_harness.schemas import Event, PolicyInputs, SpeakDecision, ThinkerProposal, TurnSignal
 from companion_harness.speak_policy import decide as speak_policy_decide
+from companion_harness.turn_detector_smart import SmartTurnDetector
 from companion_harness.turn_detector_vad import VADDetector
 
 
@@ -81,6 +82,11 @@ class _FakeVADModel:
 
     def __call__(self, frame: bytes) -> float:
         return next(self._probs, self._default)
+
+
+class _FakeSmartTurnModel:
+    def __call__(self, audio_buffer: bytes) -> tuple[float, float]:
+        return 0.1, 0.9  # never triggers EOU on its own
 
 
 class _FakeBackchannelModel:
@@ -159,11 +165,41 @@ class _InstrumentedDecide:
         return speak_policy_decide(inputs, signal_event_ids, p_backchannel)
 
 
-async def _chunk_stream(
-    count: int,
-) -> AsyncIterator[tuple[bytes, CaptureMetadata]]:
-    for i in range(count):
-        yield _pcm_chunk(), _meta(i)
+async def _noop_sink(chunk: bytes) -> None:
+    pass
+
+
+# ---------------------------------------------------------------------------
+# policy_inputs_builder
+# ---------------------------------------------------------------------------
+
+
+def _build_policy_inputs(signal: TurnSignal, signal_history: list[TurnSignal]) -> PolicyInputs:
+    """Convert TurnSignal to PolicyInputs. No wall-clock reads (invariant #5)."""
+    return PolicyInputs(
+        user_speaking=signal.p_done <= signal.p_continue,
+        eou_probability=signal.p_done,
+        assistant_speaking=False,
+        scene_change_score=0.0,
+        deictic_reference=False,
+        user_addressed_agent=True,
+        urgency_score=0.0,
+        proactivity_budget_remaining={},
+        privacy_mode="default",
+        current_task_mode="default",
+        social_mode="default",
+        risk_mode="default",
+        cooldown_state={},
+        attachment_risk_level=0.0,
+        audio_visual_conflict_score=0.0,
+        grounding_confidence=1.0,
+        deictic_ambiguous=False,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator factory
+# ---------------------------------------------------------------------------
 
 
 def _build_orchestrator(
@@ -173,100 +209,113 @@ def _build_orchestrator(
     vad_probs: list[float],
     tts: object,
     speak_policy_fn: object = speak_policy_decide,
-) -> tuple[RealtimeOrchestrator, object]:
-    """Build a fully-wired orchestrator with fake models. Returns (orchestrator, session)."""
-    session = ingest.open_session("test-client")
+    audio_in: asyncio.Queue | None = None,
+) -> tuple[StreamingRealtimeOrchestrator, object, asyncio.Queue]:
+    """Build a fully-wired StreamingRealtimeOrchestrator with fake models.
 
-    vad_model = _FakeVADModel(vad_probs)
-    vad_detector = VADDetector(
-        model=vad_model,
+    Returns (orchestrator, ingest_session, audio_in_queue).
+    """
+    session = ingest.open_session("test-client")
+    if audio_in is None:
+        audio_in = asyncio.Queue(maxsize=64)
+
+    vad = VADDetector(
+        model=_FakeVADModel(vad_probs),
         session_id=session_id,
         logger=logger,
         speech_threshold=0.5,
         silence_onset_ms=64,  # 2 frames of silence at 32 ms/frame
         frame_duration_ms=32,
     )
-
-    bc_model = _FakeBackchannelModel()
-    bc_classifier = BackchannelClassifier(
-        model=bc_model,
+    smart_turn = SmartTurnDetector(
+        model=_FakeSmartTurnModel(),
         session_id=session_id,
         logger=logger,
     )
-
-    streaming_model = _FakeStreamingModel()
-    foreground = ForegroundModel(
-        model=streaming_model,  # type: ignore[arg-type]
+    bc = BackchannelClassifier(
+        model=_FakeBackchannelModel(),
         session_id=session_id,
         logger=logger,
     )
-
+    fg = ForegroundModel(
+        model=_FakeStreamingModel(),
+        session_id=session_id,
+        logger=logger,
+    )
     controller = AudioOutputController(
         session_id=session_id,
         logger=logger,
         sink=_noop_sink,
     )
-
-    orch = RealtimeOrchestrator(
-        ingest=ingest,
-        detectors=[vad_detector, bc_classifier],
-        speak_policy=speak_policy_fn,  # type: ignore[arg-type]
-        foreground=foreground,
-        controller=controller,
-        tts=tts,  # type: ignore[arg-type]
-        logger=logger,
+    orch = StreamingRealtimeOrchestrator(
         session_id=session_id,
+        logger=logger,
+        ingest_session=session,
+        audio_in=audio_in,
+        vad_detector=vad,
+        smart_turn_detector=smart_turn,
+        backchannel_classifier=bc,
+        policy_inputs_builder=_build_policy_inputs,
+        speak_policy=speak_policy_fn,  # type: ignore[arg-type]
+        foreground_model=fg,
+        audio_output=controller,
+        tts_adapter=tts,  # type: ignore[arg-type]
+        proposal_batch_window_ms=200,
     )
-    return orch, session
+    return orch, session, audio_in
 
 
-async def _noop_sink(chunk: bytes) -> None:
-    pass
+async def _push_frames(
+    audio_in: asyncio.Queue,
+    ingest: InputIngest,
+    session,
+    frame_count: int,
+) -> None:
+    for i in range(frame_count):
+        evt = ingest.ingest_chunk(session, _pcm_chunk(), _meta(i))
+        await audio_in.put((_pcm_chunk(), evt.event_id))
 
 
 # ---------------------------------------------------------------------------
 # Test (a): end-to-end scripted run — closed causal graph, zero orphans,
-#           every assistant_generation_start traces to a SpeakDecision
+#           every assistant_generation_start traces to a policy_decision
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_end_to_end_causal_graph_closes():
+async def test_end_to_end_causal_graph_closes(tmp_path):
     """End-to-end scripted run via live InputIngest path.
 
     Injects scripted audio that triggers a VAD turn signal (speech then silence),
     drives the full pipeline, and asserts:
       - causal graph closes from harness_init through assistant_audio_buffer_flushed
       - zero orphan actions
-      - every assistant_generation_start event traces causally to a speak_decision event
+      - every assistant_generation_start event traces causally to a policy_decision event
     """
-    import tempfile
-    from pathlib import Path
-
     logger, received = _make_logger()
     await logger.start()
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        ingest = InputIngest(logger=logger, blob_dir=Path(tmpdir))
-        session_id = "test-e2e-causal"
+    ingest = InputIngest(logger=logger, blob_dir=tmp_path)
+    session_id = "test-e2e-causal"
 
-        from companion_harness.tts_adapter import SilentTtsAdapter
+    from companion_harness.tts_adapter import SilentTtsAdapter
 
-        tts = SilentTtsAdapter(chunk_count=1)
+    tts = SilentTtsAdapter(chunk_count=1)
 
-        orch, session = _build_orchestrator(
-            session_id=session_id,
-            logger=logger,
-            ingest=ingest,
-            # VAD sequence: 4 speech frames (p>0.5), then 3 silence frames
-            # VADDetector silence_onset_ms=64, frame_duration_ms=32 → 2 silence frames trigger EOU
-            vad_probs=[0.9, 0.9, 0.9, 0.9, 0.1, 0.1, 0.1],
-            tts=tts,
-        )
+    orch, session, audio_in = _build_orchestrator(
+        session_id=session_id,
+        logger=logger,
+        ingest=ingest,
+        # VAD sequence: 4 speech frames (p>0.5), then 3 silence frames
+        # VADDetector silence_onset_ms=64, frame_duration_ms=32 → 2 silence frames trigger EOU
+        vad_probs=[0.9, 0.9, 0.9, 0.9, 0.1, 0.1, 0.1],
+        tts=tts,
+    )
 
-        await orch.run(session, _chunk_stream(7))
-
-    await logger.stop()
+    await orch.start()
+    await _push_frames(audio_in, ingest, session, 7)
+    await asyncio.sleep(0.3)
+    await orch.stop()
 
     # (1) Zero orphan actions — causal graph must close
     graph = CausalGraph(received)
@@ -285,17 +334,17 @@ async def test_end_to_end_causal_graph_closes():
         "assistant_audio_buffer_flushed event missing — pipeline did not complete"
     )
 
-    # (4) Every assistant_generation_start traces causally to a speak_decision event
-    speak_decision_ids = {e.event_id for e in received if e.event_type == "speak_decision"}
+    # (4) Every assistant_generation_start traces causally to a policy_decision event
+    policy_decision_ids = {e.event_id for e in received if e.event_type == "policy_decision"}
     gen_start_events = [e for e in received if e.event_type == "assistant_generation_start"]
     assert gen_start_events, "No assistant_generation_start events found"
 
     for gen_evt in gen_start_events:
-        # Direct caused_by must contain a speak_decision event_id
-        assert any(ref in speak_decision_ids for ref in gen_evt.caused_by), (
+        # Direct caused_by must contain a policy_decision event_id
+        assert any(ref in policy_decision_ids for ref in gen_evt.caused_by), (
             f"assistant_generation_start {gen_evt.event_id!r} does not trace directly "
-            f"to a speak_decision. caused_by={gen_evt.caused_by!r}, "
-            f"speak_decision ids={speak_decision_ids!r}"
+            f"to a policy_decision. caused_by={gen_evt.caused_by!r}, "
+            f"policy_decision ids={policy_decision_ids!r}"
         )
 
 
@@ -305,7 +354,7 @@ async def test_end_to_end_causal_graph_closes():
 
 
 @pytest.mark.asyncio
-async def test_gating_invariant_decide_before_synthesis():
+async def test_gating_invariant_decide_before_synthesis(tmp_path):
     """Gating-invariant test (hard pass gate — invariants #2, #4).
 
     Asserts that SpeakPolicy.decide() is called EXACTLY ONCE per candidate batch
@@ -318,9 +367,6 @@ async def test_gating_invariant_decide_before_synthesis():
       - If decide() is called zero times when a turn signal fires → assertion fails
       - If synthesize() is called without a preceding decide() → assertion fails
     """
-    import tempfile
-    from pathlib import Path
-
     call_log: list[tuple[str, int]] = []
     instrumented_decide = _InstrumentedDecide(call_log)
     instrumented_tts = _InstrumentedTtsAdapter(call_log)
@@ -328,22 +374,22 @@ async def test_gating_invariant_decide_before_synthesis():
     logger, received = _make_logger()
     await logger.start()
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        ingest = InputIngest(logger=logger, blob_dir=Path(tmpdir))
-        session_id = "test-gating"
+    ingest = InputIngest(logger=logger, blob_dir=tmp_path)
+    session_id = "test-gating"
 
-        orch, session = _build_orchestrator(
-            session_id=session_id,
-            logger=logger,
-            ingest=ingest,
-            vad_probs=[0.9, 0.9, 0.9, 0.9, 0.1, 0.1, 0.1],
-            tts=instrumented_tts,
-            speak_policy_fn=instrumented_decide,
-        )
+    orch, session, audio_in = _build_orchestrator(
+        session_id=session_id,
+        logger=logger,
+        ingest=ingest,
+        vad_probs=[0.9, 0.9, 0.9, 0.9, 0.1, 0.1, 0.1],
+        tts=instrumented_tts,
+        speak_policy_fn=instrumented_decide,
+    )
 
-        await orch.run(session, _chunk_stream(7))
-
-    await logger.stop()
+    await orch.start()
+    await _push_frames(audio_in, ingest, session, 7)
+    await asyncio.sleep(0.3)
+    await orch.stop()
 
     # At least one decide() call must have occurred (turn signal was emitted)
     decide_calls = [entry for entry in call_log if entry[0] == "decide"]
