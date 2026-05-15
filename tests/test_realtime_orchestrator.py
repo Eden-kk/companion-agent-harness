@@ -99,6 +99,9 @@ class _FakeStreamingModel:
     ) -> ThinkerProposal | None:
         return None
 
+    def set_context(self, items) -> None:
+        pass
+
     async def infer_stream(
         self,
         frame_iter: AsyncIterator[tuple[bytes, bytes | None]],

@@ -268,6 +268,7 @@ def build_decision_trace(
     config_version: str = CONFIG_VERSION,
     input_event_ids: list[str] | None = None,
     p_backchannel: float = 0.0,
+    retrieval_event_ids: list[str] | None = None,
 ) -> DecisionTrace:
     """Construct a DecisionTrace linked to a SpeakDecision by shared decision_id.
 
@@ -287,5 +288,5 @@ def build_decision_trace(
         policy_version=POLICY_VERSION,
         config_version=config_version,
         model_adapter_versions={},
-        retrieval_used=[],
+        retrieval_used=list(retrieval_event_ids) if retrieval_event_ids else [],
     )

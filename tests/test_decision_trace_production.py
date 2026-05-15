@@ -126,6 +126,31 @@ def test_threshold_path_reflects_branch():
     assert "user_addressed_agent:full_response" in trace_full.threshold_path
 
 
+def test_build_decision_trace_retrieval_event_ids_threaded():
+    """retrieval_event_ids kwarg populates trace.retrieval_used."""
+    inputs = _minimal_inputs()
+    signal_ids = ["sig-ret-001"]
+    decision = speak_policy.decide(inputs, signal_event_ids=signal_ids)
+
+    trace = build_decision_trace(
+        decision=decision,
+        inputs=inputs,
+        signal_event_ids=signal_ids,
+        decision_id="d-ret",
+        retrieval_event_ids=["mre-001", "mre-002"],
+    )
+    assert trace.retrieval_used == ["mre-001", "mre-002"]
+
+    # Default (None) → empty list
+    trace_default = build_decision_trace(
+        decision=decision,
+        inputs=inputs,
+        signal_event_ids=signal_ids,
+        decision_id="d-ret-default",
+    )
+    assert trace_default.retrieval_used == []
+
+
 def test_trace_stays_deterministic_across_action_types():
     """Determinism check: run each input twice, traces are identical."""
     cases = [

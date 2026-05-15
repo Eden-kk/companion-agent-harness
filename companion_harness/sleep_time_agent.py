@@ -77,11 +77,13 @@ class SleepTimeAgent:
         *,
         clock: Callable[[], str] = _now_utc,
         item_id_factory: Callable[[], str] = lambda: f"item-{uuid.uuid4().hex[:12]}",
+        payload_reader: Callable[[str], dict | None] | None = None,
     ) -> None:
         self._stores = stores
         self._event_logger = event_logger
         self._clock = clock
         self._item_id_factory = item_id_factory
+        self._payload_reader = payload_reader
         self._started = False
         self._seq = 0
 
@@ -127,7 +129,8 @@ class SleepTimeAgent:
         )
 
     def _read_payload(self, event: Event) -> dict:
-        # TODO(Task 11): replace with production payload-access path
+        if self._payload_reader is not None:
+            return self._payload_reader(event.event_id) or {}
         return getattr(event, "payload_dict", {})
 
     def _finalize_provenance(self, payload: dict) -> MemoryItem:

@@ -57,7 +57,7 @@ from datetime import datetime, timezone
 from typing import AsyncGenerator, AsyncIterator, Protocol, runtime_checkable
 
 from companion_harness.event_logger import EventLogger
-from companion_harness.schemas import Event, ThinkerProposal
+from companion_harness.schemas import Event, MemoryItem, ThinkerProposal
 
 __all__ = ["DuplexModel", "StreamingDuplexModel", "ForegroundModel"]
 
@@ -73,6 +73,8 @@ class DuplexModel(Protocol):
     def infer(
         self, audio_frame: bytes, video_frame: bytes | None = None
     ) -> ThinkerProposal | None: ...
+
+    def set_context(self, items: list[MemoryItem]) -> None: ...
 
 
 @runtime_checkable
@@ -113,6 +115,10 @@ class ForegroundModel:
         self._session_id = session_id
         self._logger = logger
         self._seq = 0
+
+    def set_context(self, items: list[MemoryItem]) -> None:
+        """Pass retrieved memory items to the underlying model."""
+        self._model.set_context(items)
 
     def process_frame(
         self,

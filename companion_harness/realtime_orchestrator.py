@@ -35,11 +35,12 @@ import hashlib
 import json
 import time
 import uuid
+from collections import OrderedDict
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from companion_harness.audio_output_controller import AudioOutputController
 from companion_harness.backchannel_classifier import BackchannelClassifier
@@ -50,6 +51,7 @@ from companion_harness.input_ingest import IngestSession
 from companion_harness.reason_codes import ReasonCode
 from companion_harness.schemas import (
     Event,
+    MemoryItem,
     PolicyInputs,
     SpeakDecision,
     ThinkerProposal,
@@ -61,12 +63,33 @@ from companion_harness.tts_adapter import TtsAdapter
 from companion_harness.turn_detector_smart import SmartTurnDetector
 from companion_harness.turn_detector_vad import VADDetector
 
+if TYPE_CHECKING:
+    from companion_harness.memory_manager import MemoryManager
+
 __all__ = ["StreamingRealtimeOrchestrator"]
 
 _SCHEMA_VERSION = "0.1"
 
-
 _SOURCE = "streaming_realtime_orchestrator"
+
+RETRIEVAL_TOP_K = 5
+MEMORY_EVENT_PAYLOADS_CAP = 1024
+
+
+def _detect_explicit_remember(transcript: str) -> tuple[bool, str | None]:
+    """Detect explicit 'remember' / 'don't forget' intent in user transcript.
+
+    Returns (matched, extracted_content). v0.1e whitelist:
+    - "remember that ..."
+    - "please remember ..."
+    - "don't forget ..."
+    ("note that" intentionally excluded — too conversational, false-positive risk.)
+    """
+    text = transcript.lower().strip()
+    for phrase in ("remember that ", "please remember ", "don't forget "):
+        if text.startswith(phrase):
+            return True, transcript[len(phrase):].strip()
+    return False, None
 
 
 @dataclass
@@ -152,6 +175,8 @@ class StreamingRealtimeOrchestrator:
         p_speech_thresh: float = 0.5,
         p_backchannel_thresh: float = 0.7,
         decision_trace_dir: Path | None = None,
+        episodic_store: "MemoryManager | None" = None,
+        semantic_store: "MemoryManager | None" = None,
     ) -> None:
         self._session_id = session_id
         self._logger = logger
@@ -207,6 +232,12 @@ class StreamingRealtimeOrchestrator:
         # Callers that care about the location should pass it explicitly.
         _trace_dir = decision_trace_dir if decision_trace_dir is not None else Path("decision_traces")
         self._decision_trace_store = DecisionTraceStore(_trace_dir)
+
+        self._episodic_store = episodic_store
+        self._semantic_store = semantic_store
+        # FIFO-capped payload dict for memory_write_candidate and memory_retrieval_event.
+        # Keyed by event_id; consumers access via payload_reader callback.
+        self._memory_event_payloads: OrderedDict[str, dict] = OrderedDict()
 
         self._seq = 0
         self._tasks: list[asyncio.Task[None]] = []
@@ -349,6 +380,44 @@ class StreamingRealtimeOrchestrator:
 
             inputs = self._policy_inputs_builder(signal, sorted_history)
 
+            # --- Retrieval: fires on every EOU before decide() (plan §4.2 v4) ---
+            stores_queried: list[str] = []
+            retrieved_items: list[MemoryItem] = []
+            if self._episodic_store is not None:
+                retrieved_items.extend(self._episodic_store.retrieve("", top_k=RETRIEVAL_TOP_K))
+                stores_queried.append("episodic")
+            if self._semantic_store is not None:
+                retrieved_items.extend(self._semantic_store.retrieve("", top_k=RETRIEVAL_TOP_K))
+                stores_queried.append("semantic_relational")
+
+            mre_event_id = self._new_event_id()
+            mre_payload = {
+                "query": "",
+                "top_k": RETRIEVAL_TOP_K,
+                "stores_queried": stores_queried,
+                "result_item_ids": [it.item_id for it in retrieved_items],
+                "result_count": len(retrieved_items),
+                "privacy_mode": inputs.privacy_mode,
+            }
+            self._store_payload(mre_event_id, mre_payload)
+            mre_event = dataclasses.replace(
+                self._make_event(
+                    event_id=mre_event_id,
+                    event_type="memory_retrieval_event",
+                    caused_by=[signal_evt_id],
+                    payload_kind="memory_op",
+                    extra_hash=str(len(retrieved_items)),
+                ),
+                subject_class="self",
+                sensitivity="safe",
+                retention_policy_id="retrieval_audit_30d",
+                payload_ref=f"orchestrator://{mre_event_id}",
+            )
+            self._logger.log(mre_event)
+
+            self._foreground_model.set_context(retrieved_items)
+            inputs.retrieved_items = retrieved_items
+
             # Emit policy_decision event FIRST so event_id is available before enqueueing (nit 10).
             policy_evt_id = self._new_event_id()
             decision_future: asyncio.Future[SpeakDecision] = asyncio.get_running_loop().create_future()
@@ -383,6 +452,7 @@ class StreamingRealtimeOrchestrator:
                 signal_event_ids=[signal_evt_id],
                 decision_id=policy_evt_id,
                 p_backchannel=signal.p_backchannel,
+                retrieval_event_ids=[mre_event_id],
             )
             trace_uri = self._decision_trace_store.write(trace)
 
@@ -390,7 +460,7 @@ class StreamingRealtimeOrchestrator:
                 self._make_event(
                     event_id=policy_evt_id,
                     event_type="policy_decision",
-                    caused_by=[signal_evt_id],
+                    caused_by=[signal_evt_id, mre_event_id],
                     payload_kind="signal",
                     extra_hash=decision.action_type,
                 ),
@@ -423,6 +493,39 @@ class StreamingRealtimeOrchestrator:
             )
             self._logger.log(trace_evt)
             decision_future.set_result(decision)
+
+            # --- Explicit-remember detection (fires unconditionally on intent) ---
+            # v0.1e: transcript not yet wired (no ASR); transcript="" matches no phrase.
+            transcript = ""
+            matched, extracted = _detect_explicit_remember(transcript)
+            if matched and extracted:
+                cand_event_id = self._new_event_id()
+                cand_payload = {
+                    "item_id": None,
+                    "store": "episodic",
+                    "content": {"text": extracted},
+                    "source_event_id": signal_evt_id,
+                    "privacy_mode": inputs.privacy_mode,
+                    "subject_class": "self",
+                    "privacy_level": "user_content",
+                    "mutability": "user_only",
+                    "retention_policy_id": "ep_default_30d",
+                    "sensitivity": "sensitive",
+                }
+                self._store_payload(cand_event_id, cand_payload)
+                cand_event = dataclasses.replace(
+                    self._make_event(
+                        event_id=cand_event_id,
+                        event_type="memory_write_candidate",
+                        caused_by=[signal_evt_id],
+                        payload_kind="memory_op",
+                    ),
+                    subject_class="self",
+                    sensitivity="sensitive",
+                    retention_policy_id="ep_default_30d",
+                    payload_ref=f"orchestrator://{cand_event_id}",
+                )
+                self._logger.log(cand_event)
 
             # Open a new batch window for T3.
             self._batch_close_event.clear()
@@ -603,6 +706,19 @@ class StreamingRealtimeOrchestrator:
                 except (asyncio.CancelledError, Exception):
                     pass
             self._barge_in_in_flight = False
+
+    # ------------------------------------------------------------------
+    # Memory payload helpers
+    # ------------------------------------------------------------------
+
+    def _fifo_evict_if_full(self) -> None:
+        """Evict oldest entry when the payload dict is at capacity."""
+        while len(self._memory_event_payloads) >= MEMORY_EVENT_PAYLOADS_CAP:
+            self._memory_event_payloads.popitem(last=False)
+
+    def _store_payload(self, event_id: str, payload: dict) -> None:
+        self._fifo_evict_if_full()
+        self._memory_event_payloads[event_id] = payload
 
     # ------------------------------------------------------------------
     # Event construction helpers
