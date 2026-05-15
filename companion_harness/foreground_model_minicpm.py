@@ -33,7 +33,6 @@ Usage:
 
 from __future__ import annotations
 
-import threading
 from typing import AsyncGenerator, AsyncIterator
 
 import numpy as np
@@ -129,8 +128,6 @@ class MiniCPMStreamingModel:
             self._duplex = base.as_duplex(generate_audio=False)
         finally:
             base.init_tts = _orig_init_tts  # type: ignore[method-assign]
-
-        self._lock = threading.Lock()  # duplex state is stateful; one stream at a time
 
     def infer(self, audio_frame: bytes, video_frame: bytes | None = None) -> ThinkerProposal | None:
         """DuplexModel Protocol stub — single-frame path not used for streaming."""
