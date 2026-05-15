@@ -54,13 +54,13 @@ def decide(
         return _silence(ReasonCode.NOT_ADDRESSED_TO_AGENT, caused_by)
 
     # 2. User is still speaking — wait.
-    # NOTE: ReasonCode lacks a precise "EOU not confirmed / turn not handed off" code;
-    # NOT_ADDRESSED_TO_AGENT is the least-wrong available value.
+    # NOT_ADDRESSED_TO_AGENT covers all "turn not yet handed off" cases (see
+    # reason_codes.py docstring and audit note); branches are distinguishable
+    # in replay via DecisionTrace.threshold_path. Gap closed — no new member needed.
     if inputs.user_speaking:
         return _silence(ReasonCode.NOT_ADDRESSED_TO_AGENT, caused_by)
 
     # 3. EOU not confirmed — silence wins ties (invariant #8: tie goes to silence).
-    # NOTE: same gap — no dedicated EOU-threshold code in ReasonCode enum.
     if inputs.eou_probability <= 0.5:
         return _silence(ReasonCode.NOT_ADDRESSED_TO_AGENT, caused_by)
 

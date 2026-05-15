@@ -2,6 +2,52 @@
 
 See docs/architecture-v0.1.md §Part 5 for the canonical enum members; the
 enum is the policy-replay-safe substrate for "why did you say that?".
+
+--- Stage 3 gap-audit conclusion (2026-05-14) ---
+
+Audit scope: Part 5 (canonical enum list) and Part 6 Stage 3 (speak/silence
+policy rules, action type set, per-mode config) against the current enum.
+
+Stage 3 action types and the members that serve them:
+
+  silence             — NOT_ADDRESSED_TO_AGENT (social mode block, turn not
+                        confirmed), COOLDOWN_BLOCKED, QUIET_MODE_BLOCKED,
+                        PRIVACY_MODE_BLOCKED, VISUAL_LOW_CONFIDENCE
+  backchannel         — BACKCHANNEL_DETECTED
+  short_reaction      — PROACTIVITY_BUDGET_AVAILABLE
+  full_response       — EOU_CONFIRMED (primary), USER_ADDRESSED_AGENT (supporting)
+  clarification       — AUDIO_VISUAL_CONFLICT, DEICTIC_AMBIGUOUS
+  alert               — ALERT_THRESHOLD_EXCEEDED
+  tool_status         — PROACTIVITY_BUDGET_AVAILABLE
+  aesthetic_reaction  — PROACTIVITY_BUDGET_AVAILABLE (when permitted);
+                        COOLDOWN_BLOCKED (when rate-limit exhausted);
+                        QUIET_MODE_BLOCKED (when task-mode disables it,
+                        e.g. creative_focus / cooking — these are mode-based
+                        blocks, the same semantic class as QUIET_MODE_BLOCKED)
+
+Gaps found: NONE.
+
+Two candidates were evaluated:
+
+1. Aesthetic-reaction budget-exhausted vs. general cooldown: the spec's
+   counterfactuals example uses the free-text key "aesthetic_reaction_cooldown"
+   inside DecisionTrace.counterfactuals (not a ReasonCode), meaning the
+   distinction is captured there. COOLDOWN_BLOCKED is correct as the
+   primary_reason_code.
+
+2. Task-mode suppression (creative_focus / cooking disabling aesthetic_reaction):
+   QUIET_MODE_BLOCKED covers this — both are mode-based policy blocks. The spec
+   does not enumerate a separate code for task-mode suppression.
+
+EOU NOTE resolution: see speak_policy.py for the pre-existing NOTE — it is
+documented as closed there. Summary: the three silence branches that use
+NOT_ADDRESSED_TO_AGENT (social mode block, user still speaking, EOU probability
+below threshold) all reduce to "the agent has not received a confirmed turn
+handoff." In policy replay the branches are distinguished by DecisionTrace
+.threshold_path, not solely by primary_reason_code. A dedicated EOU_NOT_CONFIRMED
+code would add precision but is not enumerated in the Part 5 spec and the
+"extend cautiously" guidance (Part 5, line following SAFETY_OVERRIDE) applies.
+Closing the NOTE without adding a new member is the correct, minimal outcome.
 """
 
 from enum import Enum
@@ -23,6 +69,27 @@ class ReasonCode(Enum):
     AUDIO_VISUAL_CONFLICT        = "AUDIO_VISUAL_CONFLICT"
 
 
-ReasonCode.DEICTIC_AMBIGUOUS.__doc__     = "The deictic reference cannot be resolved to a single candidate."
-ReasonCode.VISUAL_LOW_CONFIDENCE.__doc__ = "The grounding result confidence is below the hallucination-resistance threshold."
-ReasonCode.AUDIO_VISUAL_CONFLICT.__doc__ = "The audio query and visual scene contradict."
+ReasonCode.EOU_CONFIRMED.__doc__                = "EOU is confirmed and the turn has been handed off to the agent."
+ReasonCode.USER_ADDRESSED_AGENT.__doc__         = "The user explicitly directed speech or attention to the agent."
+ReasonCode.NOT_ADDRESSED_TO_AGENT.__doc__       = (
+    "The agent has not received a confirmed turn handoff: covers social-mode "
+    "blocks (other humans talking), user still speaking, and EOU probability "
+    "below threshold. Distinguishable in replay via DecisionTrace.threshold_path."
+)
+ReasonCode.BACKCHANNEL_DETECTED.__doc__         = "High backchannel probability — user is acknowledging, not yielding the turn."
+ReasonCode.ALERT_THRESHOLD_EXCEEDED.__doc__     = "An urgency/alert threshold was crossed; alert action type is warranted."
+ReasonCode.PROACTIVITY_BUDGET_AVAILABLE.__doc__ = "Proactivity budget permits a short_reaction, aesthetic_reaction, or tool_status."
+ReasonCode.COOLDOWN_BLOCKED.__doc__             = (
+    "A per-action-type cooldown is active (e.g. aesthetic_reaction rate-limit "
+    "exhausted); silence wins."
+)
+ReasonCode.QUIET_MODE_BLOCKED.__doc__           = (
+    "A mode-based policy block suppresses the action: covers user-facing quiet "
+    "mode and task-mode disabling of aesthetic_reaction "
+    "(creative_focus / cooking / sleep_winddown / group_unaddressed)."
+)
+ReasonCode.PRIVACY_MODE_BLOCKED.__doc__         = "Privacy mode policy prohibits the action (e.g. guest present, sensitive conversation)."
+ReasonCode.SAFETY_OVERRIDE.__doc__              = "Safety policy overrides normal speak/silence logic."
+ReasonCode.DEICTIC_AMBIGUOUS.__doc__            = "The deictic reference cannot be resolved to a single candidate."
+ReasonCode.VISUAL_LOW_CONFIDENCE.__doc__        = "The grounding result confidence is below the hallucination-resistance threshold."
+ReasonCode.AUDIO_VISUAL_CONFLICT.__doc__        = "The audio query and visual scene contradict."
