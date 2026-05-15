@@ -120,3 +120,30 @@ def test_audio_visual_conflict_default_zero():
     """PolicyInputs default audio_visual_conflict_score=0.0 — existing tests unaffected."""
     inputs = _inputs()
     assert inputs.audio_visual_conflict_score == 0.0
+
+
+# Task 7 — alert-threshold gate tests
+
+def test_alert_cooking_urgency_above_low_threshold():
+    """cooking mode + urgency_score=0.5 > low threshold (0.3) → alert with ALERT_THRESHOLD_EXCEEDED."""
+    result = decide(_inputs(current_task_mode="cooking", urgency_score=0.5), ["sig-1"])
+    assert result.action_type == "alert"
+    assert result.primary_reason_code == ReasonCode.ALERT_THRESHOLD_EXCEEDED
+
+
+def test_alert_creative_focus_urgency_below_high_threshold():
+    """creative_focus + urgency_score=0.4 < high threshold (0.85) → does NOT fire alert (falls through)."""
+    result = decide(
+        _inputs(current_task_mode="creative_focus", urgency_score=0.4, user_addressed_agent=True),
+        ["sig-1"],
+    )
+    assert result.action_type != "alert"
+
+
+def test_alert_determinism():
+    """Same inputs → bit-identical SpeakDecision for alert branch (invariant #5)."""
+    inputs = _inputs(current_task_mode="cooking", urgency_score=0.5)
+    d1 = decide(inputs, ["sig-1"])
+    d2 = decide(inputs, ["sig-1"])
+    assert d1 == d2
+    assert d1.action_type == "alert"
