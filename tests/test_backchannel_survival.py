@@ -105,18 +105,25 @@ def _replay_sub_case(
     decisions = []
     for frame in real_frames:
         signal = classifier.process_frame(b"\x00" * 64, caused_by=[frame["frame_id"]])
-        assert signal is not None
+        # Sub-threshold frames (e.g. p_backchannel=0.05/0.10) are suppressed by
+        # the classifier (no event, no TurnSignal) — see Finding 3 fix. The policy
+        # then sees p_backchannel=0.0 ("no backchannel detected"), which is the
+        # correct semantic for a noise-floor frame. We still need a non-empty
+        # signal_event_ids for DAG closure (speak_policy invariant); the frame_id
+        # is the causal predecessor in lieu of a backchannel_classification event.
+        signal_event_ids = signal.evidence_event_ids if signal is not None else [frame["frame_id"]]
+        p_backchannel = signal.p_backchannel if signal is not None else 0.0
         decision = speak_policy.decide(
             _inputs_from_frame(frame),
-            signal_event_ids=signal.evidence_event_ids,
-            p_backchannel=signal.p_backchannel,
+            signal_event_ids=signal_event_ids,
+            p_backchannel=p_backchannel,
         )
         decisions.append({
             "frame_id": frame["frame_id"],
             "t_ms": frame["t_ms"],
             "action_type": decision.action_type,
             "reason_code": decision.primary_reason_code,
-            "p_backchannel": signal.p_backchannel,
+            "p_backchannel": p_backchannel,
         })
 
     return decisions
