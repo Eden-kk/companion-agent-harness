@@ -11,6 +11,10 @@ from __future__ import annotations
 
 from companion_harness.reason_codes import ReasonCode
 from companion_harness.schemas import PolicyInputs, SpeakDecision
+from companion_harness.speak_policy_config import (
+    SPEC_ALERT_THRESHOLD,
+    _LEVEL_TO_FLOAT_THRESHOLD,
+)
 
 POLICY_VERSION = "v0.1a"
 
@@ -52,6 +56,23 @@ def decide(
     # 1. Hard blocks — silence immediately, no further evaluation.
     if inputs.social_mode in _BLOCKING_SOCIAL_MODES:
         return _silence(ReasonCode.NOT_ADDRESSED_TO_AGENT, caused_by)
+
+    # 1b. Alert-threshold gate — safety-critical; precedes user_speaking so alerts
+    # fire even mid-speech (spec Part 6 Stage 3: crisis mode lowers alert threshold;
+    # safety alerts override the budget and EOU gate).
+    _alert_level = getattr(SPEC_ALERT_THRESHOLD, inputs.current_task_mode, "medium")
+    _alert_float = _LEVEL_TO_FLOAT_THRESHOLD[_alert_level]
+    if inputs.urgency_score > _alert_float:
+        return SpeakDecision(
+            action_type="alert",
+            primary_reason_code=ReasonCode.ALERT_THRESHOLD_EXCEEDED,
+            supporting_reason_codes=[],
+            redacted_explanation=None,
+            caused_by=caused_by,
+            budget_bucket="alert",
+            allowed_prosody_tags=[],
+            max_duration_ms=None,
+        )
 
     # 2. User is still speaking — wait.
     # NOT_ADDRESSED_TO_AGENT covers all "turn not yet handed off" cases (see
