@@ -13,14 +13,39 @@ import hashlib
 import time
 from collections.abc import AsyncIterable, Callable, Awaitable
 from datetime import datetime, timezone
+from pathlib import Path
 
 from companion_harness.event_logger import EventLogger
 from companion_harness.schemas import Event
 
-__all__ = ["AudioSink", "AudioOutputController"]
+__all__ = ["AudioSink", "FileAudioSink", "AudioOutputController"]
 
 # AudioSink is an injected callback — no hardware/SDK dependency here.
 AudioSink = Callable[[bytes], Awaitable[None]]
+
+
+class FileAudioSink:
+    """AudioSink implementation that appends audio bytes to a file.
+
+    Accepts a path at construction; creates or truncates the file on first write.
+    Compatible with AudioOutputController's injected AudioSink callable seam.
+    No audio SDK or hardware dependency.
+    """
+
+    def __init__(self, path: str | Path) -> None:
+        self._path = Path(path)
+        self._file = None
+
+    async def __call__(self, chunk: bytes) -> None:
+        if self._file is None:
+            self._file = self._path.open("wb")
+        self._file.write(chunk)
+        self._file.flush()
+
+    def close(self) -> None:
+        if self._file is not None:
+            self._file.close()
+            self._file = None
 
 
 class AudioOutputController:
