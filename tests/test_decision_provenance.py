@@ -15,12 +15,18 @@ vacuous passes on empty traces.
 """
 
 import asyncio
+from collections.abc import AsyncIterator
 
 import pytest
 
 from companion_harness.audio_output_controller import AudioOutputController
 from companion_harness.event_logger import EventLogger
 from companion_harness.schemas import Event
+
+
+async def _agen(chunks: list[bytes]) -> AsyncIterator[bytes]:
+    for chunk in chunks:
+        yield chunk
 
 _AUDIO_START = "assistant_generation_start"
 
@@ -71,7 +77,7 @@ async def test_decision_provenance():
         gen_id = controller.start_generation(caused_by=[utt["policy_event"]])
         for chunk in utt["chunks"]:
             controller.queue_buffer(chunk, caused_by=[gen_id])
-        await controller.play(utt["chunks"], generation_event_id=gen_id)
+        await controller.play(_agen(utt["chunks"]), generation_event_id=gen_id)
 
     await logger.stop()
 
