@@ -65,7 +65,6 @@ Can be tuned at runtime via the dashboard. Each change emits a `config_change` e
 | **VAD detector** | | | | |
 | `_SPEECH_THRESHOLD` | 0.5 | `companion_harness/turn_detector_vad.py:26` | spec-silent | Frame-level `p_speech` gate. Above → "in speech". |
 | `_SILENCE_ONSET_MS` (VAD) | 300 | `companion_harness/turn_detector_vad.py:27` | **borderline — see §11 OQ-2** | Consecutive silence (ms) required to emit EOU. Spec lines 466–472 ("eou_policy") talk about it qualitatively but pin no number. The corresponding `physical_user_speech_onset_to_stop_ms_p95` (line 914) is Tier A; this knob is one of several inputs to that gate, but the gate is the budget, not the knob. |
-| `frame_duration_ms` (VAD) | 32 | `companion_harness/turn_detector_vad.py:60` | spec-silent | Frame size in ms. Adjustable but rarely useful to tune mid-session; consider whether to expose. |
 | **Smart-turn detector** | | | | |
 | `_SILENCE_ONSET_MS` (SmartTurn) | 300 | `companion_harness/turn_detector_smart.py:46` | same as VAD's `_SILENCE_ONSET_MS` | Independent default — same caveat as VAD. |
 | `_SILENCE_RMS_THRESHOLD` | 100 | `companion_harness/turn_detector_smart.py:47` | spec-silent | RMS energy gate for silence-candidate detection. |
@@ -96,6 +95,19 @@ Can be tuned, but only by editing `manual_test_console/config.yaml` and restarti
 | `MEMORY_EVENT_PAYLOADS_CAP` | 1024 | `companion_harness/realtime_orchestrator.py:78` | FIFO cap; changing mid-session would cause silent eviction-rate change with no operator-visible reason. |
 | `_AUDIO_QUEUE_BOUND` / `_TURN_SIGNAL_QUEUE_BOUND` / `_POLICY_DECISIONS_QUEUE_BOUND` | 64 / 32 / 8 | `companion_harness/realtime_orchestrator.py:103-105` | Queue depths are construction-time; changing them after `start()` is silently no-op. |
 
+### §1.5 — Dynamic signals — NOT in scope of this design
+
+The following parameters are populated at runtime by real detectors / classifiers / user commands. They are NOT tunable thresholds. The dashboard is the wrong surface — they aren't tuning knobs, they are observations or state. When the corresponding signal source is wired (e.g., `AttachmentRiskMonitor` for `attachment_risk_level`, a real `SceneScorer` for `scene_change_score`, user commands for `quiet_mode_active`), it populates the field dynamically. Forcing them via dashboard would be **scenario-injection**, not threshold-tuning, and is explicitly out of this design's scope.
+
+| Parameter | Why dynamic / out of scope |
+|---|---|
+| `urgency_score` | Should come from a real urgency detector (visual safety classifier, audio keyword detector, sensor fusion). Spec is silent on derivation; see `docs/design-audio-path-v0.1f.md` §4.3. |
+| `attachment_risk_level` | Should come from `AttachmentRiskMonitor` (v0.1g Anchor 2 / `docs/roadmap-v0.1g-draft.md`). |
+| `quiet_mode_active` | First-class user command per invariant #7 ("user commands are first-class"). Set by speech command, not by dashboard. |
+| `short_response_appropriate` | Should come from a trigger detector (e.g., visual surprise + recent silence). |
+| `audio_visual_conflict_score` / `grounding_confidence` / `scene_change_score` / `deictic_reference` / `deictic_ambiguous` / `aesthetic_novelty_score` | All vision-/foreground-derived. Real models deferred per `docs/plan-vision-sidecar-wiring.md` Anchor 5. |
+| `privacy_mode` / `social_mode` / `current_task_mode` / `risk_mode` defaults | Mode state, set by detectors (speaker diarization, activity recognition) or user commands. Not thresholds. |
+
 ---
 
 ## §2 — Config file design
@@ -124,7 +136,6 @@ detectors:
   vad:
     speech_threshold:   0.5            # turn_detector_vad.py:26
     silence_onset_ms:   300            # turn_detector_vad.py:27 — see §11 OQ-2
-    frame_duration_ms:  32             # turn_detector_vad.py:60
   smart_turn:
     silence_onset_ms:      300         # turn_detector_smart.py:46
     silence_rms_threshold: 100         # turn_detector_smart.py:47
@@ -173,45 +184,118 @@ Three layers, in priority order:
 
 ## §4 — Dashboard UI
 
-A new panel is added to `manual_test_console/index.html`. The existing layout (header strip + two-column `<main>` with ingest rows / signal rows) stays intact; the panel is appended as a third pane or a collapsible section. Exact placement is a polish detail.
+### Page layout
 
-Sketch:
+The threshold-tuning panel is a **collapsible third column on the right** (or a slide-in drawer triggered by a `[⚙ Tuning]` button in the header). The existing 2-column layout (ingest events on left, signal events on center) is unchanged when the panel is hidden.
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│ Threshold tuning (Tier B)                            [reset all]│
-├─────────────────────────────────────────────────────────────────┤
-│ Policy                                                          │
-│   Backchannel threshold        [====●========]  0.70            │
-│   AV conflict threshold        [====●========]  0.70            │
-│   Grounding confidence         [===●=========]  0.50            │
-│                                                                 │
-│ Detectors                                                       │
-│   VAD speech threshold         [===●=========]  0.50            │
-│   VAD silence onset (ms)       [==●==========]  300             │
-│   SmartTurn silence onset (ms) [==●==========]  300             │
-│   SmartTurn silence RMS thresh [==●==========]  100             │
-│   Backchannel emit threshold   [●============]  0.30            │
-│                                                                 │
-│ Orchestrator                                                    │
-│   Proposal batch window (ms)   [=●===========]  80              │
-│   Hard cancel after (ms)       [==●==========]  120             │
-│   p_speech_thresh              [===●=========]  0.50            │
-│   p_backchannel_thresh         [====●========]  0.70            │
-│                                                                 │
-│ (Tier A / Tier C parameters are not editable; see config.yaml)  │
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│ manual-test console                            🔊 audio-out: connected  [⚙ Tuning]│
+├────────────────────────┬─────────────────────────────┬───────────────────────────┤
+│ Ingested input         │ Signals / Decisions         │ Threshold tuning   [≪ hide]│
+│ ──────────────────────│ ──────────────────────────  │ ────────────────────────  │
+│ raw_audio_chunk    042│ vad_frame       p=0.81      │ Policy             [reset]│
+│ raw_audio_chunk    043│ smart_turn_signal           │   Backchannel thresh      │
+│ raw_audio_chunk    044│ policy_decision             │   0.70  ●═══════════════  │
+│ ...                   │   action_type: full_response│   default 0.70  min 0.40  │
+│                       │   reason: EOU_CONFIRMED     │                  max 0.95 │
+│                       │ assistant_audio_buffer_*    │ ─────────────────────────│
+│                       │ ...                         │ Detectors          [reset]│
+│                       │                             │ ...                       │
+│                       │                             │ Orchestrator       [reset]│
+│                       │                             │ ...                       │
+│                       │                             │ Recent config changes     │
+│                       │                             │   • 14:32:18 BC 0.7→0.5   │
+└────────────────────────┴─────────────────────────────┴───────────────────────────┘
 ```
 
-UI details:
+### Per-slider widget
 
-- Each row is a `<label>` + `<input type="range">` + numeric readout.
-- Slider min/max/step come from the per-key schema entry (§5 validation).
-- On `input` event (live drag), no patch is sent — only the readout updates locally.
-- On `change` event (release), a fetch `POST /config/patch` is sent with `{ key, value }`.
-- `[reset all]` button POSTs to `/config/reset` to restore all Tier-B keys to their code-time defaults.
-- Server response is mirrored back to the slider readout to confirm the new effective value (or surface an error toast if the patch was rejected — out-of-range, schema mismatch).
-- A "frozen" expandable section shows Tier-A values as read-only chips, labeled "frozen by spec — see Part 8 / invariant #5". No way to edit; informational only. (Phase 1 implementation may defer the frozen section; it's optional.)
+Each row: label, current value, slider, range hint, one-line explanation.
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ Backchannel threshold                            [↺]    │
+│ 0.70  ●═══════════════                                  │
+│ default 0.70  •  min 0.40  •  max 0.95  •  step 0.01    │
+│ Above this p_backchannel, EOU → backchannel action      │
+└─────────────────────────────────────────────────────────┘
+```
+
+Visual states:
+- **At default** — slider track gray, readout normal weight, no badge.
+- **Modified from default** — slider track blue, readout bold, `(modified)` badge next to label, per-slider `[↺]` reset active.
+- **Awaiting server confirm** — readout shows `0.65 ⏳`; subtle slider knob pulse.
+- **Server rejected** — readout reverts; row red flash; toast: *"<key> value rejected: out of range (min ..., max ...)"*. Auto-dismiss 3s.
+- **Inert parameter** (vision stubs etc.) — slider renders; yellow note under explanation: *"⚠ Inert: vision scoring is stubbed; this threshold has no effect until real grounding model is wired."*
+
+### Interaction model
+
+- **Drag** (local state only) — readout updates as user drags; no HTTP fires per-pixel.
+- **Release** (commit) — POSTs `/config/patch {key, value}`. Readout shows `⏳`; on success row green-flashes for 200ms; on rejection readout reverts + toast.
+- **Per-slider `[↺]` reset** — POSTs `/config/patch {key, value: default}`. Single-key reset.
+- **Section `[reset]` reset** — POSTs `/config/reset {section: "<name>"}`. Resets all keys in section.
+- **Global `[reset all]`** (top of panel) — POSTs `/config/reset {}`. Resets every Tier-B key.
+
+### Visual hierarchy
+
+Three sections in fixed order:
+
+1. **Policy** (3 sliders: BC threshold, AV conflict, grounding) — highest-impact, default expanded.
+2. **Detectors** (5 sliders: VAD speech, VAD onset, SmartTurn onset, SmartTurn RMS, BC emit) — default expanded.
+3. **Orchestrator** (4 sliders: proposal_batch_window, hard_cancel_after, p_speech_thresh, p_backchannel_thresh) — default collapsed (most operators won't touch).
+
+### Recent config-changes audit tail
+
+At panel bottom, last 5 `config_change` events:
+
+```
+Recent config changes               [view full log →]
+─────────────────────────────────────────────────────
+14:32:18  Backchannel threshold      0.70 → 0.50
+14:32:45  VAD silence onset (ms)     300 → 250
+14:33:02  Backchannel threshold      0.50 → 0.45
+14:33:18  [reset all]                12 keys restored
+14:34:01  Proposal batch window (ms) 80 → 100
+```
+
+Each entry clickable → opens the full `config_change` event in the signals lane. Replay-debuggability: surfaces recent threshold changes that may have caused behavior shifts.
+
+### Tier-A informational box (Phase 1.5)
+
+Read-only collapsed section showing frozen-by-spec values (`POLICY_VERSION`, ASR `temperature`, spec-gate ms budgets, etc.). Default collapsed.
+
+### Keyboard shortcuts (Phase 2)
+
+- `Cmd/Ctrl + R` on focused slider — reset to default.
+- `Cmd/Ctrl + Shift + R` — global reset.
+- `↑`/`↓` on focused slider — increment/decrement by step.
+- `Cmd/Ctrl + ↑`/`↓` — by 10×step.
+
+### Optional behavior-preview header (Phase 1.5)
+
+Small panel-header note showing live last-60s aggregate:
+
+```
+Current behavior (last 60s):
+  EOU detections:    12  (avg 320ms onset)
+  backchannel:        5  (12% of decisions)
+  full_response:      4
+  silence:            3
+  log_drops:          0  ✓
+```
+
+### Responsiveness
+
+- Header `[⚙ Tuning]` toggles panel visibility.
+- When hidden, console returns to 2-column layout.
+- On ≤1024px width: panel slides over right column instead of pushing; `Esc` closes.
+
+### Phasing (within Phase 1)
+
+- **Phase 1 (MVP):** 3 sections × 12 sliders, per-slider/section/global reset, audit tail. Skip: Tier-A box, behavior preview, keyboard shortcuts.
+- **Phase 1.5:** add Tier-A box + behavior preview.
+- **Phase 2:** keyboard shortcuts; replay-deterministic wiring (the actual `config_change` consumption in replay per §6).
 
 ---
 
