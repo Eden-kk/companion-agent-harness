@@ -1,0 +1,63 @@
+# Signal-Source Routing Table
+
+Audit artifact for v0.1j. One row per `PolicyInputs` field (source:
+`companion_harness/schemas.py:142–166`). Every Wave 2–5 task PR must
+update the **Status** cell of its row before merging.
+
+**How to update:** When a producer-wiring task ships, change the row's
+`Status` from `stub+marker pending #N` to `final-product wired` and add
+the merged PR number to the Blocker/Notes cell.
+
+---
+
+| Field name | Consumer `file:line` | Current producer | Final-product producer (spec Part 9) | Spec citation | Blocker / Notes | Status |
+|---|---|---|---|---|---|---|
+| `user_speaking` | `speak_policy.py:94` | `live_pipeline.py:244` — derived from `max_p_done <= max_p_continue` across all TurnSignals from T1 queue | TurnDetector suite (VAD + SmartTurn v3); signal shape unchanged in final product | `architecture-v0.1.md:961–965` (TurnDetectorSuite) | None — derivation is correct-shape today | final-product wired |
+| `eou_probability` | `speak_policy.py:98` | `live_pipeline.py:245` — `max_p_done` from TurnSignals; primary: SmartTurn v3 + SemanticEOU | MiniCPM-o native duplex primary (`NativeDuplexPolicyProbe`); VAD + SmartTurn safety-net | `architecture-v0.1.md:965` (`NativeDuplexPolicyProbe`); roadmap-v0.1j-draft.md §C item 9 | issue #157 (libcudart blocks native_duplex); Task 8 | stub+marker pending #157 (Task 8) |
+| `assistant_speaking` | `speak_policy.py:94` (implicit via `user_speaking` path; not a direct gate today) | `live_pipeline.py:246` — hardcoded `False` (TTS barge-in detection not yet wired) | `AudioOutputController` barge-in signal per spec Part 3 | `architecture-v0.1.md:88` (`NativeDuplexPolicyProbe` barge-in) | No filed issue yet; deferred to v0.1j+ | stub+marker pending (unfiled) |
+| `scene_change_score` | `speak_policy.py` (indirect — not a direct gate; feeds aesthetic threshold context) | `live_pipeline.py:247` — hardcoded `0.0`; `VisionSidecar._NullSceneScorer` returns 0.0 | CLIP cosine distance (`VisionSidecar.SceneScorer`) | `architecture-v0.1.md:969` (CLIP cosine); roadmap-v0.1j-draft.md §D item 12 | issue #159 (CLIP scorer model selection); Task 3 | stub+marker pending #159 (Task 3) |
+| `deictic_reference` | `speak_policy.py:130,134` | `live_pipeline.py:248` — hardcoded `False`; `deictic_detector.py` exists but not invoked | XLLM 2025 lightweight (`DeicticDetector` → `XLLMDeicticModel`) | `architecture-v0.1.md:971` (XLLM 2025 lightweight); roadmap-v0.1j-draft.md §D item 13 | issue #158 (model selection); Task 4 | stub+marker pending #158 (Task 4) |
+| `user_addressed_agent` | `speak_policy.py:164` | `live_pipeline.py:249` — placeholder `False`; `realtime_orchestrator.py:423–431` `AddressingClassifier` (`WakeWordAddressingClassifier`) overrides post-ASR | MiniCPM-derived addressing classifier primary; `WakeWordAddressingClassifier` safety-net | `architecture-v0.1.md:965` (MiniCPM-o primary); roadmap-v0.1j-draft.md §C item 10 | issue #157 (libcudart) + #139 (existing); Task 9 | interim wired (WakeWord primary); pending #157 for final-product primary (Task 9) |
+| `urgency_score` | `speak_policy.py:77` | `live_pipeline.py:250` — hardcoded `0.0`; no producer | Safety-risk classifier (spec implies learned; no specific model named) | `architecture-v0.1.md` Part 6 Stage 3 (test_cooking_alert); roadmap-v0.1j-draft.md §A item 4 | issue #161 (classifier model selection); Task 10 | stub+marker pending #161 (Task 10) |
+| `proactivity_budget_remaining` | `speak_policy.py:149,257` | `live_pipeline.py:251` — hardcoded `{}`; budget management not yet implemented | Budget manager (spec Part 5; no specific model named) | `architecture-v0.1.md` Part 5 (budget accounting); roadmap-v0.1j-draft.md §Out of scope | No filed issue; budget manager deferred to v0.1g+ | stub+marker pending (unfiled; out of scope v0.1j) |
+| `privacy_mode` | `speak_policy.py:69` (via `social_mode` gate; privacy_mode also passed to memory commit) | `live_pipeline.py:252` — hardcoded `"normal"` (spec default for manual-test single-user) | User-controlled mode (consent layer); correct shape for single-user manual test | `architecture-v0.1.md` Part 4 (companion_state); invariant #7 | None — default is correct for current test scope | final-product wired (manual-test scope) |
+| `current_task_mode` | `speak_policy.py:75,184` | `live_pipeline.py:253` — hardcoded `"normal"` (spec default) | Task-context classifier or user command; correct shape for manual-test scope | `architecture-v0.1.md` Part 6 Stage 3 (task modes); roadmap-v0.1j-draft.md §Out of scope | None — default is correct for current test scope | final-product wired (manual-test scope) |
+| `social_mode` | `speak_policy.py:69` | `live_pipeline.py:254` — `"user_addressing_agent"` (single-user manual-test default) | Speaker diarization / multi-party detection; correct shape for single-user scope | `architecture-v0.1.md` Part 5 (social context); roadmap-v0.1j-draft.md §Out of scope | None — default is correct for current test scope | final-product wired (manual-test scope) |
+| `risk_mode` | `speak_policy.py:69` (via `social_mode` gate; `risk_mode` not a direct gate in current policy) | `live_pipeline.py:255` — hardcoded `"normal"` (spec default) | Risk classifier or user command; correct shape for manual-test scope | `architecture-v0.1.md` Part 4 (companion_state) | None — default is correct for current test scope | final-product wired (manual-test scope) |
+| `cooldown_state` | `speak_policy.py:186,273` | `live_pipeline.py:256` — hardcoded `{}`; cooldown tracking not yet wired from orchestrator | `SpeakPolicy` internal state written back per-decision and read next call; orchestrator must persist and pass | `architecture-v0.1.md` Part 5 (budget accounting) | No filed issue; cooldown persistence deferred | stub+marker pending (unfiled) |
+| `attachment_risk_level` | `speak_policy.py` (implicit via `proactivity_budget_remaining`; `AttachmentRiskMonitor` not yet in policy gate) | `live_pipeline.py:257` (derived from `realtime_loop.py:217`) — hardcoded `0.0`; `AttachmentRiskMonitor` exists (v0.1g schema) but not wired | `AttachmentRiskMonitor` (v0.1g Wave 3 Task 7); schema exists | `architecture-v0.1.md:843–857`; roadmap-v0.1g-draft.md Wave 3 Task 7; roadmap-v0.1j-draft.md §E item 15 | Wiring deferred to v0.1g Task 7 PR per §10 coordination lean | wired-but-unwired; deferred to v0.1g Task 7 |
+| `audio_visual_conflict_score` | `speak_policy.py:116` | `live_pipeline.py:258` — hardcoded `0.0` | Cross-modal conflict scorer; Protocol + stub (spec does not name specific model) | `architecture-v0.1.md` Part 6 Stage 2 (test_audio_visual_conflict); roadmap-v0.1j-draft.md §A item 2 | issue #160 (model selection); Task 6 | stub+marker pending #160 (Task 6) |
+| `grounding_confidence` | `speak_policy.py:130` | `live_pipeline.py:259` — hardcoded `1.0` (PR #155 set `_signals_to_policy_inputs` default to 0.0; live builder still 1.0 — pending Task 5) | MiniCPM-o vision tower via `VisionSidecar.ground()` (`GroundingModel`) | `architecture-v0.1.md:955` (MiniCPM-o 4.5); `plan-vision-sidecar-wiring.md` Anchor 5; roadmap-v0.1j-draft.md §A item 1 | issue #158 (model selection); Task 5 — also fix live builder default 1.0 → 0.0 | stub+marker pending #158 (Task 5) |
+| `deictic_ambiguous` | `speak_policy.py:134` | `live_pipeline.py:260` — hardcoded `False` | Derived from `DeicticDetector.top_k()` — top-2 candidates within 0.1 score → ambiguous | `architecture-v0.1.md:971`; roadmap-v0.1j-draft.md §A item 3 | issue #158 (shared with Task 4); Task 7 (folds into Task 4 PR) | stub+marker pending #158 (Task 7, folds into Task 4) |
+| `quiet_mode_active` | `speak_policy.py:184` | No live-path producer; field defaults `False`; set only in fixture payloads directly | User command (`quiet mode` / `less proactive`) per invariant #7 | `architecture-v0.1.md` invariant #7; `schemas.py:159` | No filed issue; user-command routing deferred to v0.1g+ | stub+marker pending (unfiled; v0.1g+) |
+| `aesthetic_novelty_score` | `speak_policy.py:183` | No live-path producer; field defaults `0.0` | `ThinkerProposalGen` novelty score (spec Part 9: Inner Thoughts five-stage loop on distilled MiniCPM-o) | `architecture-v0.1.md:986–988` (ThinkerProposalGen); roadmap-v0.1g-draft.md (texture stage) | No filed issue; ThinkerProposalGen wiring deferred to v0.1g+ | stub+marker pending (unfiled; v0.1g+) |
+| `short_response_appropriate` | `speak_policy.py:148` | No live-path producer; field defaults `False` | `ThinkerProposalGen` or texture classifier (v0.1g Stage 6 surface) | `architecture-v0.1.md:986–988`; roadmap-v0.1j-draft.md §D item 14 (out of scope) | Out of scope per v0.1j §Out of scope | out-of-scope per v0.1j roadmap |
+| `retrieved_items` | `realtime_orchestrator.py:468` (`set_context`), `realtime_orchestrator.py:471` | `realtime_orchestrator.py:436–471` — `EpisodicMemoryStore.retrieve("")` + `SemanticRelationalStore.retrieve("")` with empty query | `MemoryManager` hybrid retrieval (Mem0 per spec Part 9) with real ASR transcript query; Task 11 wires non-empty query | `architecture-v0.1.md:976–978` (MemoryManager / Mem0); roadmap-v0.1j-draft.md §B item 7 | Task 11 (replace `query=""` with transcript); issue #163 (query_terms tokenization) | stub (empty query); Task 11 wires transcript |
+| `tool_progress_evidence` | `speak_policy.py` (not a direct gate; passed through for `SpeakDecision` content routing) | No live-path producer; field defaults `None`; emitted only when a `ToolProgressEvent` fires (invariant #9) | `ToolDispatcher` — MCP in-process or background reasoner (spec Part 9) | `architecture-v0.1.md` invariant #9; `companion_harness/tool_progress.py`; roadmap-v0.1f (Anchor 4) | No filed issue; `ToolDispatcher` wiring deferred to v0.1f+ Stage 5 (see `docs/adr/toolstatus-deferred-stage5.md`) | deferred per Stage 5 ADR |
+| `user_transcript` | `realtime_orchestrator.py:414` (set); `realtime_orchestrator.py:437,440` (retrieval query — currently `""`; Task 11) | `realtime_orchestrator.py:414` — ASR output set post-EOU from `foreground_model.transcribe()` result; PR #154 wired `asr_transcript_emitted` event | MiniCPM-o 4.5 native ASR (via `ForegroundModel` adapter); correct final-product shape | `architecture-v0.1.md:954–955` (ForegroundModel MiniCPM-o 4.5) | None for ASR path; Task 11 uses this value for retrieval query | final-product wired (ASR); retrieval usage pending Task 11 |
+
+---
+
+## Survey items coverage
+
+All 15 (+ 2 bonus) surveyed mismatches from `roadmap-v0.1j-draft.md` §The 15 surveyed signal-source mismatches are covered:
+
+| Survey # | Category | Field / component | Routing-table row |
+|---|---|---|---|
+| 1 | A (stub-constant) | `grounding_confidence` | `grounding_confidence` row |
+| 2 | A | `audio_visual_conflict_score` | `audio_visual_conflict_score` row |
+| 3 | A | `deictic_ambiguous` | `deictic_ambiguous` row |
+| 4 | A | `urgency_score` | `urgency_score` row |
+| 5 | A | `user_addressed_agent` (two-path split) | `user_addressed_agent` row |
+| 6 | B (lexicon/heuristic) | `urgency_score` (no producer) | `urgency_score` row |
+| 7 | B | Memory retrieval `query=""` | `retrieved_items` row |
+| 8 | B | Backchannel classifier (ASR+lexicon) | **OUT OF SCOPE** per v0.1j §Out of scope — flagged here; deferred |
+| 9 | C (wrong-shape) | EOU (`eou_probability`) | `eou_probability` row |
+| 10 | C | Addressing (`user_addressed_agent`) | `user_addressed_agent` row |
+| 11 | C | TTS (Kokoro interim) | **not a `PolicyInputs` field** — tracked via `foreground_model_minicpm.py:131–139`; Task 14 |
+| 12 | D (missing) | `scene_change_score` | `scene_change_score` row |
+| 13 | D | `deictic_reference` | `deictic_reference` row |
+| 14 | D | `short_response_appropriate` | `short_response_appropriate` row |
+| 15 | E (wired-but-unwired) | `attachment_risk_level` | `attachment_risk_level` row |
+| 16 | E | `init_tts` no-op patch | not a `PolicyInputs` field — Task 14 |
+| 17 | E | `SleepTimeAgent` unwired | not a `PolicyInputs` field — Task 12 |
