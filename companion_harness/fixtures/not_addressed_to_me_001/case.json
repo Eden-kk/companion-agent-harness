@@ -16,20 +16,127 @@
   "consent_class": "synthetic_eval",
   "description": "Two humans are talking near the device; the audio is conversational but the speech is not addressed to the agent. The speak policy must produce silence — NOT a full_response or backchannel — because the utterance is classified as not addressed to the agent. This tests the invariant that proactive speech requires policy approval (invariant #4) and that silence wins ties (invariant #8) when addressee confidence is below threshold.",
   "fixture_conventions": {
-    "skeleton_note": "Per-frame signal values are placeholders. Finalize at Stage 3 activation when the addressee-classification adapter and its confidence threshold are specified.",
-    "addressee_p_self": "Scripted probability [0.0, 1.0] that the utterance is addressed to the agent. < threshold => NOT_ADDRESSED_TO_AGENT branch fires.",
-    "addressee_threshold": "Placeholder — to be set at Stage 3 activation (expected ~0.5).",
-    "expected_action_class": "silence — the agent must not speak when not addressed.",
-    "expected_reason_code": "NOT_ADDRESSED_TO_AGENT",
-    "frame_duration_ms": "32 — to be confirmed at Stage 3 activation.",
+    "stage": 3,
+    "sub_cases": "Two sub-cases: 'blocking' (social_mode in _BLOCKING_SOCIAL_MODES) and 'non_blocking' (social_mode not in _BLOCKING_SOCIAL_MODES, EOU confirmed, agent addressed).",
+    "frame_split": "Frames 000-002 are sub-case 'blocking' (social_mode=user_addressing_other). Frames 100-102 are sub-case 'non_blocking' (social_mode=user_addressing_agent, eou_probability=0.9, user_addressed_agent=true).",
+    "blocking_design": "social_mode=user_addressing_other is in _BLOCKING_SOCIAL_MODES; decide() returns silence/NOT_ADDRESSED_TO_AGENT at hard-block step 1, before any EOU or budget checks.",
+    "non_blocking_design": "social_mode=user_addressing_agent is NOT in _BLOCKING_SOCIAL_MODES; decide() proceeds past step 1. With eou_probability=0.9 and user_addressed_agent=true, the policy reaches step 9 and returns full_response/EOU_CONFIRMED. This is the load-bearing negative sub-case confirming the social_mode gate does not over-block.",
     "expected_events_markers": "event_type strings are fixture-internal role labels, not Part 5 event_type values."
   },
-  "signal_trace": {
-    "status": "skeleton",
-    "frames": [
-      {"t_ms": 0,   "frame_id": "frame-000", "event_type": "user_speech_start",       "addressee_p_self": null, "notes": "PLACEHOLDER — speech onset; two humans conversing near device"},
-      {"t_ms": 32,  "frame_id": "frame-001", "event_type": "user_speech_active",      "addressee_p_self": null, "notes": "PLACEHOLDER — speech active"},
-      {"t_ms": 64,  "frame_id": "frame-002", "event_type": "addressee_classification","addressee_p_self": null, "resolution_frame": true, "expected_action_class": "silence", "expected_reason_code": "NOT_ADDRESSED_TO_AGENT", "notes": "PLACEHOLDER — addressee classification fires; p_self < threshold; policy must produce silence"}
-    ]
-  }
+  "signal_trace": [
+    {
+      "t_ms": 0,
+      "frame_id": "frame-000",
+      "sub_case": "blocking",
+      "event_type": "user_speech_start",
+      "timestamp_mono_ms": 0,
+      "seq_no": 0,
+      "social_mode": "user_addressing_other",
+      "user_speaking": true,
+      "eou_probability": 0.2,
+      "user_addressed_agent": false,
+      "urgency_score": 0.1,
+      "audio_visual_conflict_score": 0.0,
+      "notes": "BLOCKING CASE: two humans conversing; social_mode=user_addressing_other; speech onset"
+    },
+    {
+      "t_ms": 32,
+      "frame_id": "frame-001",
+      "sub_case": "blocking",
+      "event_type": "user_speech_active",
+      "timestamp_mono_ms": 32,
+      "seq_no": 1,
+      "social_mode": "user_addressing_other",
+      "user_speaking": true,
+      "eou_probability": 0.3,
+      "user_addressed_agent": false,
+      "urgency_score": 0.1,
+      "audio_visual_conflict_score": 0.0,
+      "notes": "blocking case: speech active; social_mode still user_addressing_other"
+    },
+    {
+      "t_ms": 64,
+      "frame_id": "frame-002",
+      "sub_case": "blocking",
+      "event_type": "addressee_classification",
+      "timestamp_mono_ms": 64,
+      "seq_no": 2,
+      "social_mode": "user_addressing_other",
+      "user_speaking": false,
+      "eou_probability": 0.8,
+      "user_addressed_agent": false,
+      "urgency_score": 0.1,
+      "audio_visual_conflict_score": 0.0,
+      "resolution_frame": true,
+      "expected_action_class": "silence",
+      "expected_reason_code": "NOT_ADDRESSED_TO_AGENT",
+      "notes": "BLOCKING GATE FRAME: social_mode=user_addressing_other in _BLOCKING_SOCIAL_MODES; decide() returns silence/NOT_ADDRESSED_TO_AGENT at hard-block step 1"
+    },
+    {
+      "t_ms": 5000,
+      "frame_id": "frame-100",
+      "sub_case": "non_blocking",
+      "event_type": "user_speech_start",
+      "timestamp_mono_ms": 5000,
+      "seq_no": 100,
+      "social_mode": "user_addressing_agent",
+      "user_speaking": true,
+      "eou_probability": 0.2,
+      "user_addressed_agent": true,
+      "urgency_score": 0.1,
+      "audio_visual_conflict_score": 0.0,
+      "notes": "NON-BLOCKING CASE: user directly addresses agent; social_mode not in _BLOCKING_SOCIAL_MODES"
+    },
+    {
+      "t_ms": 5032,
+      "frame_id": "frame-101",
+      "sub_case": "non_blocking",
+      "event_type": "user_speech_active",
+      "timestamp_mono_ms": 5032,
+      "seq_no": 101,
+      "social_mode": "user_addressing_agent",
+      "user_speaking": true,
+      "eou_probability": 0.4,
+      "user_addressed_agent": true,
+      "urgency_score": 0.1,
+      "audio_visual_conflict_score": 0.0,
+      "notes": "non-blocking: speech active; eou_probability still below threshold"
+    },
+    {
+      "t_ms": 5064,
+      "frame_id": "frame-102",
+      "sub_case": "non_blocking",
+      "event_type": "addressee_classification",
+      "timestamp_mono_ms": 5064,
+      "seq_no": 102,
+      "social_mode": "user_addressing_agent",
+      "user_speaking": false,
+      "eou_probability": 0.9,
+      "user_addressed_agent": true,
+      "urgency_score": 0.1,
+      "audio_visual_conflict_score": 0.0,
+      "resolution_frame": true,
+      "expected_action_class": "full_response",
+      "expected_reason_code": "EOU_CONFIRMED",
+      "notes": "NON-BLOCKING GATE FRAME: social_mode=user_addressing_agent NOT in _BLOCKING_SOCIAL_MODES; eou_probability=0.9>0.5; user_addressed_agent=true; decide() reaches step 9 and returns full_response/EOU_CONFIRMED"
+    }
+  ],
+  "baseline_decisions": [
+    {
+      "frame_id": "frame-002",
+      "sub_case": "blocking",
+      "action_type": "silence",
+      "primary_reason_code": "NOT_ADDRESSED_TO_AGENT",
+      "supporting_reason_codes": [],
+      "notes": "social_mode=user_addressing_other in _BLOCKING_SOCIAL_MODES; hard-block step 1 fires; silence wins"
+    },
+    {
+      "frame_id": "frame-102",
+      "sub_case": "non_blocking",
+      "action_type": "full_response",
+      "primary_reason_code": "EOU_CONFIRMED",
+      "supporting_reason_codes": ["USER_ADDRESSED_AGENT"],
+      "notes": "social_mode=user_addressing_agent NOT blocking; eou_probability=0.9>0.5; user_addressed_agent=true; full_response at step 9 (positive discriminator)"
+    }
+  ]
 }
