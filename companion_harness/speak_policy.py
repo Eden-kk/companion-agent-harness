@@ -142,7 +142,28 @@ def decide(
             max_duration_ms=None,
         )
 
-    # 9. EOU confirmed but agent not explicitly addressed — silence wins ties.
+    # 9. Aesthetic reaction — lowest priority, fires only when nothing else fires.
+    _AESTHETIC_DISABLED_MODES = frozenset({
+        "creative_focus", "sleep_winddown", "group_unaddressed", "cooking",
+        "crisis_emergency",
+    })
+    if inputs.aesthetic_novelty_score > 0.5:
+        if inputs.quiet_mode_active or inputs.current_task_mode in _AESTHETIC_DISABLED_MODES:
+            return _silence(ReasonCode.QUIET_MODE_BLOCKED, caused_by)
+        if inputs.cooldown_state.get("aesthetic_reaction", 0) > 0:
+            return _silence(ReasonCode.COOLDOWN_BLOCKED, caused_by)
+        return SpeakDecision(
+            action_type="aesthetic_reaction",
+            primary_reason_code=ReasonCode.PROACTIVITY_BUDGET_AVAILABLE,
+            supporting_reason_codes=[],
+            redacted_explanation=None,
+            caused_by=caused_by,
+            budget_bucket="aesthetic_reaction",
+            allowed_prosody_tags=[],
+            max_duration_ms=None,
+        )
+
+    # 10. EOU confirmed but agent not explicitly addressed — silence wins ties.
     return _silence(ReasonCode.NOT_ADDRESSED_TO_AGENT, caused_by)
 
 
