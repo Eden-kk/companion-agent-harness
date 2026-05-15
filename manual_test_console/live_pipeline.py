@@ -29,7 +29,7 @@ import math
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from companion_harness.audio_output_controller import AudioOutputController
 from companion_harness.backchannel_classifier import BackchannelClassifier
@@ -49,6 +49,8 @@ __all__ = [
     "ZeroBackchannelModel",
     "NoopTtsAdapter",
     "SharedLoggerProxy",
+    "WebSocketAudioSink",
+    "AudioOutSinkTarget",
 ]
 
 
@@ -160,6 +162,36 @@ async def _noop_audio_sink(chunk: bytes) -> None:
     return None
 
 
+class AudioOutSinkTarget(Protocol):
+    """Sink target for WebSocketAudioSink — typically the server's AudioOutBroker.
+
+    Decoupled from server.py to keep live_pipeline.py importable in tests.
+    """
+
+    def publish(self, session_id: str, seq: int, chunk: bytes) -> None: ...
+
+
+class WebSocketAudioSink:
+    """AudioSink that forwards synthesized audio chunks to a fan-out broker.
+
+    Each call publishes one (session_id, seq, chunk) tuple to the broker, which
+    then pushes it onto every connected /ws/audio_out listener's bounded queue.
+    The sink itself never blocks: the broker uses put_nowait + drop-oldest per
+    listener queue (invariant #10). The sink is a SIDE EFFECT downstream of the
+    existing `assistant_audio_buffer_*` events emitted by AudioOutputController;
+    it does not emit new events itself.
+    """
+
+    def __init__(self, session_id: str, broker: AudioOutSinkTarget) -> None:
+        self._session_id = session_id
+        self._broker = broker
+        self._seq = 0
+
+    async def __call__(self, chunk: bytes) -> None:
+        self._seq += 1
+        self._broker.publish(self._session_id, self._seq, chunk)
+
+
 # ---------------------------------------------------------------------------
 # policy_inputs_builder
 # ---------------------------------------------------------------------------
@@ -256,6 +288,7 @@ def build_live_pipeline(
     smart_turn_model: Any = None,
     backchannel_model: Any = None,
     use_stubs: bool = False,
+    audio_out_broker: AudioOutSinkTarget | None = None,
 ) -> LivePipeline:
     """Construct a LivePipeline for one ingest session.
 
@@ -314,10 +347,14 @@ def build_live_pipeline(
         session_id=session_id,
         logger=shielded_logger,  # type: ignore[arg-type]
     )
+    if audio_out_broker is not None:
+        sink: Any = WebSocketAudioSink(session_id=session_id, broker=audio_out_broker)
+    else:
+        sink = _noop_audio_sink
     audio_output = AudioOutputController(
         session_id=session_id,
         logger=shielded_logger,  # type: ignore[arg-type]
-        sink=_noop_audio_sink,
+        sink=sink,
     )
 
     orch = StreamingRealtimeOrchestrator(

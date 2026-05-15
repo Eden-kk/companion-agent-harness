@@ -1,10 +1,11 @@
 """Manual-test console server — Phase 3 (live-loop pipeline wiring).
 
-Single aiohttp process exposes four routes:
+Single aiohttp process exposes five routes:
   GET  /                — static capture+display page (manual_test_console/index.html)
   GET  /healthz         — status / live-pipeline readiness
   GET  /ws/ingest       — WebSocket: browser → harness audio + video envelopes
   GET  /ws/display      — WebSocket: harness → browser event stream
+  GET  /ws/audio_out    — WebSocket: harness → browser synthesized audio chunks
 
 Each /ws/ingest connection constructs:
   - an InputIngest session (raw_audio_chunk / raw_video_frame events)
@@ -57,6 +58,17 @@ __all__ = ["build_app", "main"]
 # Per-display-WS queue depth. Drops oldest on overflow.
 _DISPLAY_QUEUE_DEPTH = 256
 
+# Per-audio_out-WS queue depth. Drops oldest on overflow (invariant #10).
+# Synthesized audio is bursty; 256 chunks ≈ several seconds of buffer.
+_AUDIO_OUT_QUEUE_DEPTH = 256
+
+# Sample rate / format that AudioOutputController -> sink chunks carry. This is
+# advisory metadata for the browser's AudioContext decoder. The real TTS adapter
+# (Kokoro, PR #127) produces PCM16 mono at 24 kHz; with NoopTtsAdapter no chunks
+# ever fire so the value is unused.
+_AUDIO_OUT_SAMPLE_RATE = 24000
+_AUDIO_OUT_SAMPLE_FORMAT = "pcm_s16le"
+
 # Module path for the static page.
 _STATIC_DIR = Path(__file__).parent
 
@@ -74,6 +86,8 @@ KEY_VAD_MODEL: web.AppKey[object] = web.AppKey("vad_model", object)
 KEY_SMART_TURN_MODEL: web.AppKey[object] = web.AppKey("smart_turn_model", object)
 KEY_BACKCHANNEL_MODEL: web.AppKey[object] = web.AppKey("backchannel_model", object)
 KEY_DETECTOR_LABELS: web.AppKey[dict] = web.AppKey("detector_labels", dict)
+KEY_AUDIO_OUT_BROKER: web.AppKey[object] = web.AppKey("audio_out_broker", object)
+KEY_AUDIO_OUT_COUNTER: web.AppKey[dict] = web.AppKey("audio_out_counter", dict)
 
 
 def _event_to_json(event: Event) -> dict:
@@ -133,6 +147,55 @@ class DisplayBroker:
                 self._drops_by_queue[id(q)] = self._drops_by_queue.get(id(q), 0) + 1
 
 
+class AudioOutBroker:
+    """Fan-out broker for synthesized audio chunks → /ws/audio_out listeners.
+
+    Implements the AudioOutSinkTarget protocol from live_pipeline.py.
+    publish() is called from WebSocketAudioSink on the orchestrator's event
+    loop; it does put_nowait on each listener queue and drops the oldest entry
+    on QueueFull so the realtime path is never blocked (invariant #10).
+    """
+
+    def __init__(self, counter: dict[str, int]) -> None:
+        self._queues: list[asyncio.Queue[dict]] = []
+        self._counter = counter
+
+    def add(self) -> asyncio.Queue[dict]:
+        q: asyncio.Queue[dict] = asyncio.Queue(maxsize=_AUDIO_OUT_QUEUE_DEPTH)
+        self._queues.append(q)
+        return q
+
+    def remove(self, q: asyncio.Queue[dict]) -> None:
+        if q in self._queues:
+            self._queues.remove(q)
+
+    def publish(self, session_id: str, seq: int, chunk: bytes) -> None:
+        self._counter["chunks_sent"] = self._counter.get("chunks_sent", 0) + 1
+        msg = {
+            "type": "audio_chunk",
+            "session_id": session_id,
+            "seq": seq,
+            "pcm_bytes_b64": base64.b64encode(chunk).decode("ascii"),
+            "sample_rate": _AUDIO_OUT_SAMPLE_RATE,
+            "sample_format": _AUDIO_OUT_SAMPLE_FORMAT,
+        }
+        for q in list(self._queues):
+            try:
+                q.put_nowait(msg)
+            except asyncio.QueueFull:
+                # drop-oldest: discard head, then enqueue (best-effort)
+                try:
+                    q.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+                try:
+                    q.put_nowait(msg)
+                except asyncio.QueueFull:
+                    self._counter["chunks_dropped"] = (
+                        self._counter.get("chunks_dropped", 0) + 1
+                    )
+
+
 # ---------------------------------------------------------------------------
 # HTTP / WS handlers
 # ---------------------------------------------------------------------------
@@ -187,6 +250,7 @@ async def _handle_ingest_ws(request: web.Request) -> web.WebSocketResponse:
             smart_turn_model=request.app[KEY_SMART_TURN_MODEL],
             backchannel_model=request.app[KEY_BACKCHANNEL_MODEL],
             use_stubs=request.app[KEY_USE_STUBS],
+            audio_out_broker=request.app[KEY_AUDIO_OUT_BROKER],  # type: ignore[arg-type]
         )
         active_pipelines[session.session_id] = pipeline
         await pipeline.start()
@@ -270,6 +334,52 @@ async def _handle_display_ws(request: web.Request) -> web.WebSocketResponse:
     return ws
 
 
+async def _handle_audio_out_ws(request: web.Request) -> web.WebSocketResponse:
+    """Push synthesized audio chunks to one connected browser listener.
+
+    Envelope (JSON per chunk):
+      {
+        "type": "audio_chunk",
+        "session_id": "<live-pipeline session id>",
+        "seq": <int, per-session monotonic>,
+        "pcm_bytes_b64": "<base64 of raw PCM bytes from the TTS adapter>",
+        "sample_rate": 24000,
+        "sample_format": "pcm_s16le"
+      }
+
+    The broker fans every active session's synthesized chunks to every listener.
+    Browsers may filter by session_id; the manual-test console has one tab per
+    session in practice.
+    """
+    ws = web.WebSocketResponse(heartbeat=30.0)
+    await ws.prepare(request)
+
+    broker: AudioOutBroker = request.app[KEY_AUDIO_OUT_BROKER]  # type: ignore[assignment]
+    queue = broker.add()
+
+    async def writer() -> None:
+        while True:
+            msg = await queue.get()
+            try:
+                await ws.send_json(msg)
+            except ConnectionResetError:
+                return
+
+    writer_task = asyncio.create_task(writer())
+    try:
+        async for _msg in ws:
+            pass  # browser does not send to audio_out WS
+    finally:
+        writer_task.cancel()
+        broker.remove(queue)
+        try:
+            await writer_task
+        except asyncio.CancelledError:
+            pass
+        await ws.close()
+    return ws
+
+
 async def _handle_health(request: web.Request) -> web.Response:
     chunk_counter: dict[str, int] = request.app[KEY_CHUNK_COUNTER]
     logger: EventLogger = request.app[KEY_LOGGER]  # type: ignore[assignment]
@@ -277,6 +387,7 @@ async def _handle_health(request: web.Request) -> web.Response:
     foreground_model = request.app[KEY_FOREGROUND_MODEL]
     active_pipelines: dict[str, LivePipeline] = request.app[KEY_ACTIVE_PIPELINES]
     detector_labels: dict[str, str] = request.app[KEY_DETECTOR_LABELS]
+    audio_out_counter: dict[str, int] = request.app[KEY_AUDIO_OUT_COUNTER]
     return web.json_response({
         "status": "ok",
         "sessions_opened": chunk_counter.get("sessions_opened", 0),
@@ -290,6 +401,8 @@ async def _handle_health(request: web.Request) -> web.Response:
         "vad_model": detector_labels.get("vad", "unknown"),
         "smart_turn_model": detector_labels.get("smart_turn", "unknown"),
         "backchannel_model": detector_labels.get("backchannel", "unknown"),
+        "audio_out_enabled": True,
+        "audio_out_chunks_sent": audio_out_counter.get("chunks_sent", 0),
     })
 
 
@@ -336,11 +449,16 @@ def build_app(
     logger.subscribe(broker.on_event)
     ingest = InputIngest(logger, blob_dir)
 
+    audio_out_counter: dict[str, int] = {"chunks_sent": 0, "chunks_dropped": 0}
+    audio_out_broker = AudioOutBroker(audio_out_counter)
+
     app[KEY_BROKER] = broker
     app[KEY_LOGGER] = logger
     app[KEY_INGEST] = ingest
     app[KEY_BLOB_DIR] = blob_dir
     app[KEY_CHUNK_COUNTER] = {"sessions_opened": 0, "chunks_ingested": 0, "frames_ingested": 0}
+    app[KEY_AUDIO_OUT_BROKER] = audio_out_broker
+    app[KEY_AUDIO_OUT_COUNTER] = audio_out_counter
     app[KEY_LIVE_PIPELINE_ENABLED] = live_pipeline_enabled
     app[KEY_FOREGROUND_MODEL] = foreground_model
     app[KEY_ACTIVE_PIPELINES] = {}
@@ -358,6 +476,7 @@ def build_app(
     app.router.add_get("/healthz", _handle_health)
     app.router.add_get("/ws/ingest", _handle_ingest_ws)
     app.router.add_get("/ws/display", _handle_display_ws)
+    app.router.add_get("/ws/audio_out", _handle_audio_out_ws)
 
     async def _on_startup(_app: web.Application) -> None:
         await logger.start()
@@ -538,6 +657,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  open page:   http://localhost:{args.port}/")
     print(f"  ingest WS:   ws://localhost:{args.port}/ws/ingest")
     print(f"  display WS:  ws://localhost:{args.port}/ws/display")
+    print(f"  audio_out:   ws://localhost:{args.port}/ws/audio_out")
     print(f"  healthz:     http://localhost:{args.port}/healthz")
     print("=" * 72)
     sys.stdout.flush()
