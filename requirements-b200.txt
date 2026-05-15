@@ -20,3 +20,10 @@ scipy==1.17.1
 numba==0.65.1
 minicpmo-utils==1.0.6
 soundfile==0.13.1
+
+# Real detector models for the manual-test live pipeline (real-detectors-integration).
+# Silero VAD ships an ONNX checkpoint (used via onnxruntime, not torchaudio).
+silero-vad==6.2.1
+# faster-whisper for the ASR+lexicon backchannel classifier; pulls onnxruntime.
+faster-whisper==1.2.1
+onnxruntime==1.26.0

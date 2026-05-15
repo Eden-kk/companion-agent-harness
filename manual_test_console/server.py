@@ -69,6 +69,11 @@ KEY_CHUNK_COUNTER: web.AppKey[dict] = web.AppKey("chunk_counter", dict)
 KEY_LIVE_PIPELINE_ENABLED: web.AppKey[bool] = web.AppKey("live_pipeline_enabled", bool)
 KEY_FOREGROUND_MODEL: web.AppKey[object] = web.AppKey("foreground_model", object)
 KEY_ACTIVE_PIPELINES: web.AppKey[dict] = web.AppKey("active_pipelines", dict)
+KEY_USE_STUBS: web.AppKey[bool] = web.AppKey("use_stubs", bool)
+KEY_VAD_MODEL: web.AppKey[object] = web.AppKey("vad_model", object)
+KEY_SMART_TURN_MODEL: web.AppKey[object] = web.AppKey("smart_turn_model", object)
+KEY_BACKCHANNEL_MODEL: web.AppKey[object] = web.AppKey("backchannel_model", object)
+KEY_DETECTOR_LABELS: web.AppKey[dict] = web.AppKey("detector_labels", dict)
 
 
 def _event_to_json(event: Event) -> dict:
@@ -178,6 +183,10 @@ async def _handle_ingest_ws(request: web.Request) -> web.WebSocketResponse:
             ingest_session=session,
             foreground_duplex_model=foreground_model,
             decision_trace_dir=request.app[KEY_BLOB_DIR] / "decision_traces",
+            vad_model=request.app[KEY_VAD_MODEL],
+            smart_turn_model=request.app[KEY_SMART_TURN_MODEL],
+            backchannel_model=request.app[KEY_BACKCHANNEL_MODEL],
+            use_stubs=request.app[KEY_USE_STUBS],
         )
         active_pipelines[session.session_id] = pipeline
         await pipeline.start()
@@ -267,6 +276,7 @@ async def _handle_health(request: web.Request) -> web.Response:
     live_enabled: bool = request.app[KEY_LIVE_PIPELINE_ENABLED]
     foreground_model = request.app[KEY_FOREGROUND_MODEL]
     active_pipelines: dict[str, LivePipeline] = request.app[KEY_ACTIVE_PIPELINES]
+    detector_labels: dict[str, str] = request.app[KEY_DETECTOR_LABELS]
     return web.json_response({
         "status": "ok",
         "sessions_opened": chunk_counter.get("sessions_opened", 0),
@@ -276,6 +286,10 @@ async def _handle_health(request: web.Request) -> web.Response:
         "live_pipeline_enabled": live_enabled,
         "minicpm_loaded": foreground_model is not None,
         "active_sessions": len(active_pipelines),
+        "use_stubs": request.app[KEY_USE_STUBS],
+        "vad_model": detector_labels.get("vad", "unknown"),
+        "smart_turn_model": detector_labels.get("smart_turn", "unknown"),
+        "backchannel_model": detector_labels.get("backchannel", "unknown"),
     })
 
 
@@ -290,6 +304,10 @@ def build_app(
     live_pipeline_enabled: bool = True,
     foreground_model: Any = None,
     foreground_model_factory: Optional[Callable[[], Any]] = None,
+    use_stubs: bool = False,
+    vad_model_factory: Optional[Callable[[], Any]] = None,
+    smart_turn_model_factory: Optional[Callable[[], Any]] = None,
+    backchannel_model_factory: Optional[Callable[[], Any]] = None,
 ) -> web.Application:
     """Build the aiohttp Application. Caller is responsible for run/cleanup.
 
@@ -303,6 +321,14 @@ def build_app(
         foreground_model_factory: zero-arg callable invoked at startup to
             construct the singleton (used by main() to load MiniCPM lazily so
             that --no-live-pipeline avoids the load entirely).
+        use_stubs: when True, every per-session live pipeline uses the
+            CPU-only stub detectors (EnergyVADModel / SilenceSmartTurnModel /
+            ZeroBackchannelModel) and any real-model factories are ignored.
+            Tests and the `--use-stubs` CLI fallback rely on this.
+        vad_model_factory / smart_turn_model_factory / backchannel_model_factory:
+            zero-arg callables invoked at startup to construct each real
+            detector singleton. When None (and `use_stubs=False`), the
+            corresponding stub is used for that detector only.
     """
     app = web.Application()
     broker = DisplayBroker()
@@ -318,6 +344,15 @@ def build_app(
     app[KEY_LIVE_PIPELINE_ENABLED] = live_pipeline_enabled
     app[KEY_FOREGROUND_MODEL] = foreground_model
     app[KEY_ACTIVE_PIPELINES] = {}
+    app[KEY_USE_STUBS] = use_stubs
+    app[KEY_VAD_MODEL] = None
+    app[KEY_SMART_TURN_MODEL] = None
+    app[KEY_BACKCHANNEL_MODEL] = None
+    app[KEY_DETECTOR_LABELS] = {
+        "vad": "stub:EnergyVAD" if use_stubs else "stub:EnergyVAD",
+        "smart_turn": "stub:SilenceSmartTurn" if use_stubs else "stub:SilenceSmartTurn",
+        "backchannel": "stub:ZeroBackchannel" if use_stubs else "stub:ZeroBackchannel",
+    }
 
     app.router.add_get("/", _handle_index)
     app.router.add_get("/healthz", _handle_health)
@@ -340,6 +375,45 @@ def build_app(
             _app[KEY_FOREGROUND_MODEL] = model
             print(f"MiniCPM-o loaded in {elapsed:.1f}s", flush=True)
 
+        if not _app[KEY_LIVE_PIPELINE_ENABLED] or _app[KEY_USE_STUBS]:
+            return
+
+        # Load real detector models. Each one falls back to its stub on failure.
+        for key, label_key, factory, stub_label, real_label in (
+            (KEY_VAD_MODEL, "vad", vad_model_factory,
+             "stub:EnergyVAD", "Silero (ONNX)"),
+            (KEY_SMART_TURN_MODEL, "smart_turn", smart_turn_model_factory,
+             "stub:SilenceSmartTurn", "Pipecat SmartTurn v3 (ONNX, CPU)"),
+            (KEY_BACKCHANNEL_MODEL, "backchannel", backchannel_model_factory,
+             "stub:ZeroBackchannel", "whisper-tiny + lexicon"),
+        ):
+            if factory is None:
+                _app[KEY_DETECTOR_LABELS][label_key] = stub_label
+                continue
+            print(f"Loading {real_label}...", flush=True)
+            t0 = time.monotonic()
+            try:
+                _app[key] = factory()
+            except Exception as exc:
+                print(
+                    f"{real_label} load FAILED: {type(exc).__name__}: {exc} "
+                    f"— falling back to {stub_label}",
+                    flush=True,
+                )
+                _app[KEY_DETECTOR_LABELS][label_key] = stub_label
+                continue
+            elapsed = time.monotonic() - t0
+            _app[KEY_DETECTOR_LABELS][label_key] = f"{real_label} (loaded in {elapsed:.2f}s)"
+            print(f"{real_label} loaded in {elapsed:.2f}s", flush=True)
+
+    async def _on_startup_summary(_app: web.Application) -> None:
+        labels = _app[KEY_DETECTOR_LABELS]
+        print("-" * 72, flush=True)
+        print(f"  VAD:         {labels.get('vad', 'unknown')}", flush=True)
+        print(f"  SmartTurn:   {labels.get('smart_turn', 'unknown')}", flush=True)
+        print(f"  Backchannel: {labels.get('backchannel', 'unknown')}", flush=True)
+        print("=" * 72, flush=True)
+
     async def _on_cleanup(_app: web.Application) -> None:
         # Stop any still-active live pipelines first (they share the logger).
         for pipeline in list(_app[KEY_ACTIVE_PIPELINES].values()):
@@ -351,6 +425,7 @@ def build_app(
         await logger.stop()
 
     app.on_startup.append(_on_startup)
+    app.on_startup.append(_on_startup_summary)
     app.on_cleanup.append(_on_cleanup)
     return app
 
@@ -363,6 +438,24 @@ def _load_minicpm_streaming_model() -> Any:
     """
     from companion_harness.foreground_model_minicpm import MiniCPMStreamingModel  # noqa: WPS433
     return MiniCPMStreamingModel()
+
+
+def _load_silero_vad_model() -> Any:
+    """Lazy import + construct SileroVADModel. b200 / any host with onnxruntime."""
+    from companion_harness.vad_silero import SileroVADModel  # noqa: WPS433
+    return SileroVADModel()
+
+
+def _load_pipecat_smart_turn_model() -> Any:
+    """Lazy import + construct PipecatSmartTurnModel."""
+    from companion_harness.smart_turn_pipecat import PipecatSmartTurnModel  # noqa: WPS433
+    return PipecatSmartTurnModel()
+
+
+def _load_asr_lexicon_backchannel_model() -> Any:
+    """Lazy import + construct ASRLexiconBackchannelModel."""
+    from companion_harness.backchannel_asr_lexicon import ASRLexiconBackchannelModel  # noqa: WPS433
+    return ASRLexiconBackchannelModel()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -388,19 +481,46 @@ def main(argv: list[str] | None = None) -> int:
         action="store_false",
         help="Run in capture-only mode (skip MiniCPM load, no live pipeline).",
     )
+    parser.add_argument(
+        "--use-stubs",
+        dest="use_stubs",
+        action="store_true",
+        default=False,
+        help=(
+            "Fall back to CPU-only stub detectors "
+            "(EnergyVAD / SilenceSmartTurn / ZeroBackchannel) "
+            "instead of loading Silero / Pipecat SmartTurn v3 / whisper-tiny."
+        ),
+    )
     args = parser.parse_args(argv)
 
     blob_dir: Path = args.blob_dir
     blob_dir.mkdir(parents=True, exist_ok=True)
 
     factory = _load_minicpm_streaming_model if args.live_pipeline else None
+    if args.live_pipeline and not args.use_stubs:
+        vad_factory: Optional[Callable[[], Any]] = _load_silero_vad_model
+        smart_turn_factory: Optional[Callable[[], Any]] = _load_pipecat_smart_turn_model
+        backchannel_factory: Optional[Callable[[], Any]] = _load_asr_lexicon_backchannel_model
+    else:
+        vad_factory = smart_turn_factory = backchannel_factory = None
+
     app = build_app(
         blob_dir,
         live_pipeline_enabled=args.live_pipeline,
         foreground_model_factory=factory,
+        use_stubs=args.use_stubs,
+        vad_model_factory=vad_factory,
+        smart_turn_model_factory=smart_turn_factory,
+        backchannel_model_factory=backchannel_factory,
     )
 
-    pipeline_label = "ENABLED (loading MiniCPM-o at startup)" if args.live_pipeline else "disabled"
+    if not args.live_pipeline:
+        pipeline_label = "disabled"
+    elif args.use_stubs:
+        pipeline_label = "ENABLED (loading MiniCPM-o + CPU-stub detectors)"
+    else:
+        pipeline_label = "ENABLED (loading MiniCPM-o + real detectors at startup)"
     lanes_label = (
         "VAD, SmartTurn, Backchannel, SpeakPolicy, MiniCPM proposals"
         if args.live_pipeline
