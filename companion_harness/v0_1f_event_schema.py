@@ -2,7 +2,10 @@
 
 Locks the four classification axes — payload_kind, subject_class,
 sensitivity, retention_policy_id — for the five new tool_* event types
-introduced in v0.1f (Stage 5 — two-tier MCP + evidence-bound filler).
+introduced in v0.1f (Stage 5 — two-tier MCP + evidence-bound filler) plus
+the `asr_transcript_emitted` audit event added for invariant #1 (the ASR
+transcript drives `_detect_explicit_remember` and the addressing classifier,
+so its provenance must be logged).
 Mirrors the shape of v0_1e_event_schema.py (v0.1e Anchor 3); see that
 module for the DERIVED_FROM_* sentinel discipline.
 
@@ -197,6 +200,30 @@ EVENT_TYPE_SCHEMAS: dict[str, ToolEventSchema] = {
             "upstream operator_action event referenced via "
             "operator_action_event_id.  Tier-B keys only -- numeric "
             "thresholds; no free text, no PII."
+        ),
+    ),
+
+    # Invariant #1 audit gap (PR #144 review P0): the ASR transcript drives
+    # _detect_explicit_remember and the addressing classifier, so it must
+    # be emitted as an Event with provenance.  payload_kind="transcript"
+    # per Event.payload_kind alphabet (schemas.py:100).  subject_class
+    # defaults to "self" for v0.1f single-user manual test; multi-party
+    # diarization (see roadmap-v0.1f-draft.md OQ-multiparty) will raise
+    # this to "third_party" or "mixed".  transcript_text is wrapped in
+    # SensitiveField at emission time for redaction routing.
+    "asr_transcript_emitted": ToolEventSchema(
+        payload_kind="transcript",
+        subject_class="self",
+        sensitivity="sensitive",
+        retention_policy_id="transcript_audit_30d",
+        required_fields=("transcript_text", "signal_event_id", "asr_model_label"),
+        notes=(
+            "Audit event for the ASR transcript that drives addressing + "
+            "_detect_explicit_remember decisions.  transcript_text is wrapped "
+            "in SensitiveField on the payload (free-text → redaction routing). "
+            "caused_by[] closes through the TurnSignal evidence event that "
+            "triggered the EOU.  Multi-party speaker diarization is out of "
+            "scope for v0.1f; subject_class=\"self\" is the single-user lean."
         ),
     ),
 }

@@ -47,7 +47,13 @@ CONFIG_EVENT_TYPES = {
     "config_change",
 }
 
-EXPECTED_EVENT_TYPES = TOOL_EVENT_TYPES | CONFIG_EVENT_TYPES
+# Non-tool entries added later to the same v0.1f registry (PR #144 P0 fix).
+# Their schema contract is checked in tests/test_asr_transcript_event.py.
+NON_TOOL_EVENT_TYPES = {
+    "asr_transcript_emitted",
+}
+
+EXPECTED_EVENT_TYPES = TOOL_EVENT_TYPES | CONFIG_EVENT_TYPES | NON_TOOL_EVENT_TYPES
 
 
 def test_registry_has_expected_event_types():
