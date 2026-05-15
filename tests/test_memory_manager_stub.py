@@ -34,9 +34,9 @@ def test_isinstance_check():
     assert isinstance(MemoryManagerStub(), MemoryManager)
 
 
-def test_write_candidate_raises():
+def test_commit_raises():
     with pytest.raises(NotImplementedError):
-        MemoryManagerStub().write_candidate(_item())
+        MemoryManagerStub().commit(_item())
 
 
 def test_retrieve_raises():
