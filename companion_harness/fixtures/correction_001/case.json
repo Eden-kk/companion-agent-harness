@@ -1,0 +1,34 @@
+{
+  "case_id": "correction_001",
+  "stage": 4,
+  "scenario": "implicit_fact_correction",
+  "modalities": ["audio"],
+  "fixture_ref": "companion_harness/fixtures/correction_001/",
+  "sensitivity": "safe_eval_fixture",
+  "expected_events": [
+    "user_speech_start",
+    "correction_detected",
+    "memory_supersession",
+    "old_fact_invalidated",
+    "new_fact_active"
+  ],
+  "consent_class": "synthetic_eval",
+  "description": "User says 'actually I don't work there anymore'. Expected: old fact has valid_to set to the correction timestamp; new fact is written as active; retrieval excludes the old fact unless history is explicitly requested; superseded_by on the old item points to the new item's ID. Signal and memory-op traces are skeleton placeholders pending Stage 4 activation.",
+  "fixture_conventions": {
+    "correction_trigger": "The correction is implicit: user asserts a new value for a previously stored fact without an explicit 'forget' or 'delete' command. The system must detect the conflict and apply bi-temporal supersession.",
+    "bi_temporal_supersession": "Old MemoryItem: valid_to set to correction timestamp; superseded_by set to new item's ID. New MemoryItem: valid_from set to correction timestamp; superseded_by unset. Both items are retained in history; normal retrieval returns only the new item.",
+    "retrieval_exclusion": "Retrieval queries without an explicit history flag must return only the new (active) fact. The old fact is accessible only when the caller explicitly requests historical items.",
+    "superseded_by_linkage": "The superseded_by field on the old item must point to the new item's ID. This closes the provenance DAG per invariant #3.",
+    "expected_events_markers": "event_type strings are fixture-internal role labels. Filled in at Stage 4 activation."
+  },
+  "signal_trace": {
+    "status": "skeleton",
+    "note": "Per-frame scripted values are placeholders. To be finalized when Stage 4 is activated.",
+    "frames": []
+  },
+  "memory_op_trace": {
+    "status": "skeleton",
+    "note": "Memory operation sequence (pre-existing fact, correction utterance, supersession write, old item invalidation) to be scripted at Stage 4 activation.",
+    "ops": []
+  }
+}

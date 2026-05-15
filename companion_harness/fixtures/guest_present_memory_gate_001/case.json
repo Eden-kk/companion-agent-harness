@@ -1,0 +1,34 @@
+{
+  "case_id": "guest_present_memory_gate_001",
+  "stage": 4,
+  "scenario": "privacy_mode_guest_present",
+  "modalities": ["audio"],
+  "fixture_ref": "companion_harness/fixtures/guest_present_memory_gate_001/",
+  "sensitivity": "safe_eval_fixture",
+  "privacy_mode": "guest_present",
+  "expected_events": [
+    "privacy_mode_active",
+    "guest_personal_info_utterance",
+    "memory_write_gated",
+    "consent_prompt_required"
+  ],
+  "consent_class": "synthetic_eval",
+  "description": "privacy_mode = guest_present. A guest says personal information during the session. Expected: no durable memory write proceeds unless an explicit consent prompt is accepted; the write is gated pending consent. Tests that privacy_mode = guest_present gates personal-info writes per Part 7 and the test_guest_present_memory_gate contract. Signal and memory-op traces are skeleton placeholders pending Stage 4 activation.",
+  "fixture_conventions": {
+    "privacy_mode": "guest_present: durable memory writes about guest-sourced information are gated behind an explicit consent prompt. Writes about the primary user (pre-existing profile facts) are not affected.",
+    "consent_gate": "When a personal-info utterance is detected while guest_present is active, the system must: (1) not write durably; (2) emit a consent_prompt event; (3) write only if and when consent is accepted. Write is permanently suppressed if consent is declined or not given.",
+    "guest_info_detection": "The fixture scripts an utterance that contains personal information attributable to the guest (not the primary user). The system must classify it as guest-sourced before applying the gate.",
+    "primary_user_writes_unaffected": "Writes to the primary user's profile that are not based on guest-sourced information proceed normally. The gate applies only to guest-originated content.",
+    "expected_events_markers": "event_type strings are fixture-internal role labels. Filled in at Stage 4 activation."
+  },
+  "signal_trace": {
+    "status": "skeleton",
+    "note": "Per-frame scripted values are placeholders. To be finalized when Stage 4 is activated.",
+    "frames": []
+  },
+  "memory_op_trace": {
+    "status": "skeleton",
+    "note": "Privacy mode activation, guest utterance, gated write, and consent prompt sequence to be scripted at Stage 4 activation.",
+    "ops": []
+  }
+}

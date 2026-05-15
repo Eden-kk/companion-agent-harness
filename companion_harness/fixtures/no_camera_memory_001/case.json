@@ -1,0 +1,34 @@
+{
+  "case_id": "no_camera_memory_001",
+  "stage": 4,
+  "scenario": "privacy_mode_no_camera_memory",
+  "modalities": ["audio"],
+  "fixture_ref": "companion_harness/fixtures/no_camera_memory_001/",
+  "sensitivity": "safe_eval_fixture",
+  "privacy_mode": "no_camera_memory",
+  "expected_events": [
+    "privacy_mode_active",
+    "user_visual_query",
+    "no_visual_recall",
+    "memory_disabled_explanation"
+  ],
+  "consent_class": "synthetic_eval",
+  "description": "privacy_mode = no_camera_memory. User later asks about a visual event that occurred while the mode was active. Expected: no stored visual recall available; system explains that visual memory was disabled during that period. Tests that privacy_mode = no_camera_memory suppresses visual signal persistence per Part 7 and the test_no_camera_memory contract. Signal and memory-op traces are skeleton placeholders pending Stage 4 activation.",
+  "fixture_conventions": {
+    "privacy_mode": "no_camera_memory: visual signals only; no raw frames or visual summaries persisted (Part 7 privacy_mode_compatibility table). Audio-derived signals may still be persisted.",
+    "query_timing": "The visual event occurs while no_camera_memory is active. The user query comes later (possibly after the mode changes). The system must not surface visual recall from the suppressed period.",
+    "explanation_requirement": "System must explain that visual memory was disabled — not silently return no results. The explanation must not reveal the content of suppressed visual frames.",
+    "no_camera_memory_scope": "Only visual signals are suppressed. If the same event was captured by audio (e.g. user described what they saw), audio-derived memory may still be available.",
+    "expected_events_markers": "event_type strings are fixture-internal role labels. Filled in at Stage 4 activation."
+  },
+  "signal_trace": {
+    "status": "skeleton",
+    "note": "Per-frame scripted values are placeholders. To be finalized when Stage 4 is activated.",
+    "frames": []
+  },
+  "memory_op_trace": {
+    "status": "skeleton",
+    "note": "Privacy mode activation, suppressed visual writes, and later query to be scripted at Stage 4 activation.",
+    "ops": []
+  }
+}

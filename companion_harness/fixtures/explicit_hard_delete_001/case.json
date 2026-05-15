@@ -1,0 +1,33 @@
+{
+  "case_id": "explicit_hard_delete_001",
+  "stage": 4,
+  "scenario": "explicit_hard_delete_command",
+  "modalities": ["audio"],
+  "fixture_ref": "companion_harness/fixtures/explicit_hard_delete_001/",
+  "sensitivity": "safe_eval_fixture",
+  "expected_events": [
+    "user_speech_start",
+    "explicit_hard_delete_command",
+    "memory_content_removed",
+    "deletion_receipt_retained"
+  ],
+  "consent_class": "synthetic_eval",
+  "description": "User says 'delete that permanently'. Expected: hard delete of content where legally/technically possible; only a non-content deletion receipt is retained (item_id + deletion timestamp, no user content). Hard delete is a privacy operation — distinct from forget (which is a historical correction). Signal and memory-op traces are skeleton placeholders pending Stage 4 activation.",
+  "fixture_conventions": {
+    "command_surface": "Explicit hard delete command: user requests permanent content removal. Distinguishable from forget by the presence of an explicit_hard_delete_command event.",
+    "hard_delete_vs_forget": "hard_delete = privacy operation; item content removed where legally/technically possible; only non-content deletion receipt retained. forget = historical correction; valid_to set; tombstone retained. They are different commands and must both work (Part 6 Stage 4).",
+    "deletion_receipt": "After hard delete, only a non-content receipt is retained: item_id, deletion_timestamp, deletion_reason. No user-provided content appears in the receipt.",
+    "legal_technical_caveat": "Where regulations or system constraints prevent full content removal, the system must document the constraint in the receipt and minimize retained content to the legal minimum.",
+    "expected_events_markers": "event_type strings are fixture-internal role labels. Filled in at Stage 4 activation."
+  },
+  "signal_trace": {
+    "status": "skeleton",
+    "note": "Per-frame scripted values are placeholders. To be finalized when Stage 4 is activated.",
+    "frames": []
+  },
+  "memory_op_trace": {
+    "status": "skeleton",
+    "note": "Memory operation sequence (pre-existing item, hard delete command, content removal, deletion receipt) to be scripted at Stage 4 activation.",
+    "ops": []
+  }
+}
