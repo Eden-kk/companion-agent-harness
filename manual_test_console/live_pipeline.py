@@ -214,9 +214,14 @@ def _live_policy_inputs_builder(
     """Build PolicyInputs from a TurnSignal + sorted history (invariant #5).
 
     No wall-clock reads, no jitter. Mirrors realtime_loop._signals_to_policy_inputs
-    but uses the current `signal` directly. user_addressed_agent defaults to
-    False — until a Thinker proposal or explicit address marker is wired, the
-    policy must default to silence on EOU rather than freely speak.
+    but uses the current `signal` directly.
+
+    `user_addressed_agent` is set to True for the manual-test rig so that a
+    completed utterance produces ``full_response``. Production should replace
+    this with a real addressing classifier (e.g., ASR-keyword heuristic,
+    foreground-proposal-derived flag, or trained classifier). This is a
+    manual-test stopgap to unblock end-to-end voice testing (Finding 6 from
+    2026-05-15 manual-test session).
     """
     max_p_done = max((s.p_done for s in signal_history), default=signal.p_done)
     max_p_continue = max((s.p_continue for s in signal_history), default=signal.p_continue)
@@ -228,7 +233,7 @@ def _live_policy_inputs_builder(
         assistant_speaking=False,
         scene_change_score=0.0,
         deictic_reference=False,
-        user_addressed_agent=False,
+        user_addressed_agent=True,  # STOPGAP: manual-test rig; replace with real signal (Finding 6)
         urgency_score=0.0,
         proactivity_budget_remaining={},
         privacy_mode="default",
