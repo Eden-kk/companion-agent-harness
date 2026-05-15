@@ -12,27 +12,189 @@
     "policy_decision"
   ],
   "expected_metrics": {
-    "creative_focus_suppression_rate": "= 100% on fixture set (no aesthetic_reaction emitted in creative_focus mode)"
+    "creative_focus_silence_rate": 1.0
   },
   "consent_class": "synthetic_eval",
-  "description": "The user is silently writing or in another creative-focus activity. A high-novelty visual event occurs that would ordinarily trigger an aesthetic_reaction. The speak policy must produce silence because aesthetic_reaction_budget is 'disabled' in creative_focus mode (per spec Part 6 Stage 3). This tests the task-mode suppression path: even a valid aesthetic_reaction candidate must be blocked when creative_focus mode is active.",
+  "description": "The user is silently writing (creative_focus mode). A high-novelty visual event (aesthetic_novelty_score=0.7, above the 0.5 threshold) occurs that would ordinarily trigger an aesthetic_reaction in normal mode. Sub-case 1 confirms the speak policy produces silence/QUIET_MODE_BLOCKED because creative_focus is in _AESTHETIC_DISABLED_MODES (mode-disable path, not the rate-limit path). Sub-case 2 uses the same novelty score in normal mode to confirm the aesthetic_reaction does fire — establishing the contrast.",
   "fixture_conventions": {
-    "skeleton_note": "Per-frame signal values are placeholders. Finalize at Stage 3 activation when the task-mode classifier and aesthetic_reaction_budget config are specified.",
-    "task_mode": "creative_focus — aesthetic_reaction_budget is 'disabled' per spec Part 6 Stage 3.",
-    "novelty_score": "Scripted visual novelty [0.0, 1.0]. High enough to qualify for aesthetic_reaction under normal mode.",
-    "aesthetic_reaction_budget_remaining": "Irrelevant in creative_focus (disabled); included as placeholder to be set at activation.",
-    "expected_action_class": "silence — creative_focus mode suppresses aesthetic_reaction entirely.",
-    "expected_reason_code": "COOLDOWN_BLOCKED",
-    "frame_duration_ms": "33 — approximate 30fps; to be confirmed at Stage 3 activation.",
+    "stage": 3,
+    "sub_cases": "two sub-cases: (1) creative_focus -> silence/QUIET_MODE_BLOCKED; (2) normal -> aesthetic_reaction/PROACTIVITY_BUDGET_AVAILABLE",
+    "reason_code_correction": "Skeleton had expected_reason_code='COOLDOWN_BLOCKED' (rate-limit path). Corrected to 'QUIET_MODE_BLOCKED' (mode-disable path). creative_focus is in _AESTHETIC_DISABLED_MODES, which fires the quiet_mode_active/mode-disable branch before the cooldown check.",
+    "signal_fields": "Each resolution frame carries PolicyInputs-equivalent fields used to invoke decide(). user_addressed_agent=False ensures frames do not trigger full_response at step 9. short_response_appropriate=False prevents short_reaction at step 8. urgency_score=0.0 prevents alert. eou_probability=0.9 with user_speaking=False passes steps 2-3.",
+    "frame_duration_ms": 33,
     "expected_events_markers": "event_type strings are fixture-internal role labels, not Part 5 event_type values."
   },
   "signal_trace": {
-    "status": "skeleton",
-    "frames": [
-      {"t_ms": 0,  "frame_id": "frame-000", "event_type": "raw_video_frame",             "task_mode": "creative_focus", "novelty_score": null, "notes": "PLACEHOLDER — user silently writing; creative_focus mode active"},
-      {"t_ms": 33, "frame_id": "frame-001", "event_type": "task_mode_classification",    "task_mode": "creative_focus", "novelty_score": null, "notes": "PLACEHOLDER — task mode confirmed creative_focus"},
-      {"t_ms": 66, "frame_id": "frame-002", "event_type": "aesthetic_reaction_candidate","task_mode": "creative_focus", "novelty_score": null, "notes": "PLACEHOLDER — high-novelty visual event; candidate raised"},
-      {"t_ms": 99, "frame_id": "frame-003", "event_type": "policy_decision",             "task_mode": "creative_focus", "novelty_score": null, "resolution_frame": true, "expected_action_class": "silence", "expected_reason_code": "COOLDOWN_BLOCKED", "notes": "PLACEHOLDER — creative_focus disables aesthetic_reaction_budget; silence required"}
+    "status": "final",
+    "sub_cases": [
+      {
+        "sub_case_id": "creative_focus_suppression",
+        "description": "creative_focus mode + aesthetic_novelty_score=0.7 -> silence/QUIET_MODE_BLOCKED",
+        "frames": [
+          {
+            "t_ms": 0,
+            "frame_id": "cf-frame-000",
+            "event_type": "raw_video_frame",
+            "sub_case": "creative_focus_suppression",
+            "policy_inputs": {
+              "user_speaking": false,
+              "eou_probability": 0.9,
+              "assistant_speaking": false,
+              "scene_change_score": 0.0,
+              "deictic_reference": false,
+              "user_addressed_agent": false,
+              "urgency_score": 0.0,
+              "proactivity_budget_remaining": {},
+              "privacy_mode": "normal",
+              "current_task_mode": "creative_focus",
+              "social_mode": "user_addressing_agent",
+              "risk_mode": "normal",
+              "cooldown_state": {},
+              "attachment_risk_level": 0.0,
+              "aesthetic_novelty_score": 0.7,
+              "short_response_appropriate": false
+            },
+            "notes": "user silently writing; creative_focus mode active"
+          },
+          {
+            "t_ms": 33,
+            "frame_id": "cf-frame-001",
+            "event_type": "task_mode_classification",
+            "sub_case": "creative_focus_suppression",
+            "policy_inputs": {
+              "user_speaking": false,
+              "eou_probability": 0.9,
+              "assistant_speaking": false,
+              "scene_change_score": 0.0,
+              "deictic_reference": false,
+              "user_addressed_agent": false,
+              "urgency_score": 0.0,
+              "proactivity_budget_remaining": {},
+              "privacy_mode": "normal",
+              "current_task_mode": "creative_focus",
+              "social_mode": "user_addressing_agent",
+              "risk_mode": "normal",
+              "cooldown_state": {},
+              "attachment_risk_level": 0.0,
+              "aesthetic_novelty_score": 0.7,
+              "short_response_appropriate": false
+            },
+            "notes": "task mode confirmed creative_focus"
+          },
+          {
+            "t_ms": 66,
+            "frame_id": "cf-frame-002",
+            "event_type": "aesthetic_reaction_candidate",
+            "sub_case": "creative_focus_suppression",
+            "policy_inputs": {
+              "user_speaking": false,
+              "eou_probability": 0.9,
+              "assistant_speaking": false,
+              "scene_change_score": 0.0,
+              "deictic_reference": false,
+              "user_addressed_agent": false,
+              "urgency_score": 0.0,
+              "proactivity_budget_remaining": {},
+              "privacy_mode": "normal",
+              "current_task_mode": "creative_focus",
+              "social_mode": "user_addressing_agent",
+              "risk_mode": "normal",
+              "cooldown_state": {},
+              "attachment_risk_level": 0.0,
+              "aesthetic_novelty_score": 0.7,
+              "short_response_appropriate": false
+            },
+            "resolution_frame": true,
+            "expected_action_type": "silence",
+            "expected_reason_code": "QUIET_MODE_BLOCKED",
+            "notes": "high-novelty visual event; creative_focus in _AESTHETIC_DISABLED_MODES -> QUIET_MODE_BLOCKED (mode-disable path, not rate-limit/COOLDOWN_BLOCKED)"
+          }
+        ]
+      },
+      {
+        "sub_case_id": "normal_mode_fires",
+        "description": "normal mode + aesthetic_novelty_score=0.7 -> aesthetic_reaction/PROACTIVITY_BUDGET_AVAILABLE (contrast sub-case)",
+        "frames": [
+          {
+            "t_ms": 200,
+            "frame_id": "n-frame-000",
+            "event_type": "raw_video_frame",
+            "sub_case": "normal_mode_fires",
+            "policy_inputs": {
+              "user_speaking": false,
+              "eou_probability": 0.9,
+              "assistant_speaking": false,
+              "scene_change_score": 0.0,
+              "deictic_reference": false,
+              "user_addressed_agent": false,
+              "urgency_score": 0.0,
+              "proactivity_budget_remaining": {},
+              "privacy_mode": "normal",
+              "current_task_mode": "normal",
+              "social_mode": "user_addressing_agent",
+              "risk_mode": "normal",
+              "cooldown_state": {},
+              "attachment_risk_level": 0.0,
+              "aesthetic_novelty_score": 0.7,
+              "short_response_appropriate": false
+            },
+            "notes": "same aesthetic_novelty_score=0.7; normal mode active; no cooldown"
+          },
+          {
+            "t_ms": 233,
+            "frame_id": "n-frame-001",
+            "event_type": "task_mode_classification",
+            "sub_case": "normal_mode_fires",
+            "policy_inputs": {
+              "user_speaking": false,
+              "eou_probability": 0.9,
+              "assistant_speaking": false,
+              "scene_change_score": 0.0,
+              "deictic_reference": false,
+              "user_addressed_agent": false,
+              "urgency_score": 0.0,
+              "proactivity_budget_remaining": {},
+              "privacy_mode": "normal",
+              "current_task_mode": "normal",
+              "social_mode": "user_addressing_agent",
+              "risk_mode": "normal",
+              "cooldown_state": {},
+              "attachment_risk_level": 0.0,
+              "aesthetic_novelty_score": 0.7,
+              "short_response_appropriate": false
+            },
+            "notes": "task mode confirmed normal"
+          },
+          {
+            "t_ms": 266,
+            "frame_id": "n-frame-002",
+            "event_type": "aesthetic_reaction_candidate",
+            "sub_case": "normal_mode_fires",
+            "policy_inputs": {
+              "user_speaking": false,
+              "eou_probability": 0.9,
+              "assistant_speaking": false,
+              "scene_change_score": 0.0,
+              "deictic_reference": false,
+              "user_addressed_agent": false,
+              "urgency_score": 0.0,
+              "proactivity_budget_remaining": {},
+              "privacy_mode": "normal",
+              "current_task_mode": "normal",
+              "social_mode": "user_addressing_agent",
+              "risk_mode": "normal",
+              "cooldown_state": {},
+              "attachment_risk_level": 0.0,
+              "aesthetic_novelty_score": 0.7,
+              "short_response_appropriate": false
+            },
+            "resolution_frame": true,
+            "expected_action_type": "aesthetic_reaction",
+            "expected_reason_code": "PROACTIVITY_BUDGET_AVAILABLE",
+            "notes": "same novelty score; normal mode not in _AESTHETIC_DISABLED_MODES; no cooldown -> aesthetic_reaction fires"
+          }
+        ]
+      }
     ]
   }
 }
