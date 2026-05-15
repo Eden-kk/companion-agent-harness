@@ -6,3 +6,34 @@
 # retention-governed sensitive artifacts.
 #
 # Filled in during Stage 0 implementation; empty stub at v0.1a-bootstrap.
+#
+# Entry schema (per Anchor 2 — locked by Task 2 PR):
+#   id: stable enum name; renaming after data carries the ID requires
+#       retroactive reclassification.
+#   description: human-readable purpose.
+#   ttl_days_or_indefinite: integer (days) or the string "indefinite".
+#
+# ID names are durable metadata; TTL values are config-only (tunable without
+# data migration).
+
+retention_policies:
+  retrieval_audit_30d:
+    description: |
+      Audit log for memory retrieval queries. 30 days retention sufficient
+      for "why did you say that?" lookback + debugging; longer retention
+      offers no replay-determinism benefit.
+    ttl_days_or_indefinite: 30
+
+  commit_audit_30d:
+    description: |
+      Audit log for memory commit completions. 30 days. Same rationale
+      as retrieval_audit_30d.
+    ttl_days_or_indefinite: 30
+
+  audit_indefinite:
+    description: |
+      Forget tombstones and hard-delete receipts. Retained indefinitely
+      per spec lines 523-534: "minimal audit tombstone retained" /
+      "non-content deletion receipt retained". The receipts contain NO
+      content, only structural identifiers + timestamps.
+    ttl_days_or_indefinite: indefinite
