@@ -90,3 +90,33 @@ def test_backchannel_determinism():
     d2 = decide(inputs, ["sig-1"], p_backchannel=0.85)
     assert d1 == d2
     assert d1.action_type == "backchannel"
+
+
+def test_audio_visual_conflict_high_score():
+    """audio_visual_conflict_score > 0.7 → clarification with AUDIO_VISUAL_CONFLICT, not full_response."""
+    result = decide(_inputs(audio_visual_conflict_score=0.9, user_addressed_agent=True), ["sig-1"])
+    assert result.primary_reason_code == ReasonCode.AUDIO_VISUAL_CONFLICT
+    assert result.action_type != "full_response"
+    assert result.action_type == "clarification"
+
+
+def test_audio_visual_conflict_determinism():
+    """Identical inputs with high conflict score → bit-identical SpeakDecision (invariant #5)."""
+    inputs = _inputs(audio_visual_conflict_score=0.9, user_addressed_agent=True)
+    d1 = decide(inputs, ["sig-1"])
+    d2 = decide(inputs, ["sig-1"])
+    assert d1 == d2
+    assert d1.primary_reason_code == ReasonCode.AUDIO_VISUAL_CONFLICT
+
+
+def test_audio_visual_conflict_below_threshold_unaffected():
+    """audio_visual_conflict_score <= 0.7 does not trigger conflict branch."""
+    result = decide(_inputs(audio_visual_conflict_score=0.7, user_addressed_agent=True), ["sig-1"])
+    assert result.action_type == "full_response"
+    assert result.primary_reason_code == ReasonCode.EOU_CONFIRMED
+
+
+def test_audio_visual_conflict_default_zero():
+    """PolicyInputs default audio_visual_conflict_score=0.0 — existing tests unaffected."""
+    inputs = _inputs()
+    assert inputs.audio_visual_conflict_score == 0.0

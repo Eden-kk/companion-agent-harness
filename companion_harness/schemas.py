@@ -100,6 +100,7 @@ class PolicyInputs:
     risk_mode:                   str
     cooldown_state:              dict[str, int]
     attachment_risk_level:       float
+    audio_visual_conflict_score: float = 0.0
 
 
 @dataclass
