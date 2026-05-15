@@ -102,6 +102,7 @@ class PolicyInputs:
     attachment_risk_level:       float
     audio_visual_conflict_score: float = 0.0
     grounding_confidence:        float = 1.0
+    deictic_ambiguous:           bool  = False
 
 
 @dataclass

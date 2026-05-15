@@ -169,7 +169,7 @@
     {
       "frame_id": "frame-003",
       "sub_case": "ambiguous",
-      "action_type": "silence",
+      "action_type": "clarification",
       "primary_reason_code": "DEICTIC_AMBIGUOUS",
       "supporting_reason_codes": [],
       "notes": "ambiguous two-candidate case: policy must refuse confident answer; action_type in {clarification, silence}"
