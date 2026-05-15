@@ -18,10 +18,15 @@ Synthesis is invoked ONLY downstream of a policy-approved SpeakDecision
 Callers must hold a SpeakDecision before calling synthesize().  The contract test
 asserts that every synthesis event traces causally to a SpeakDecision event.
 
-## Production backend
+## Concrete backends
 
-The real backend (MiniCPM-o as_duplex audio or CosyVoice2) is a follow-on task.
-`SilentTtsAdapter` is the minimal deterministic stub used for contract tests only.
+`SilentTtsAdapter` (below) is the minimal deterministic stub used for fixture
+contract tests — it produces fixed silent PCM chunks and has no I/O. The
+first audible backend is `KokoroTtsAdapter` (`tts_kokoro.py`), pure-ONNX
+Kokoro-82M. The spec-canonical CosyVoice2 (Part 9) and MiniCPM-o native
+`as_duplex` audio (OQ-1 preference) remain in-scope swaps — see
+`tts_kokoro.py`'s module docstring for the platform analysis that gated
+the Path-C decision on the current b200 venv.
 """
 
 from __future__ import annotations
