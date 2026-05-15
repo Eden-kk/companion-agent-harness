@@ -139,8 +139,19 @@ class VisionSidecar:
     # ------------------------------------------------------------------
     # Grounding pass (gated by deictic_reference)
 
-    def resolve(self, query: str, *, deictic_reference: bool, deictic_evt_id: str = "") -> GroundingResult:
-        """Run the deictic-grounding pass against the most recent buffered frame.
+    def resolve(
+        self,
+        query: str,
+        *,
+        deictic_reference: bool,
+        deictic_evt_id: str = "",
+        prior_referent_frame_id: str = "",
+    ) -> GroundingResult:
+        """Run the deictic-grounding pass against a buffered frame.
+
+        When `prior_referent_frame_id` is set, resolves against that specific
+        frame from the ring buffer (continuity: "that one" → prior referent).
+        Otherwise resolves against the most recent buffered frame.
 
         Returns not-resolvable when:
         - `deictic_reference` is False (gate not open),
@@ -152,7 +163,15 @@ class VisionSidecar:
         if self._privacy_mode == "no_camera_memory" or not self._buffer:
             return _NOT_RESOLVABLE
 
-        frame_ref = self._buffer[-1]
+        if prior_referent_frame_id:
+            frame_ref = next(
+                (r for r in self._buffer if r.event_id == prior_referent_frame_id),
+                None,
+            )
+            if frame_ref is None:
+                return _NOT_RESOLVABLE
+        else:
+            frame_ref = self._buffer[-1]
         label, confidence = self._grounding_model(frame_ref.frame_bytes, query)
         result = GroundingResult(
             label=label,
