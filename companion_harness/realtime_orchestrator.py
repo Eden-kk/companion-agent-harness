@@ -398,12 +398,6 @@ class StreamingRealtimeOrchestrator:
                 payload_ref=trace_uri,
             )
             self._logger.log(policy_evt)
-            self._logger.log(self._make_event(
-                event_id=self._new_event_id(),
-                event_type=f"policy_decision_action_{decision.action_type}",
-                caused_by=[policy_evt_id],
-                payload_kind="signal",
-            ))
 
             trace_dict = dataclasses.asdict(dataclasses.replace(
                 trace,

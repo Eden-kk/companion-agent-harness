@@ -1,4 +1,4 @@
-"""Offline live-loop latency analyzer (v0.1d Task 7 main).
+"""Offline live-loop latency analyzer (v0.1d Task 7 main, v0.1e Task 6 migration).
 
 Pure functions over list[Event].  No I/O, no subprocess, no printing.
 Deterministic for a given event list.
@@ -12,13 +12,19 @@ status_reason convention (§8):
   All other reasons are TRANSIENT (more samples or config fix may resolve them).
 
 MIN_SAMPLES_FOR_GATE = 3.  Below this count → NOT_MEASURED.
+
+v0.1e Task 6: action_selected is read from DecisionTrace.counterfactuals via
+DecisionTraceStore.read(decision_id).  compute_metrics() accepts an optional
+trace_dir: Path; when None, DecisionTrace lookup falls back to None (treating
+every policy_decision as not-full-response, producing NOT_MEASURED).
 """
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Literal
+from pathlib import Path
+from typing import Any, Literal
 
 from companion_harness.schemas import Event
 
@@ -114,13 +120,50 @@ def _split_sessions(events: list[Event]) -> list[list[Event]]:
 # Per-metric computers
 # ---------------------------------------------------------------------------
 
-def _compute_direct_question_latency(events: list[Event]) -> MetricResult:
-    """Start: policy_decision_action_full_response; end: first causally-downstream
-    assistant_audio_buffer_flushed that does NOT have a backchannel in its causal chain."""
+def _load_action_selected(policy_evt: Event, store: Any) -> str | None:
+    """Return counterfactuals['action_selected'] for a policy_decision event, or None."""
+    if store is None or policy_evt.payload_ref is None:
+        return None
+    if not policy_evt.payload_ref.startswith("decision_trace://"):
+        return None
+    decision_id = policy_evt.payload_ref[len("decision_trace://"):]
+    try:
+        trace = store.read(decision_id)
+        return trace.counterfactuals.get("action_selected")
+    except FileNotFoundError:
+        return None
+
+
+def _make_store(trace_dir: Path | None) -> Any:
+    if trace_dir is None:
+        return None
+    from companion_harness.decision_trace_store import DecisionTraceStore
+    return DecisionTraceStore(trace_dir)
+
+
+def _compute_direct_question_latency(
+    events: list[Event],
+    trace_dir: Path | None = None,
+) -> MetricResult:
+    """Start: policy_decision where action_selected=='full_response'; end: first causally-downstream
+    assistant_audio_buffer_flushed that does NOT have a backchannel-decision in its causal chain."""
     sorted_evts = _sort_events(events)
     index = _build_index(events)
+    store = _make_store(trace_dir)
 
-    full_response_evts = [e for e in sorted_evts if e.event_type == "policy_decision_action_full_response"]
+    # Identify policy_decision events whose trace has action_selected == "full_response".
+    # Also identify those with action_selected == "backchannel" for causal-chain exclusion.
+    pd_evts = [e for e in sorted_evts if e.event_type == "policy_decision"]
+    full_response_pd_ids: set[str] = set()
+    backchannel_pd_ids: set[str] = set()
+    for pd in pd_evts:
+        action = _load_action_selected(pd, store)
+        if action == "full_response":
+            full_response_pd_ids.add(pd.event_id)
+        elif action == "backchannel":
+            backchannel_pd_ids.add(pd.event_id)
+
+    full_response_evts = [e for e in pd_evts if e.event_id in full_response_pd_ids]
     if not full_response_evts:
         return MetricResult(
             metric_name="direct_question_latency",
@@ -145,8 +188,7 @@ def _compute_direct_question_latency(events: list[Event]) -> MetricResult:
     matched_flush_ids: set[str] = set()
 
     for fr_evt in full_response_evts:
-        # The parent policy_decision is in fr_evt.caused_by[0]
-        policy_decision_id = fr_evt.caused_by[0] if fr_evt.caused_by else None
+        policy_decision_id = fr_evt.event_id
 
         paired_flush: Event | None = None
         for flush in flush_evts:
@@ -154,17 +196,11 @@ def _compute_direct_question_latency(events: list[Event]) -> MetricResult:
                 continue
             if flush.timestamp_mono_ms < fr_evt.timestamp_mono_ms:
                 continue
-            # Check causal chain: flush must be causally downstream of the policy_decision
-            if policy_decision_id is None:
-                continue
             ancestors = _causal_ancestors(flush.event_id, index)
             if policy_decision_id not in ancestors:
                 continue
             # Exclude backchannel-derived flushes (edge case 3)
-            bc_in_chain = any(
-                index.get(aid) is not None and index[aid].event_type == "policy_decision_action_backchannel"
-                for aid in ancestors
-            )
+            bc_in_chain = any(aid in backchannel_pd_ids for aid in ancestors)
             if bc_in_chain:
                 continue
             paired_flush = flush
@@ -418,7 +454,10 @@ def _compute_end_to_end_latency(events: list[Event]) -> MetricResult:
 # Public API
 # ---------------------------------------------------------------------------
 
-def compute_metrics(events: list[Event]) -> dict[str, MetricResult]:
+def compute_metrics(
+    events: list[Event],
+    trace_dir: Path | None = None,
+) -> dict[str, MetricResult]:
     """Compute the full §3 metric table from an event log.
 
     Returns a dict keyed by metric_name:
@@ -429,6 +468,11 @@ def compute_metrics(events: list[Event]) -> dict[str, MetricResult]:
 
     Multi-session logs (split on harness_init boundaries) compute each metric
     per session; results are aggregated across sessions (trials pooled).
+
+    trace_dir: directory containing DecisionTrace JSON files produced by
+    DecisionTraceStore.write().  Required for direct_question_latency to
+    distinguish full_response from other action types.  When None, that metric
+    returns NOT_MEASURED.
     """
     sessions = _split_sessions(events)
 
@@ -443,7 +487,7 @@ def compute_metrics(events: list[Event]) -> dict[str, MetricResult]:
     dql_no_fr_sessions = 0
 
     for sess_events in sessions:
-        dql = _compute_direct_question_latency(sess_events)
+        dql = _compute_direct_question_latency(sess_events, trace_dir)
         if dql.status_reason == "no_full_response_decisions_in_session":
             dql_no_fr_sessions += 1
         else:
@@ -465,8 +509,11 @@ def compute_metrics(events: list[Event]) -> dict[str, MetricResult]:
         all_e2e_trials.extend(e2e.trials)
 
     # Re-compute aggregated direct_question_latency
-    total_fr_decisions = (
-        sum(1 for e in events if e.event_type == "policy_decision_action_full_response")
+    _store = _make_store(trace_dir)
+    total_fr_decisions = sum(
+        1 for e in events
+        if e.event_type == "policy_decision"
+        and _load_action_selected(e, _store) == "full_response"
     )
     if total_fr_decisions == 0:
         dql_result = MetricResult(

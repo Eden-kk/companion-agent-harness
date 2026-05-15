@@ -1,10 +1,14 @@
-"""policy_decision_action_<X> typed sub-event emission tests (Task 7 prereq).
+"""policy_decision event and DecisionTrace tests (v0.1e Task 6 migration).
+
+v0.1d had typed policy_decision_action_<X> sub-events (PR #91).
+v0.1e Task 6 removes them; action_selected is now read from
+DecisionTrace.counterfactuals["action_selected"] via the payload_ref URI.
 
 Success criterion:
   pytest -k policy_decision_subevents passes with 3 tests.
-  Every SpeakDecision that produces a policy_decision event also
-  co-emits a policy_decision_action_<action_type> sub-event whose
-  caused_by list contains the parent policy_decision event_id.
+  Every policy_decision event has a payload_ref pointing at a trace
+  file that carries counterfactuals["action_selected"] == the action type.
+  No policy_decision_action_* typed sub-events appear in the log.
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ import pytest
 
 from companion_harness.audio_output_controller import AudioOutputController
 from companion_harness.backchannel_classifier import BackchannelClassifier
+from companion_harness.decision_trace_store import DecisionTraceStore
 from companion_harness.event_logger import EventLogger
 from companion_harness.foreground_model import ForegroundModel
 from companion_harness.input_ingest import CaptureMetadata, InputIngest
@@ -177,6 +182,7 @@ def _build_orch(
     audio_in: asyncio.Queue,
     vad_probs: list[float],
     speak_policy=None,
+    trace_dir: Path | None = None,
 ) -> StreamingRealtimeOrchestrator:
     vad = VADDetector(
         model=_FakeVADModel(vad_probs),
@@ -220,6 +226,7 @@ def _build_orch(
         audio_output=controller,
         tts_adapter=SilentTtsAdapter(chunk_count=1),
         proposal_batch_window_ms=200,
+        decision_trace_dir=trace_dir,
     )
 
 
@@ -240,13 +247,15 @@ async def _push_frames(
 
 
 @pytest.mark.asyncio
-async def test_full_response_emits_typed_subevent(tmp_path: Path):
-    """full_response decision co-emits policy_decision_action_full_response
-    whose caused_by contains the parent policy_decision event_id."""
+async def test_full_response_trace_has_action_selected(tmp_path: Path):
+    """full_response decision: policy_decision.payload_ref points at a trace with
+    counterfactuals['action_selected'] == 'full_response'.
+    No typed sub-events emitted."""
+    trace_dir = tmp_path / "decision_traces"
     logger, received = _make_logger()
     await logger.start()
 
-    ingest = InputIngest(logger=logger, blob_dir=tmp_path)
+    ingest = InputIngest(logger=logger, blob_dir=tmp_path / "blobs")
     session_id = "test-subevt-full"
     session = ingest.open_session("test-client")
     audio_in: asyncio.Queue[tuple[bytes, str]] = asyncio.Queue(maxsize=64)
@@ -259,6 +268,7 @@ async def test_full_response_emits_typed_subevent(tmp_path: Path):
         audio_in=audio_in,
         vad_probs=vad_probs,
         speak_policy=_FixedActionPolicy("full_response"),
+        trace_dir=trace_dir,
     )
 
     await orch.start()
@@ -267,26 +277,34 @@ async def test_full_response_emits_typed_subevent(tmp_path: Path):
     await orch.stop()
 
     policy_evts = [e for e in received if e.event_type == "policy_decision"]
-    sub_evts = [e for e in received if e.event_type == "policy_decision_action_full_response"]
-
     assert policy_evts, "No policy_decision event emitted"
-    assert sub_evts, "No policy_decision_action_full_response sub-event emitted"
 
-    parent_id = policy_evts[0].event_id
-    assert parent_id in sub_evts[0].caused_by, (
-        f"Sub-event caused_by {sub_evts[0].caused_by!r} does not contain parent id {parent_id!r}"
+    # payload_ref must point at a trace file
+    pd = policy_evts[0]
+    assert pd.payload_ref is not None, "policy_decision.payload_ref is None"
+    assert pd.payload_ref.startswith("decision_trace://")
+    decision_id = pd.payload_ref[len("decision_trace://"):]
+
+    store = DecisionTraceStore(trace_dir)
+    trace = store.read(decision_id)
+    assert trace.counterfactuals.get("action_selected") == "full_response", (
+        f"action_selected={trace.counterfactuals.get('action_selected')!r}"
     )
-    assert isinstance(sub_evts[0].timestamp_mono_ms, int)
+
+    # No typed sub-events
+    sub_evts = [e for e in received if e.event_type.startswith("policy_decision_action_")]
+    assert not sub_evts, f"unexpected typed sub-events: {[e.event_type for e in sub_evts]}"
 
 
 @pytest.mark.asyncio
-async def test_silence_emits_typed_subevent(tmp_path: Path):
-    """silence decision co-emits policy_decision_action_silence
-    whose caused_by contains the parent policy_decision event_id."""
+async def test_silence_trace_has_action_selected(tmp_path: Path):
+    """silence decision: policy_decision.payload_ref points at a trace with
+    counterfactuals['action_selected'] == 'silence'."""
+    trace_dir = tmp_path / "decision_traces"
     logger, received = _make_logger()
     await logger.start()
 
-    ingest = InputIngest(logger=logger, blob_dir=tmp_path)
+    ingest = InputIngest(logger=logger, blob_dir=tmp_path / "blobs")
     session_id = "test-subevt-silence"
     session = ingest.open_session("test-client")
     audio_in: asyncio.Queue[tuple[bytes, str]] = asyncio.Queue(maxsize=64)
@@ -299,6 +317,7 @@ async def test_silence_emits_typed_subevent(tmp_path: Path):
         audio_in=audio_in,
         vad_probs=vad_probs,
         speak_policy=_FixedActionPolicy("silence"),
+        trace_dir=trace_dir,
     )
 
     await orch.start()
@@ -307,23 +326,29 @@ async def test_silence_emits_typed_subevent(tmp_path: Path):
     await orch.stop()
 
     policy_evts = [e for e in received if e.event_type == "policy_decision"]
-    sub_evts = [e for e in received if e.event_type == "policy_decision_action_silence"]
-
     assert policy_evts, "No policy_decision event emitted"
-    assert sub_evts, "No policy_decision_action_silence sub-event emitted"
 
-    parent_id = policy_evts[0].event_id
-    assert parent_id in sub_evts[0].caused_by
-    assert isinstance(sub_evts[0].timestamp_mono_ms, int)
+    pd = policy_evts[0]
+    assert pd.payload_ref is not None
+    decision_id = pd.payload_ref[len("decision_trace://"):]
+
+    store = DecisionTraceStore(trace_dir)
+    trace = store.read(decision_id)
+    assert trace.counterfactuals.get("action_selected") == "silence"
+
+    # No typed sub-events
+    sub_evts = [e for e in received if e.event_type.startswith("policy_decision_action_")]
+    assert not sub_evts, f"unexpected typed sub-events: {[e.event_type for e in sub_evts]}"
 
 
 @pytest.mark.asyncio
-async def test_subevent_count_matches_decision_count(tmp_path: Path):
-    """Each policy_decision event has exactly one corresponding typed sub-event."""
+async def test_trace_count_matches_decision_count(tmp_path: Path):
+    """Each policy_decision event has exactly one corresponding trace file on disk."""
+    trace_dir = tmp_path / "decision_traces"
     logger, received = _make_logger()
     await logger.start()
 
-    ingest = InputIngest(logger=logger, blob_dir=tmp_path)
+    ingest = InputIngest(logger=logger, blob_dir=tmp_path / "blobs")
     session_id = "test-subevt-count"
     session = ingest.open_session("test-client")
     audio_in: asyncio.Queue[tuple[bytes, str]] = asyncio.Queue(maxsize=64)
@@ -336,6 +361,7 @@ async def test_subevent_count_matches_decision_count(tmp_path: Path):
         audio_in=audio_in,
         vad_probs=vad_probs,
         speak_policy=_FixedActionPolicy("full_response"),
+        trace_dir=trace_dir,
     )
 
     await orch.start()
@@ -344,9 +370,17 @@ async def test_subevent_count_matches_decision_count(tmp_path: Path):
     await orch.stop()
 
     policy_evts = [e for e in received if e.event_type == "policy_decision"]
-    sub_evts = [e for e in received if e.event_type.startswith("policy_decision_action_")]
+    assert policy_evts, "No policy_decision events emitted"
 
-    assert len(policy_evts) == len(sub_evts), (
-        f"Mismatch: {len(policy_evts)} policy_decision events but "
-        f"{len(sub_evts)} policy_decision_action_* sub-events"
+    store = DecisionTraceStore(trace_dir)
+    for pd in policy_evts:
+        assert pd.payload_ref is not None
+        decision_id = pd.payload_ref[len("decision_trace://"):]
+        trace = store.read(decision_id)
+        assert trace.decision_id == decision_id
+
+    # No typed sub-events
+    sub_evts = [e for e in received if e.event_type.startswith("policy_decision_action_")]
+    assert not sub_evts, (
+        f"typed sub-events must not be emitted; found: {[e.event_type for e in sub_evts]}"
     )
