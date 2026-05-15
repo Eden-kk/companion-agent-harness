@@ -30,16 +30,20 @@ Barge-in (Task 6):
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
+import json
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from companion_harness.audio_output_controller import AudioOutputController
 from companion_harness.backchannel_classifier import BackchannelClassifier
+from companion_harness.decision_trace_store import DecisionTraceStore
 from companion_harness.event_logger import EventLogger
 from companion_harness.foreground_model import ForegroundModel
 from companion_harness.input_ingest import IngestSession
@@ -51,6 +55,7 @@ from companion_harness.schemas import (
     ThinkerProposal,
     TurnSignal,
 )
+from companion_harness.speak_policy import build_decision_trace as _build_decision_trace
 from companion_harness.speak_policy import decide as _default_speak_policy_decide
 from companion_harness.tts_adapter import TtsAdapter
 from companion_harness.turn_detector_smart import SmartTurnDetector
@@ -146,6 +151,7 @@ class StreamingRealtimeOrchestrator:
         hard_cancel_after_ms: int = 120,
         p_speech_thresh: float = 0.5,
         p_backchannel_thresh: float = 0.7,
+        decision_trace_dir: Path | None = None,
     ) -> None:
         self._session_id = session_id
         self._logger = logger
@@ -196,6 +202,11 @@ class StreamingRealtimeOrchestrator:
         self._latest_p_backchannel: float = 0.0
         self._barge_in_in_flight: bool = False
         self._barge_in_tasks: list[asyncio.Task[None]] = []
+
+        # decision_trace_dir defaults to a subdir of the process cwd when not provided.
+        # Callers that care about the location should pass it explicitly.
+        _trace_dir = decision_trace_dir if decision_trace_dir is not None else Path("decision_traces")
+        self._decision_trace_store = DecisionTraceStore(_trace_dir)
 
         self._seq = 0
         self._tasks: list[asyncio.Task[None]] = []
@@ -366,19 +377,57 @@ class StreamingRealtimeOrchestrator:
                     extra_hash=type(exc).__name__,
                 ))
 
-            self._logger.log(self._make_event(  # policy_evt_id already allocated above
-                event_id=policy_evt_id,
-                event_type="policy_decision",
-                caused_by=[signal_evt_id],
-                payload_kind="signal",
-                extra_hash=decision.action_type,
-            ))
+            trace = _build_decision_trace(
+                decision=decision,
+                inputs=inputs,
+                signal_event_ids=[signal_evt_id],
+                decision_id=policy_evt_id,
+                p_backchannel=signal.p_backchannel,
+            )
+            trace_uri = self._decision_trace_store.write(trace)
+
+            policy_evt = dataclasses.replace(
+                self._make_event(
+                    event_id=policy_evt_id,
+                    event_type="policy_decision",
+                    caused_by=[signal_evt_id],
+                    payload_kind="signal",
+                    extra_hash=decision.action_type,
+                ),
+                retention_policy_id="decision_trace_30d",
+                payload_ref=trace_uri,
+            )
+            self._logger.log(policy_evt)
             self._logger.log(self._make_event(
                 event_id=self._new_event_id(),
                 event_type=f"policy_decision_action_{decision.action_type}",
                 caused_by=[policy_evt_id],
                 payload_kind="signal",
             ))
+
+            trace_dict = dataclasses.asdict(dataclasses.replace(
+                trace,
+                redacted_explanation=None,
+                sensitive_explanation_ref=None,
+            ))
+            # Convert Enum values to strings for consistent hashing.
+            trace_dict["primary_reason_code"] = trace.primary_reason_code.value
+            trace_dict["supporting_reason_codes"] = [rc.value for rc in trace.supporting_reason_codes]
+            payload_hash = hashlib.sha256(
+                json.dumps(trace_dict, sort_keys=True).encode()
+            ).hexdigest()
+            trace_evt = dataclasses.replace(
+                self._make_event(
+                    event_id=self._new_event_id(),
+                    event_type="decision_trace_emitted",
+                    caused_by=[policy_evt_id],
+                    payload_kind="model_output",
+                    extra_hash=payload_hash,
+                ),
+                retention_policy_id="decision_trace_30d",
+                payload_hash=payload_hash,
+            )
+            self._logger.log(trace_evt)
             decision_future.set_result(decision)
 
             # Open a new batch window for T3.

@@ -57,7 +57,7 @@ class MemoryEventSchema:
     notes:               str
 
 
-MEMORY_EVENT_SCHEMAS: dict[str, MemoryEventSchema] = {
+EVENT_TYPE_SCHEMAS: dict[str, MemoryEventSchema] = {
     # per-content event: all three variable axes come from the MemoryItem
     "memory_write_candidate": MemoryEventSchema(
         payload_kind="memory_op",
@@ -119,6 +119,20 @@ MEMORY_EVENT_SCHEMAS: dict[str, MemoryEventSchema] = {
         notes=(
             "Hard-delete receipt. No content per spec lines 532-533. "
             "subject_class derived from the deleted MemoryItem."
+        ),
+    ),
+
+    # policy-decision trace; all fields are policy-replay-safe (spec lines 365-381)
+    "decision_trace_emitted": MemoryEventSchema(
+        payload_kind="model_output",
+        subject_class="self",
+        sensitivity="safe",
+        retention_policy_id="decision_trace_30d",
+        notes=(
+            "DecisionTrace artifact co-emitted with policy_decision. "
+            "All fields (threshold_path, counterfactuals, reason codes, versions) "
+            "are Tier B replay-safe. redacted_explanation is None in v0.1e. "
+            "decision_id links to the paired policy_decision event payload."
         ),
     ),
 }

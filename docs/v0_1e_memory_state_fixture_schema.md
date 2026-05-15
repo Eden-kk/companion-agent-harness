@@ -97,7 +97,7 @@ Each op entry:
 
 | field | required | meaning |
 |---|---|---|
-| `event_type` | yes | one of the 5 memory_* types in MEMORY_EVENT_SCHEMAS |
+| `event_type` | yes | one of the 5 memory_* types in EVENT_TYPE_SCHEMAS |
 | `payload` | yes | subset of fields relevant to this event; not the full MemoryItem |
 | `caused_by` | yes | list of event_ids that causally precede this op |
 | `expected_outcome` | yes | human-readable assertion; contract test asserts this holds |

@@ -10,13 +10,14 @@ free-text reasoning on the policy path (invariant #5 / Stage 0 Tier B replay).
 from __future__ import annotations
 
 from companion_harness.reason_codes import ReasonCode
-from companion_harness.schemas import PolicyInputs, SpeakDecision
+from companion_harness.schemas import DecisionTrace, PolicyInputs, SpeakDecision
 from companion_harness.speak_policy_config import (
     SPEC_ALERT_THRESHOLD,
     _LEVEL_TO_FLOAT_THRESHOLD,
 )
 
 POLICY_VERSION = "v0.1d"
+CONFIG_VERSION = "v0.1e"
 
 _BLOCKING_SOCIAL_MODES = frozenset({
     "user_addressing_other",
@@ -193,4 +194,98 @@ def _silence(reason: ReasonCode, caused_by: list[str]) -> SpeakDecision:
         budget_bucket=None,
         allowed_prosody_tags=[],
         max_duration_ms=None,
+    )
+
+
+def _threshold_path_for(inputs: PolicyInputs, decision: SpeakDecision, p_backchannel: float) -> list[str]:
+    """Reconstruct the ordered threshold path traversed by decide() for the given inputs.
+
+    Each string names a gate that was evaluated, in evaluation order.  The list
+    is deterministic given (inputs, decision, p_backchannel) and contains only
+    enum-safe strings (no PII, no free text).
+    """
+    path: list[str] = []
+    if inputs.social_mode in _BLOCKING_SOCIAL_MODES:
+        path.append("social_mode_blocked")
+        return path
+    _alert_level = getattr(SPEC_ALERT_THRESHOLD, inputs.current_task_mode, "medium")
+    _alert_float = _LEVEL_TO_FLOAT_THRESHOLD[_alert_level]
+    path.append(f"alert_threshold:{inputs.current_task_mode}:{_alert_level}")
+    if inputs.urgency_score > _alert_float:
+        path.append("alert_threshold:exceeded")
+        return path
+    if inputs.user_speaking:
+        path.append("user_speaking:blocked")
+        return path
+    path.append("eou_gate")
+    if inputs.eou_probability <= 0.5:
+        path.append("eou_gate:below_threshold")
+        return path
+    path.append("eou_gate:passed")
+    if p_backchannel >= _BACKCHANNEL_THRESHOLD:
+        path.append("backchannel_threshold:exceeded")
+        return path
+    if inputs.audio_visual_conflict_score > _AUDIO_VISUAL_CONFLICT_THRESHOLD:
+        path.append("audio_visual_conflict:exceeded")
+        return path
+    if inputs.deictic_reference and inputs.grounding_confidence < _GROUNDING_CONFIDENCE_THRESHOLD:
+        path.append("grounding_confidence:below_threshold")
+        return path
+    if inputs.deictic_reference and inputs.deictic_ambiguous:
+        path.append("deictic_ambiguous:clarification")
+        return path
+    if inputs.short_response_appropriate:
+        if inputs.proactivity_budget_remaining.get("short_reaction", 0) > 0:
+            path.append("short_reaction_budget:available")
+        else:
+            path.append("short_reaction_budget:exhausted")
+        return path
+    if inputs.user_addressed_agent:
+        path.append("user_addressed_agent:full_response")
+        return path
+    if inputs.aesthetic_novelty_score > 0.5:
+        path.append("aesthetic_novelty:above_threshold")
+        _AESTHETIC_DISABLED_MODES = frozenset({
+            "creative_focus", "sleep_winddown", "group_unaddressed", "cooking",
+            "crisis_emergency",
+        })
+        if inputs.quiet_mode_active or inputs.current_task_mode in _AESTHETIC_DISABLED_MODES:
+            path.append("aesthetic_reaction:mode_blocked")
+        elif inputs.cooldown_state.get("aesthetic_reaction", 0) > 0:
+            path.append("aesthetic_reaction:cooldown_blocked")
+        else:
+            path.append("aesthetic_reaction:permitted")
+        return path
+    path.append("silence:fallthrough")
+    return path
+
+
+def build_decision_trace(
+    decision: SpeakDecision,
+    inputs: PolicyInputs,
+    signal_event_ids: list[str],
+    decision_id: str,
+    config_version: str = CONFIG_VERSION,
+    input_event_ids: list[str] | None = None,
+    p_backchannel: float = 0.0,
+) -> DecisionTrace:
+    """Construct a DecisionTrace linked to a SpeakDecision by shared decision_id.
+
+    Pure function — no I/O, no wall-clock reads.  Safe to call on the replay path.
+    input_event_ids defaults to signal_event_ids when not provided.
+    """
+    return DecisionTrace(
+        decision_id=decision_id,
+        input_event_ids=list(input_event_ids) if input_event_ids is not None else list(signal_event_ids),
+        signal_event_ids=list(signal_event_ids),
+        threshold_path=_threshold_path_for(inputs, decision, p_backchannel),
+        primary_reason_code=decision.primary_reason_code,
+        supporting_reason_codes=list(decision.supporting_reason_codes),
+        counterfactuals={"action_selected": decision.action_type},
+        redacted_explanation=None,
+        sensitive_explanation_ref=None,
+        policy_version=POLICY_VERSION,
+        config_version=config_version,
+        model_adapter_versions={},
+        retrieval_used=[],
     )
