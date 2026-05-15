@@ -135,6 +135,28 @@ class ThinkerProposal:
 
 @dataclass
 class MemoryItem:
+    """Provenance-complete memory record (invariant #3 / Part 5).
+
+    Field-to-invariant mapping (invariant #3: "Every memory item carries
+    source_event_id, created_at, confidence, salience, valid_from/valid_to,
+    superseded_by, and a user_visible_summary"):
+
+      source_event_id    — causal anchor; closes the event DAG (invariant #1).
+      created_at         — timestamp required by invariant #3.
+      confidence         — required by invariant #3; drives retrieval ranking.
+      salience           — required by invariant #3; drives retrieval ranking.
+      valid_from         — required by invariant #3.
+      valid_to           — required by invariant #3; set on forget/expiry →
+                           serves test_explicit_forget + test_correction.
+      superseded_by      — item_id of the correction record that replaces this
+                           one → serves test_explicit_forget + test_correction.
+      user_visible_summary — human-readable provenance summary required by
+                           invariant #3; routed through SensitiveField because
+                           it may embed PII (CLAUDE.md "Free-text fields go
+                           through SensitiveField") → serves
+                           test_why_did_you_say_that.
+    """
+
     item_id:            str
     store:              Literal["session", "core_profile", "episodic", "semantic_relational"]
     content:            dict
@@ -148,7 +170,7 @@ class MemoryItem:
     valid_from:         str
     valid_to:           str | None
     superseded_by:      str | None
-    user_visible_summary: str
+    user_visible_summary: SensitiveField
 
 
 @dataclass
