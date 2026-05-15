@@ -106,9 +106,19 @@ class AudioOutputController:
         self._stop_event.set()
         return evt.event_id
 
-    def set_generation_task(self, task: asyncio.Task[None]) -> None:
+    def set_generation_task(self, task: asyncio.Task[None] | None) -> None:
         """Register the running asyncio generation Task so cancel_generation() can cancel it."""
         self._generation_task = task
+
+    @property
+    def generation_task(self) -> asyncio.Task[None] | None:
+        """Return the currently registered play_task, or None if none is registered.
+
+        Read by ``StreamingRealtimeOrchestrator._fire_barge_in`` from a separate
+        ``asyncio.Task`` in the same event loop. Safe by virtue of single-threaded
+        asyncio; do not call from a different OS thread.
+        """
+        return self._generation_task
 
     def cancel_generation(self, caused_by: list[str]) -> None:
         """Cancel any in-flight generation task and log it."""

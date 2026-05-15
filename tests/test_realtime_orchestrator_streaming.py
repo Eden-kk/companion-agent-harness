@@ -657,7 +657,7 @@ async def test_coalescing_rapid_eou_signals(tmp_path: Path):
         confidence=0.9,
         evidence_event_ids=["fake-evt-id-2"],
     )
-    await orch._turn_signals.put((second_signal, "fake-evt-id-2"))
+    await orch._t2_inbox.put((second_signal, "fake-evt-id-2"))
 
     # Let T2 process the signal.
     await asyncio.sleep(0.1)

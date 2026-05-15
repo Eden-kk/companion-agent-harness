@@ -69,15 +69,20 @@ class VADDetector:
         self._seq = 0
         self._in_speech = False
         self._silence_ms = 0
+        self.last_frame_p_speech: float = 0.0
+        self.last_frame_event_id: str = ""
 
     def process_frame(self, frame: bytes, caused_by: list[str]) -> TurnSignal | None:
         """Feed one audio frame through the VAD model.
 
         Logs a vad_frame event for every frame (invariant #1).
         Returns a TurnSignal when end-of-utterance is detected, else None.
+        Sets last_frame_p_speech and last_frame_event_id after each call.
         """
         p_speech = self._model(frame)
         frame_evt = self._emit("vad_frame", caused_by, p_speech)
+        self.last_frame_p_speech = p_speech
+        self.last_frame_event_id = frame_evt.event_id
 
         if p_speech >= self._speech_threshold:
             self._in_speech = True
