@@ -43,7 +43,7 @@ What you can validate in Phase 1 today:
 | Direct-question latency end-to-end | ❌ Unmeasurable today | No `full_response` → no end-to-end timing yet. |
 | Barge-in cutting voice mid-utterance | ❌ Unmeasurable today | Requires `full_response` to interrupt. |
 
-**Phase 2 — Audio + video manual test.** Vision capture works (PR #123 — `raw_video_frame` events emitted). VisionSidecar wiring into the foreground model is **landed** (v0.1h Task 2). Pass `--enable-vision` (default OFF) to enable a per-session `VisionSidecar` that buffers the most-recent frame and pairs it with the next audio chunk so MiniCPM-o's vision tower runs once per frame. Scene-change scoring and deictic grounding are stubs (0.0 / False) until v0.1j.
+**Phase 2 — Audio + video manual test.** Vision capture works (PR #123 — `raw_video_frame` events emitted). VisionSidecar wiring into the foreground model is **landed** (v0.1h Task 2). Pass `--enable-vision` (default OFF) to enable a per-session `VisionSidecar` that buffers the most-recent frame and pairs it with the next audio chunk so MiniCPM-o's vision tower runs once per frame. Scene-change scoring and deictic grounding return stub values (0.0 / False) until v0.1j.
 
 ---
 
@@ -268,7 +268,7 @@ HF_HUB_CACHE=/raid/huggingface/hub /raid/yid042/venvs/companion-harness/bin/pyth
     --blob-dir /tmp/manual_test_blobs --enable-vision
 ```
 
-The startup banner reports `Vision: ENABLED (init_vision=True, +~18 GB VRAM)`. The `/healthz` endpoint reports `vision_enabled`, `frames_buffered` (per-session count), and `last_frame_event_id`. Omit `--enable-vision` to stay on the audio-only path (startup banner shows `Vision: disabled`).
+The startup banner reports `Vision: ENABLED (init_vision=True, +~18 GB VRAM)`. The `/healthz` endpoint reports `vision_enabled`, `frames_buffered` (count across active sessions), and `last_frame_event_id`. Omit `--enable-vision` to stay on the audio-only path (startup banner shows `Vision: disabled`).
 
 ### 3.3 New scenarios to try
 
@@ -287,7 +287,7 @@ Scenarios I–L require `--enable-vision`. Without it you will see `raw_video_fr
 - Frame rate is artificially low. Realistic vision performance is gated on the live-loop milestone, not this rig.
 - No video output panel (e.g., a "this is what the agent thinks it sees" overlay). That's a v-future enhancement.
 - VisionSidecar runs on b200 — the local browser only captures and sends. Browser CPU stays low.
-- `--enable-vision` loads MiniCPM-o with `init_vision=True` (+~18 GB VRAM on b200). Default OFF preserves audio-only path unchanged.
+- `--enable-vision` loads MiniCPM-o with `init_vision=True` (+~18 GB VRAM on b200). Default OFF preserves the audio-only path unchanged.
 
 ---
 
@@ -367,7 +367,7 @@ open http://localhost:8800/        # macOS
 - `docs/visionclaw-adaptation-plan-draft.md` — the wire contract (§4) the ingest endpoint follows.
 - `docs/milestone-live-loop-integration-draft.md` — the milestone that wired voice-back end-to-end. Voice-back is now present in the harness; the speak-decision gating (Finding 6) is the remaining open issue.
 - `docs/research-asr-models-2026-05-15.md` — the ASR-model selection rationale behind PR #136.
-- `docs/plan-vision-sidecar-wiring.md` — the converged VisionSidecar plan (PR #137); pinned target for Phase 2 unblock.
+- `docs/plan-vision-sidecar-wiring.md` — the converged VisionSidecar plan; implemented by v0.1h Task 2.
 - `docs/architecture-v0.1.md` — the frozen spec. Everything in this handbook is consistent with it; nothing in this handbook overrides it.
 - `docs/remote-dev.md` — the local↔b200 workflow this handbook depends on.
 - `docs/design-config-and-dashboard.md` — the design doc behind the threshold-tuning dashboard (PR #143 is open; once merged, the doc will live at that path).
@@ -383,4 +383,4 @@ open http://localhost:8800/        # macOS
 - PR #134 — backchannel `emit_threshold=0.3` gate; fixes drain-storm.
 - PR #135 — closed the live-loop integration between policy → TTS → audio sink.
 - PR #136 — `whisper-tiny.en` ASR via faster-whisper; populates `PolicyInputs.user_transcript` on EOU.
-- PR #137 — converged VisionSidecar wiring plan (in flight at time of writing).
+- v0.1h Task 2 — VisionSidecar per-session wiring + `--enable-vision` flag (landed).
