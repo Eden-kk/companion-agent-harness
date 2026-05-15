@@ -1016,6 +1016,21 @@ def _load_kokoro_tts_adapter() -> Any:
     )
 
 
+def _load_native_minicpm_tts_adapter() -> Any:
+    """Seam factory for MiniCPM-o native duplex TTS.
+
+    UNAVAILABLE: #157 — libcudart blocker prevents loading stepaudio2/torchaudio.
+    When issue #157 resolves:
+      1. Remove the init_tts no-op patch in foreground_model_minicpm.py:131-139.
+      2. Replace this NotImplementedError with a real NativeMiniCPMTtsAdapter
+         import and construction (init_tts=True must be passed to MiniCPMStreamingModel).
+      3. Change the default in main() from _load_kokoro_tts_adapter to this function.
+    """
+    raise NotImplementedError(
+        "native_minicpm TTS unavailable — see issue #157 (libcudart blocker)"
+    )  # UNAVAILABLE: #157
+
+
 def _load_asr_model() -> Any:
     """Lazy import + construct FasterWhisperASRModel (whisper-tiny.en). b200 only.
 
@@ -1072,6 +1087,18 @@ def main(argv: list[str] | None = None) -> int:
             "model alongside audio. Default OFF — audio-only path unchanged."
         ),
     )
+    parser.add_argument(
+        "--tts-adapter",
+        dest="tts_adapter",
+        choices=["kokoro", "native_minicpm"],
+        default="kokoro",
+        help=(
+            "TTS adapter to load at startup. "
+            "'kokoro' (default): Kokoro-82M-ONNX via KokoroTtsAdapter. "
+            "'native_minicpm': MiniCPM-o native duplex TTS — UNAVAILABLE until "
+            "issue #157 (libcudart blocker) resolves; raises NotImplementedError."
+        ),
+    )
     args = parser.parse_args(argv)
 
     blob_dir: Path = args.blob_dir
@@ -1089,7 +1116,11 @@ def main(argv: list[str] | None = None) -> int:
         vad_factory: Optional[Callable[[], Any]] = _load_silero_vad_model
         smart_turn_factory: Optional[Callable[[], Any]] = _load_pipecat_smart_turn_model
         backchannel_factory: Optional[Callable[[], Any]] = _load_asr_lexicon_backchannel_model
-        tts_factory: Optional[Callable[[], Any]] = _load_kokoro_tts_adapter
+        tts_factory: Optional[Callable[[], Any]] = (
+            _load_native_minicpm_tts_adapter
+            if args.tts_adapter == "native_minicpm"
+            else _load_kokoro_tts_adapter
+        )
         asr_factory: Optional[Callable[[], Any]] = _load_asr_model
     else:
         vad_factory = smart_turn_factory = backchannel_factory = tts_factory = asr_factory = None

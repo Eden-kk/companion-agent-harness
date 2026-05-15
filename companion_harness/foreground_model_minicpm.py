@@ -131,6 +131,7 @@ class MiniCPMStreamingModel:
         # Patch init_tts to a no-op before calling as_duplex so that
         # from_existing_model() does not try to import stepaudio2/torchaudio.
         # generate_audio=False ensures the TTS path is never entered at runtime.
+        # UNAVAILABLE: #157 — remove patch + pass init_tts=True + generate_audio=True once libcudart resolves.
         _orig_init_tts = base.init_tts
         base.init_tts = lambda *a, **kw: None  # type: ignore[method-assign]
         try:
