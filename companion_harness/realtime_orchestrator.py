@@ -53,6 +53,7 @@ from companion_harness.decision_trace_store import DecisionTraceStore
 from companion_harness.event_logger import EventLogger
 from companion_harness.foreground_model import ForegroundModel
 from companion_harness.input_ingest import IngestSession
+from companion_harness.native_duplex_eou import NativeDuplexEouSource, _NullNativeDuplexEouSource
 from companion_harness.reason_codes import ReasonCode
 from companion_harness.schemas import (
     Event,
@@ -200,6 +201,7 @@ class StreamingRealtimeOrchestrator:
         vision_sidecar: "VisionSidecar | None" = None,
         addressing_classifier: AddressingClassifier | None = None,
         config_store: "ConfigStore | None" = None,
+        native_duplex_eou_source: NativeDuplexEouSource | None = None,
     ) -> None:
         self._session_id = session_id
         self._logger = logger
@@ -262,6 +264,12 @@ class StreamingRealtimeOrchestrator:
         self._vision_sidecar = vision_sidecar
         self._addressing_classifier = addressing_classifier
         self._config_store = config_store
+        # UNAVAILABLE: #157 — libcudart blocker; _NullNativeDuplexEouSource used
+        # by default so every EOU decision routes through the SmartTurn/VAD
+        # fallback path while emitting signal_producer_fallback for replay.
+        self._native_duplex_eou_source: NativeDuplexEouSource = (
+            native_duplex_eou_source if native_duplex_eou_source is not None else _NullNativeDuplexEouSource()
+        )
         # Last-applied policy thresholds (read from config_store at EOU); when
         # config_store is None we fall back to speak_policy.decide()'s defaults
         # by leaving these as None and not passing kwargs.
@@ -401,6 +409,36 @@ class StreamingRealtimeOrchestrator:
 
             # --- TurnSignal: EOU policy decision path ---
             signal, signal_evt_id = item
+
+            # --- EOU producer routing (Anchor 3, v0.1j Task 8) ---
+            # native_duplex is the spec-named primary EOU source. When it returns
+            # a signal, use it directly. When it returns None (unavailable or below
+            # threshold), keep the SmartTurn/VAD signal that arrived here and emit
+            # signal_producer_fallback so replay knows which path fired.
+            # UNAVAILABLE: #157 — libcudart blocker; native_duplex EOU unavailable.
+            native_signal = self._native_duplex_eou_source.get_eou_signal()
+            if native_signal is not None:
+                signal = native_signal
+                signal_evt_id = (
+                    native_signal.evidence_event_ids[0] if native_signal.evidence_event_ids else signal_evt_id
+                )
+            else:
+                fallback_evt = self._make_event(
+                    event_id=self._new_event_id(),
+                    event_type="signal_producer_fallback",
+                    caused_by=[signal_evt_id],
+                    payload_kind="signal",
+                    extra_hash="native_duplex->smart_turn",
+                )
+                fallback_evt = dataclasses.replace(
+                    fallback_evt,
+                    payload_inline={
+                        "primary_producer": "native_duplex",
+                        "fallback_producer": signal.detector,
+                        "reason": "native_duplex_unavailable",
+                    },
+                )
+                self._logger.log(fallback_evt)
 
             # Track latest backchannel score for barge-in post-validation.
             self._latest_p_backchannel = signal.p_backchannel
