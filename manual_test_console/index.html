@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>manual-test console — Phase 1</title>
+<style>
+  :root { --bg:#0e1116; --fg:#cdd6e0; --row:#161a22; --accent:#5fb3ff; --warn:#ffa657; --err:#f97583; --ok:#56d364; }
+  html, body { background: var(--bg); color: var(--fg); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; margin: 0; }
+  body { display: grid; grid-template-rows: auto 1fr; height: 100vh; }
+  header { padding: 8px 12px; background: #11151c; border-bottom: 1px solid #1f2530; display: flex; gap: 12px; align-items: center; }
+  header h1 { margin: 0; font-size: 14px; font-weight: 600; color: var(--accent); }
+  header .meta { font-size: 11px; opacity: 0.75; }
+  header button { background: #1f2530; color: var(--fg); border: 1px solid #2c3340; padding: 4px 10px; cursor: pointer; border-radius: 3px; font: inherit; font-size: 12px; }
+  header button:disabled { opacity: 0.5; cursor: not-allowed; }
+  header .status { padding: 2px 8px; border-radius: 3px; font-size: 11px; }
+  .status.ok { background: rgba(86, 211, 100, 0.15); color: var(--ok); }
+  .status.off { background: rgba(249, 117, 131, 0.15); color: var(--err); }
+  .status.warn { background: rgba(255, 166, 87, 0.15); color: var(--warn); }
+  main { display: grid; grid-template-columns: 1fr 1fr; gap: 0; overflow: hidden; }
+  .panel { display: flex; flex-direction: column; overflow: hidden; border-right: 1px solid #1f2530; }
+  .panel:last-child { border-right: none; }
+  .panel h2 { margin: 0; padding: 6px 12px; font-size: 12px; background: #11151c; border-bottom: 1px solid #1f2530; color: var(--accent); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+  .rows { overflow-y: auto; flex: 1; padding: 4px 0; }
+  .row { padding: 4px 12px; border-bottom: 1px dotted #1f2530; font-size: 11.5px; display: grid; grid-template-columns: 90px 1fr; gap: 8px; }
+  .row .kind { color: var(--accent); }
+  .row.raw_audio_chunk .kind { color: #79b8ff; }
+  .row.vad_turn_signal .kind { color: #ffd070; }
+  .row.policy_decision .kind { color: var(--ok); }
+  .row.log_drop_or_degrade .kind, .row.orphan .kind { color: var(--err); }
+  .row .body { color: var(--fg); opacity: 0.85; word-break: break-all; }
+  .row .body small { opacity: 0.6; }
+  .log { padding: 6px 12px; font-size: 11px; background: #11151c; border-top: 1px solid #1f2530; max-height: 80px; overflow-y: auto; }
+  .log div { opacity: 0.8; }
+</style>
+</head>
+<body>
+<header>
+  <h1>manual-test console</h1>
+  <span class="meta">Phase 1 — audio capture + observability</span>
+  <button id="btn-start">Start mic</button>
+  <button id="btn-stop" disabled>Stop</button>
+  <span id="cap-status" class="status off">capture: off</span>
+  <span id="display-status" class="status off">display: off</span>
+  <span class="meta" id="chunk-meta">chunks: 0</span>
+  <span class="meta" id="event-meta">events: 0</span>
+  <span class="meta" id="orphan-meta">orphans: 0</span>
+</header>
+<main>
+  <section class="panel">
+    <h2>Ingested input Events</h2>
+    <div class="rows" id="ingest-rows"></div>
+  </section>
+  <section class="panel">
+    <h2>TurnSignals / SpeakDecisions / causal chain</h2>
+    <div class="rows" id="signal-rows"></div>
+    <div class="log" id="log"></div>
+  </section>
+</main>
+
+<script>
+(() => {
+  "use strict";
+
+  const SAMPLE_RATE_TARGET = 16000;
+  const CHUNK_MS = 100; // ~100ms PCM16 chunks = 3200 bytes @ 16kHz
+  const CLIENT_ID = "browser-" + Math.random().toString(36).slice(2, 10);
+
+  const wsScheme = location.protocol === "https:" ? "wss:" : "ws:";
+  const INGEST_URL = `${wsScheme}//${location.host}/ws/ingest`;
+  const DISPLAY_URL = `${wsScheme}//${location.host}/ws/display`;
+
+  const ingestRows = document.getElementById("ingest-rows");
+  const signalRows = document.getElementById("signal-rows");
+  const logEl = document.getElementById("log");
+  const btnStart = document.getElementById("btn-start");
+  const btnStop = document.getElementById("btn-stop");
+  const capStatus = document.getElementById("cap-status");
+  const dispStatus = document.getElementById("display-status");
+  const chunkMeta = document.getElementById("chunk-meta");
+  const eventMeta = document.getElementById("event-meta");
+  const orphanMeta = document.getElementById("orphan-meta");
+
+  let mediaStream = null;
+  let audioCtx = null;
+  let workletNode = null;
+  let ingestWs = null;
+  let displayWs = null;
+  let chunkCount = 0;
+  let eventCount = 0;
+  let orphanCount = 0;
+  const knownEventIds = new Set();
+  // Modality buckets to render in the right column.
+  const SIGNAL_TYPES = new Set([
+    "vad_frame", "vad_turn_signal",
+    "policy_decision", "decision_trace_emitted",
+    "harness_init", "session_open",
+    "log_drop_or_degrade",
+    "orchestrator_started", "orchestrator_stopped",
+  ]);
+
+  function log(msg) {
+    const d = document.createElement("div");
+    d.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+    logEl.appendChild(d);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function fmtTs(mono_ms) {
+    return (mono_ms / 1000).toFixed(3) + "s";
+  }
+
+  function renderEvent(evt) {
+    eventCount++;
+    eventMeta.textContent = `events: ${eventCount}`;
+    knownEventIds.add(evt.event_id);
+
+    // Orphan check: caused_by entries must already be known (best-effort live view).
+    let orphan = false;
+    if (evt.event_type !== "harness_init" && evt.event_type !== "log_drop_or_degrade") {
+      for (const ref of (evt.caused_by || [])) {
+        if (!knownEventIds.has(ref)) { orphan = true; break; }
+      }
+    }
+    if (orphan) {
+      orphanCount++;
+      orphanMeta.textContent = `orphans: ${orphanCount}`;
+    }
+
+    const row = document.createElement("div");
+    row.className = "row " + (orphan ? "orphan " : "") + (evt.event_type || "");
+    const kind = document.createElement("div");
+    kind.className = "kind";
+    kind.textContent = evt.event_type || "?";
+    const body = document.createElement("div");
+    body.className = "body";
+    const cb = (evt.caused_by || []).map((s) => s.slice(0, 12)).join(",") || "-";
+    body.innerHTML = `<small>${fmtTs(evt.timestamp_mono_ms)} src=${evt.source} seq=${evt.seq_no} caused_by=[${cb}] hash=${(evt.payload_hash || "").slice(0,12)}</small>`;
+
+    const isIngest = evt.payload_kind === "raw_audio" || evt.payload_kind === "raw_video";
+    const target = isIngest ? ingestRows : (SIGNAL_TYPES.has(evt.event_type) || evt.payload_kind === "signal") ? signalRows : ingestRows;
+    target.appendChild(row);
+    row.prepend(kind);
+    // Cap rendered rows.
+    while (target.children.length > 500) target.removeChild(target.firstChild);
+    target.scrollTop = target.scrollHeight;
+  }
+
+  // ---------------- Display WS ----------------
+  function connectDisplay() {
+    displayWs = new WebSocket(DISPLAY_URL);
+    displayWs.onopen = () => { dispStatus.textContent = "display: connected"; dispStatus.className = "status ok"; log("display ws connected"); };
+    displayWs.onclose = () => { dispStatus.textContent = "display: closed"; dispStatus.className = "status off"; log("display ws closed; retrying in 2s"); setTimeout(connectDisplay, 2000); };
+    displayWs.onerror = (e) => log("display ws error");
+    displayWs.onmessage = (msg) => {
+      try {
+        const parsed = JSON.parse(msg.data);
+        if (parsed.kind === "event") renderEvent(parsed.event);
+      } catch (e) { log("bad display msg: " + e); }
+    };
+  }
+  connectDisplay();
+
+  // ---------------- Capture pipeline ----------------
+  // AudioWorklet processor source — registered inline.
+  const WORKLET_SRC = `
+    class PCMChunker extends AudioWorkletProcessor {
+      constructor() {
+        super();
+        this._buf = [];
+        this._sampleCount = 0;
+      }
+      process(inputs) {
+        const input = inputs[0];
+        if (!input || input.length === 0) return true;
+        const ch0 = input[0]; // mono first channel
+        if (!ch0) return true;
+        // Append Float32 samples; conversion to PCM16 happens on the main thread.
+        this._buf.push(new Float32Array(ch0));
+        this._sampleCount += ch0.length;
+        // Flush every ~100ms at sampleRate.
+        const target = Math.floor(sampleRate * 0.1);
+        if (this._sampleCount >= target) {
+          // Concat and send.
+          const flat = new Float32Array(this._sampleCount);
+          let off = 0;
+          for (const b of this._buf) { flat.set(b, off); off += b.length; }
+          this.port.postMessage({ samples: flat, sampleRate }, [flat.buffer]);
+          this._buf = [];
+          this._sampleCount = 0;
+        }
+        return true;
+      }
+    }
+    registerProcessor("pcm-chunker", PCMChunker);
+  `;
+
+  function downsampleTo16k(float32Samples, fromSampleRate) {
+    if (fromSampleRate === SAMPLE_RATE_TARGET) return float32Samples;
+    const ratio = fromSampleRate / SAMPLE_RATE_TARGET;
+    const newLen = Math.floor(float32Samples.length / ratio);
+    const out = new Float32Array(newLen);
+    for (let i = 0; i < newLen; i++) {
+      const idx = Math.floor(i * ratio);
+      out[i] = float32Samples[idx];
+    }
+    return out;
+  }
+
+  function floatToPCM16(f32) {
+    const buf = new ArrayBuffer(f32.length * 2);
+    const view = new DataView(buf);
+    for (let i = 0; i < f32.length; i++) {
+      let s = Math.max(-1, Math.min(1, f32[i]));
+      view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    }
+    return new Uint8Array(buf);
+  }
+
+  function bytesToBase64(bytes) {
+    let bin = "";
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin);
+  }
+
+  async function startCapture() {
+    btnStart.disabled = true;
+    try {
+      mediaStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: SAMPLE_RATE_TARGET, echoCancellation: true, noiseSuppression: true } });
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const blob = new Blob([WORKLET_SRC], { type: "application/javascript" });
+      const url = URL.createObjectURL(blob);
+      await audioCtx.audioWorklet.addModule(url);
+      const src = audioCtx.createMediaStreamSource(mediaStream);
+      workletNode = new AudioWorkletNode(audioCtx, "pcm-chunker");
+      workletNode.port.onmessage = (ev) => {
+        const { samples, sampleRate } = ev.data;
+        const down = downsampleTo16k(samples, sampleRate);
+        const pcm16 = floatToPCM16(down);
+        sendChunk(pcm16);
+      };
+      src.connect(workletNode);
+      // Don't connect to destination — don't echo mic back to speakers.
+
+      ingestWs = new WebSocket(INGEST_URL);
+      ingestWs.onopen = () => { capStatus.textContent = "capture: on"; capStatus.className = "status ok"; log("ingest ws connected"); };
+      ingestWs.onclose = () => { capStatus.textContent = "capture: off"; capStatus.className = "status off"; log("ingest ws closed"); };
+      ingestWs.onerror = (e) => log("ingest ws error");
+
+      btnStop.disabled = false;
+      log(`capture started — ctx sample_rate=${audioCtx.sampleRate} target=${SAMPLE_RATE_TARGET}Hz client_id=${CLIENT_ID}`);
+    } catch (e) {
+      log("startCapture error: " + e.message);
+      btnStart.disabled = false;
+    }
+  }
+
+  function sendChunk(pcm16) {
+    if (!ingestWs || ingestWs.readyState !== WebSocket.OPEN) return;
+    const envelope = {
+      event_type: "raw_audio",
+      payload_inline_or_ref: bytesToBase64(pcm16),
+      timestamp_mono_ms: Math.round(performance.now()),
+      timestamp_wall: new Date().toISOString(),
+      client_id: CLIENT_ID,
+      device_label: "browser-mic",
+    };
+    ingestWs.send(JSON.stringify(envelope));
+    chunkCount++;
+    chunkMeta.textContent = `chunks: ${chunkCount}`;
+  }
+
+  async function stopCapture() {
+    btnStop.disabled = true;
+    if (workletNode) { try { workletNode.disconnect(); } catch (e) {} }
+    if (audioCtx) { try { await audioCtx.close(); } catch (e) {} }
+    if (mediaStream) mediaStream.getTracks().forEach((t) => t.stop());
+    if (ingestWs && ingestWs.readyState === WebSocket.OPEN) ingestWs.close();
+    workletNode = null; audioCtx = null; mediaStream = null;
+    btnStart.disabled = false;
+    log("capture stopped");
+  }
+
+  btnStart.addEventListener("click", startCapture);
+  btnStop.addEventListener("click", stopCapture);
+
+  log("page loaded — click \"Start mic\" to begin streaming.");
+})();
+</script>
+</body>
+</html>
