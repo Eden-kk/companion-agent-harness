@@ -135,7 +135,7 @@ def test_fake_tool_router_tool_call_id_deterministic():
 def test_fake_tool_router_local_only_raises_not_implemented():
     """local_only privacy mode raises NotImplementedError on dispatch (OQ-11)."""
     router = FakeToolRouter(session_id="s1", privacy_mode="local_only")
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(NotImplementedError, match="#96"):
         _run(router.dispatch(_make_request()))
 
 

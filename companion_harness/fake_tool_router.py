@@ -73,7 +73,8 @@ class FakeToolRouter:
     async def dispatch(self, request: ToolDispatchRequest) -> ToolDispatchResult:
         if self._privacy_mode == "local_only":
             raise NotImplementedError(
-                "ToolRouter.dispatch() is unavailable in local_only privacy mode (OQ-11)"
+                "ToolRouter.dispatch() is unavailable in local_only privacy mode; "
+                "see issue #96 (OQ-11)"
             )
 
         self._counter += 1

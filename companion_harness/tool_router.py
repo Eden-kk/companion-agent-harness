@@ -18,7 +18,7 @@ Anchor 2 ordering invariant (closes via caused_by[]):
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal, Protocol, runtime_checkable
 
 from companion_harness.schemas import Event
