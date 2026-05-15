@@ -47,6 +47,7 @@ __all__ = [
     "EnergyVADModel",
     "SilenceSmartTurnModel",
     "ZeroBackchannelModel",
+    "EmptyTranscriptASRModel",
     "NoopTtsAdapter",
     "SharedLoggerProxy",
     "WebSocketAudioSink",
@@ -139,6 +140,16 @@ class ZeroBackchannelModel:
 
     def __call__(self, frame: bytes) -> float:
         return 0.0
+
+
+class EmptyTranscriptASRModel:
+    """ASRModel stub — always returns "". Used under --use-stubs to avoid loading
+    faster-whisper on machines without GPU. The orchestrator's behavior with this
+    stub is identical to asr_model=None (transcript stays "").
+    """
+
+    def __call__(self, audio_chunks: bytes, sample_rate: int = 16000) -> str:
+        return ""
 
 
 # ---------------------------------------------------------------------------
@@ -288,6 +299,7 @@ def build_live_pipeline(
     vad_model: Any = None,
     smart_turn_model: Any = None,
     backchannel_model: Any = None,
+    asr_model: Any = None,
     use_stubs: bool = False,
     audio_out_broker: AudioOutSinkTarget | None = None,
     tts_adapter: Any = None,
@@ -298,14 +310,15 @@ def build_live_pipeline(
     in a `ForegroundModel`). At server startup the real instance is a singleton
     `MiniCPMStreamingModel`; tests inject a fake.
 
-    `vad_model`, `smart_turn_model`, `backchannel_model` are detector model
+    `vad_model`, `smart_turn_model`, `backchannel_model`, `asr_model` are model
     instances satisfying the corresponding Protocols. They are typically
     pre-loaded singletons (e.g. SileroVADModel, PipecatSmartTurnModel,
-    ASRLexiconBackchannelModel) constructed once at server startup. When
-    `use_stubs=True` (or any individual model is None), the CPU stubs
-    (EnergyVADModel / SilenceSmartTurnModel / ZeroBackchannelModel) are used
-    in place of any missing detector. Tests rely on this stubs-by-default
-    behavior to avoid loading torch / ONNX.
+    ASRLexiconBackchannelModel, FasterWhisperASRModel) constructed once at
+    server startup. When `use_stubs=True` (or any individual model is None),
+    the CPU stubs (EnergyVADModel / SilenceSmartTurnModel / ZeroBackchannelModel
+    / EmptyTranscriptASRModel) are used in place of any missing model.
+    Tests rely on this stubs-by-default behavior to avoid loading torch / ONNX
+    / faster_whisper.
 
     `tts_adapter` is a `TtsAdapter` instance (typically a `KokoroTtsAdapter`
     singleton constructed once at server startup). When `use_stubs=True` or
@@ -324,6 +337,7 @@ def build_live_pipeline(
         smart_turn_model = SilenceSmartTurnModel()
         backchannel_model = ZeroBackchannelModel()
         tts_adapter = NoopTtsAdapter()
+        asr_model = EmptyTranscriptASRModel()
     else:
         if vad_model is None:
             vad_model = EnergyVADModel()
@@ -333,6 +347,8 @@ def build_live_pipeline(
             backchannel_model = ZeroBackchannelModel()
         if tts_adapter is None:
             tts_adapter = NoopTtsAdapter()
+        if asr_model is None:
+            asr_model = EmptyTranscriptASRModel()
 
     vad = VADDetector(
         model=vad_model,
@@ -381,6 +397,7 @@ def build_live_pipeline(
         tts_adapter=tts_adapter,
         proposal_batch_window_ms=proposal_batch_window_ms,
         decision_trace_dir=decision_trace_dir,
+        asr_model=asr_model,
     )
 
     return LivePipeline(

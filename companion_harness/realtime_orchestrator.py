@@ -42,6 +42,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from companion_harness.asr_adapter import ASRModel
 from companion_harness.audio_output_controller import AudioOutputController
 from companion_harness.backchannel_classifier import BackchannelClassifier
 from companion_harness.decision_trace_store import DecisionTraceStore
@@ -177,6 +178,7 @@ class StreamingRealtimeOrchestrator:
         decision_trace_dir: Path | None = None,
         episodic_store: "MemoryManager | None" = None,
         semantic_store: "MemoryManager | None" = None,
+        asr_model: ASRModel | None = None,
     ) -> None:
         self._session_id = session_id
         self._logger = logger
@@ -235,6 +237,11 @@ class StreamingRealtimeOrchestrator:
 
         self._episodic_store = episodic_store
         self._semantic_store = semantic_store
+        self._asr_model = asr_model
+        # Per-turn audio buffer (PCM16 bytes). Appended on every audio frame in
+        # _audio_tee_task; consumed + cleared in T2 on EOU when asr_model is set.
+        # No-op (always empty / never consumed) when asr_model is None.
+        self._turn_audio_buffer: bytearray = bytearray()
         # FIFO-capped payload dict for memory_write_candidate and memory_retrieval_event.
         # Keyed by event_id; consumers access via payload_reader callback.
         self._memory_event_payloads: OrderedDict[str, dict] = OrderedDict()
@@ -309,6 +316,10 @@ class StreamingRealtimeOrchestrator:
             item = (frame_bytes, chunk_event_id)
             _drop_oldest_put(self._tee_to_detectors, item, self._logger, ["_dropped_before_enqueue"])
             _drop_oldest_put(self._tee_to_foreground, item, self._logger, ["_dropped_before_enqueue"])
+            # Accumulate per-turn audio for ASR (consumed + cleared in T2 on EOU).
+            # Skip when no ASR is wired so the buffer never grows unbounded.
+            if self._asr_model is not None:
+                self._turn_audio_buffer.extend(frame_bytes)
 
     async def _detector_fanout_task(self) -> None:
         """T1: Fan audio frames to all detectors; forward TurnSignals and VAD onset frames to T2."""
@@ -379,6 +390,19 @@ class StreamingRealtimeOrchestrator:
             )
 
             inputs = self._policy_inputs_builder(signal, sorted_history)
+
+            # --- ASR: transcribe the just-completed turn (synchronous in T2). ---
+            # On EOU the buffered PCM16 audio is fed to whisper-tiny.en (~50–80ms
+            # on b200). EOU is rare relative to the 32ms frame cadence so this
+            # synchronous call is acceptable. Buffer is cleared immediately so
+            # audio does not leak into the next turn. When asr_model is None,
+            # transcript stays "" (backward compatible).
+            transcript = ""
+            if self._asr_model is not None:
+                if self._turn_audio_buffer:
+                    transcript = self._asr_model(bytes(self._turn_audio_buffer))
+                self._turn_audio_buffer.clear()
+            inputs.user_transcript = transcript
 
             # --- Retrieval: fires on every EOU before decide() (plan §4.2 v4) ---
             stores_queried: list[str] = []
@@ -503,8 +527,8 @@ class StreamingRealtimeOrchestrator:
             decision_future.set_result(decision)
 
             # --- Explicit-remember detection (fires unconditionally on intent) ---
-            # v0.1e: transcript not yet wired (no ASR); transcript="" matches no phrase.
-            transcript = ""
+            # v0.1f: `transcript` is populated above by the ASR adapter on EOU
+            # (or remains "" when asr_model is None, matching no phrase).
             matched, extracted = _detect_explicit_remember(transcript)
             if matched and extracted:
                 cand_event_id = self._new_event_id()

@@ -161,6 +161,7 @@ class PolicyInputs:
     short_response_appropriate:  bool  = False
     retrieved_items:             list["MemoryItem"] = field(default_factory=list)
     tool_progress_evidence:      ToolProgressEvidence | None = None  # v0.1f Anchor 4
+    user_transcript:             str = ""  # ASR output for the current/just-completed turn. v0.1f addition.
 
 
 @dataclass
