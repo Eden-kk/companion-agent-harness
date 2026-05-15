@@ -7,6 +7,13 @@ name = "companion-harness"
 version = "0.1.0"
 requires-python = ">=3.12"
 
+[project.optional-dependencies]
+# manual-test web console (Phase 1: audio capture + observability).
+# aiohttp serves the static page and both ingest+display WebSockets in one
+# process. Not a hard dep of companion_harness — only required if you run
+# `python -m manual_test_console.server`.
+manual_test_console = ["aiohttp>=3.9"]
+
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["companion_harness*"]
+include = ["companion_harness*", "manual_test_console*"]
