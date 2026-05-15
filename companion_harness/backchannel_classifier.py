@@ -86,21 +86,26 @@ class BackchannelClassifier:
         logger: EventLogger,
         *,
         frame_duration_ms: int = 32,
+        emit_threshold: float = 0.3,
     ) -> None:
         self._model = model
         self._session_id = session_id
         self._logger = logger
         self._frame_duration_ms = frame_duration_ms
+        self._emit_threshold = emit_threshold
         self._seq = 0
 
     def process_frame(self, frame: bytes, caused_by: list[str]) -> TurnSignal | None:
         """Feed one audio frame through the backchannel model (every frame).
 
-        Logs a backchannel_classification event (invariant #1) and returns a
-        TurnSignal with p_backchannel from the model and independent p_done /
-        p_continue constants (see module docstring for rationale).
+        The model is invoked on every frame (WI-19). A backchannel_classification
+        event is logged and a TurnSignal returned only when p_backchannel >=
+        emit_threshold, suppressing noise-floor frames that would otherwise flood
+        the EventLogger queue at ~31 Hz during silence (invariant #10).
         """
         p_backchannel = self._model(frame)
+        if p_backchannel < self._emit_threshold:
+            return None
         frame_evt = self._emit("backchannel_classification", caused_by, p_backchannel)
         return TurnSignal(
             detector="backchannel",

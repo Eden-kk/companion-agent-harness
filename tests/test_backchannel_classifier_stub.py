@@ -58,10 +58,11 @@ async def test_mmmhmm_during_assistant_speech_emits_high_p_backchannel():
     """Task 9 success criterion: scripted mm-hmm trace → high-p_backchannel TurnSignal.
 
     The scripted trace represents a user emitting a backchannel vocalization
-    (p_backchannel=0.92) during assistant speech, followed by a silence frame
-    (p_backchannel=0.05). Only the vocalization frame is checked for high
-    p_backchannel; the silence frame verifies that non-backchannel frames are
-    also emitted (every-frame cadence) with low p_backchannel.
+    (p_backchannel=0.92) during assistant speech, followed by a noise-floor
+    silence frame (p_backchannel=0.05). The vocalization frame produces a
+    high-p_backchannel TurnSignal; the silence frame is below emit_threshold
+    (default 0.3) and is suppressed (no event, no TurnSignal) to keep the
+    EventLogger queue from being flooded at ~31 Hz during silence (invariant #10).
     """
     logger, received = _make_logger()
     await logger.start()
@@ -95,13 +96,11 @@ async def test_mmmhmm_during_assistant_speech_emits_high_p_backchannel():
     assert signal_0.p_done != signal_0.p_backchannel
     assert signal_0.p_continue != pytest.approx(1.0 - signal_0.p_backchannel)
 
-    # Silence frame: every-frame cadence — signal still emitted, low p_backchannel
-    assert signal_1 is not None
-    assert signal_1.p_backchannel < 0.2, (
-        f"expected p_backchannel < 0.2 for silence frame, got {signal_1.p_backchannel}"
-    )
+    # Silence frame: below emit_threshold (0.3) → suppressed (no event, no TurnSignal).
+    assert signal_1 is None
 
-    # Invariant #1: both frames logged
-    assert len(received) == 2
-    assert all(e.event_type == "backchannel_classification" for e in received)
-    assert all(e.caused_by == cause for e in received)
+    # Invariant #1: only the vocalization frame is logged; the noise-floor silence
+    # frame is not an event-worthy backchannel observation.
+    assert len(received) == 1
+    assert received[0].event_type == "backchannel_classification"
+    assert received[0].caused_by == cause
