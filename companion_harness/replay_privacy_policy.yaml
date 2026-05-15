@@ -68,3 +68,25 @@ retention_policies:
       highly_sensitive) is set on the wrapper Event; this retention ID
       governs the audit-log lifetime, not the content's privacy class.
     ttl_days_or_indefinite: 365
+
+  # --- v0.1f Stage 5 additions (Anchor 2 of docs/roadmap-v0.1f-draft.md) ---
+
+  tool_call_audit_30d:
+    description: |
+      Audit class for tool-call lifecycle receipts (tool_call_requested,
+      tool_call_dispatched, tool_progress_event, tool_call_completed,
+      tool_call_cancelled). 30 days retention is sufficient for "why did
+      you say that?" lookback over tool-status decisions and for the
+      Stage 5 contract tests (filler_evidence_bound,
+      tool_progress_attribution). v0.1f Anchor 2.
+    ttl_days_or_indefinite: 30
+
+  tool_result_default:
+    description: |
+      Default retention for `safe`-class tool result bodies referenced
+      from tool_call_completed events. Sensitive result bodies are
+      governed by their own (existing) retention policy ids from the
+      v0.1e alphabet; this id covers the safe-result default path so
+      no event lands in the log with a missing policy id. v0.1f
+      Anchor 2.
+    ttl_days_or_indefinite: 30

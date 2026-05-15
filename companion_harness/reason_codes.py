@@ -48,6 +48,37 @@ handoff." In policy replay the branches are distinguished by DecisionTrace
 code would add precision but is not enumerated in the Part 5 spec and the
 "extend cautiously" guidance (Part 5, line following SAFETY_OVERRIDE) applies.
 Closing the NOTE without adding a new member is the correct, minimal outcome.
+
+--- Stage 5 gap-audit conclusion (2026-05-15, v0.1f Task 1) ---
+
+Audit scope: Part 6 Stage 5 (two-tier MCP + evidence-bound filler; spec
+lines 562-597, 719-723) and docs/roadmap-v0.1f-draft.md Anchor 4 against
+the current enum.  Three candidates were evaluated per the roadmap Task 2:
+
+  TOOL_FILLER_BUDGET_EXHAUSTED   - ADDED.  Primary code on silence branches
+                                   where a filler was already emitted this
+                                   tool call (Anchor 4
+                                   silence-wins-after-first-filler).
+                                   Folding into COOLDOWN_BLOCKED would lose
+                                   the per-tool-call vs per-action-type
+                                   scope distinction (cooldowns are
+                                   per-action-type across the session;
+                                   filler budget is per-tool-call).
+
+  TOOL_PROGRESS_EVIDENCE_MISSING - ADDED.  Primary code on silence branches
+                                   where the foreground would otherwise
+                                   narrate tool progress but no
+                                   ToolProgressEvent exists in the log
+                                   (invariant #9 enforcement).  No existing
+                                   code captures the "evidence absent"
+                                   condition.
+
+  TOOL_CALL_CANCELLED            - DO NOT ADD.  Cancellation does not
+                                   produce a SpeakDecision; it produces a
+                                   tool_call_cancelled event (Anchor 2).
+                                   A ReasonCode is the wrong primitive for
+                                   an event-log receipt; the event_type
+                                   itself carries the meaning.
 """
 
 from enum import Enum
@@ -70,6 +101,8 @@ class ReasonCode(Enum):
     RUBRIC_VIOLATION               = "RUBRIC_VIOLATION"
     ATTACHMENT_RISK_DAMPEN         = "ATTACHMENT_RISK_DAMPEN"
     USER_REDUCTION_COMMAND_APPLIED = "USER_REDUCTION_COMMAND_APPLIED"
+    TOOL_FILLER_BUDGET_EXHAUSTED   = "TOOL_FILLER_BUDGET_EXHAUSTED"
+    TOOL_PROGRESS_EVIDENCE_MISSING = "TOOL_PROGRESS_EVIDENCE_MISSING"
 
 
 ReasonCode.RUBRIC_VIOLATION.__doc__               = (
@@ -155,3 +188,15 @@ ReasonCode.SAFETY_OVERRIDE.__doc__              = "Safety policy overrides norma
 ReasonCode.DEICTIC_AMBIGUOUS.__doc__            = "The deictic reference cannot be resolved to a single candidate."
 ReasonCode.VISUAL_LOW_CONFIDENCE.__doc__        = "The grounding result confidence is below the hallucination-resistance threshold."
 ReasonCode.AUDIO_VISUAL_CONFLICT.__doc__        = "The audio query and visual scene contradict."
+ReasonCode.TOOL_FILLER_BUDGET_EXHAUSTED.__doc__   = (
+    "A filler was already emitted for the current tool call; per Anchor 4 "
+    "silence-wins-after-first-filler (spec line 575), tool_status is "
+    "suppressed for the remainder of the call.  Distinct from COOLDOWN_BLOCKED "
+    "(per-action-type, session-scoped) because the filler budget is "
+    "per-tool-call."
+)
+ReasonCode.TOOL_PROGRESS_EVIDENCE_MISSING.__doc__ = (
+    "The foreground would otherwise narrate tool progress but no "
+    "tool_progress_event exists in the log to anchor the narration "
+    "(invariant #9 - no invented tool progress).  Silence wins."
+)
