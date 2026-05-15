@@ -295,6 +295,12 @@ class StreamingRealtimeOrchestrator:
                 payload_kind="signal",
                 extra_hash=decision.action_type,
             ))
+            self._logger.log(self._make_event(
+                event_id=self._new_event_id(),
+                event_type=f"policy_decision_action_{decision.action_type}",
+                caused_by=[policy_evt_id],
+                payload_kind="signal",
+            ))
             decision_future.set_result(decision)
 
             # Open a new batch window for T3.
