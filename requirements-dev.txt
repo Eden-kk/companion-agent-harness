@@ -2,3 +2,4 @@ pytest>=7.0
 pytest-asyncio>=0.23
 websockets>=12.0  # lazy-imported by run_ws_server / _handle_ws_client
 aiohttp>=3.9  # manual_test_console.server (HTTP + WebSocket on one port)
+pyyaml>=6.0  # replay_privacy_policy.yaml loaded by several test modules
