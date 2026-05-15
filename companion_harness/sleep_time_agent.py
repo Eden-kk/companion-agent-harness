@@ -121,7 +121,7 @@ class SleepTimeAgent:
             )
             return
 
-        store.commit(item)
+        store.commit(item, privacy_mode=payload.get("privacy_mode", "normal"))
 
         self._seq += 1
         self._event_logger.log(

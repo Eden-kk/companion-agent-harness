@@ -37,6 +37,7 @@ import os
 import pathlib
 from datetime import datetime, timezone
 
+from companion_harness.privacy_gates import _SkipCommit, check_privacy_gate
 from companion_harness.schemas import MemoryItem, SensitiveField
 
 __all__ = ["EpisodicMemoryStore"]
@@ -87,7 +88,11 @@ class EpisodicMemoryStore:
     # MemoryManager Protocol
     # ------------------------------------------------------------------
 
-    def commit(self, item: MemoryItem) -> None:
+    def commit(self, item: MemoryItem, privacy_mode: str = "normal") -> None:
+        try:
+            check_privacy_gate(item, privacy_mode)
+        except _SkipCommit:
+            return
         self._write(item)
 
     def retrieve(

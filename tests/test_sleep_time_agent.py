@@ -96,7 +96,7 @@ class _InMemoryStore:
     def __init__(self) -> None:
         self.committed: list[MemoryItem] = []
 
-    def commit(self, item: MemoryItem) -> None:
+    def commit(self, item: MemoryItem, privacy_mode: str = "normal") -> None:
         self.committed.append(item)
 
     def retrieve(self, query: str, top_k: int = 5) -> list[MemoryItem]:
@@ -112,7 +112,7 @@ class _InMemoryStore:
 class _RaisingStore:
     """Store whose commit always raises."""
 
-    def commit(self, item: MemoryItem) -> None:
+    def commit(self, item: MemoryItem, privacy_mode: str = "normal") -> None:
         raise RuntimeError("disk full")
 
     def retrieve(self, query: str, top_k: int = 5) -> list[MemoryItem]:
