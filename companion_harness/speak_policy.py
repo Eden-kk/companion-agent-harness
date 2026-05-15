@@ -21,6 +21,7 @@ _BLOCKING_SOCIAL_MODES = frozenset({
 })
 
 _BACKCHANNEL_THRESHOLD = 0.7
+_AUDIO_VISUAL_CONFLICT_THRESHOLD = 0.7
 
 
 def decide(
@@ -75,7 +76,20 @@ def decide(
             max_duration_ms=None,
         )
 
-    # 5. EOU confirmed.  Respond only when the agent was addressed.
+    # 5. Audio-visual conflict exceeds threshold — surface conflict, do not silently agree.
+    if inputs.audio_visual_conflict_score > _AUDIO_VISUAL_CONFLICT_THRESHOLD:
+        return SpeakDecision(
+            action_type="clarification",
+            primary_reason_code=ReasonCode.AUDIO_VISUAL_CONFLICT,
+            supporting_reason_codes=[],
+            redacted_explanation=None,
+            caused_by=caused_by,
+            budget_bucket="clarification",
+            allowed_prosody_tags=[],
+            max_duration_ms=None,
+        )
+
+    # 6. EOU confirmed.  Respond only when the agent was addressed.
     if inputs.user_addressed_agent:
         return SpeakDecision(
             action_type="full_response",
@@ -89,7 +103,7 @@ def decide(
             max_duration_ms=None,
         )
 
-    # 6. EOU confirmed but agent not explicitly addressed — silence wins ties.
+    # 7. EOU confirmed but agent not explicitly addressed — silence wins ties.
     return _silence(ReasonCode.NOT_ADDRESSED_TO_AGENT, caused_by)
 
 
