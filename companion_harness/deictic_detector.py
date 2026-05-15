@@ -20,9 +20,13 @@ that returns scripted results.
 
 from __future__ import annotations
 
+import hashlib
+import time
+from datetime import datetime, timezone
 from typing import Protocol, runtime_checkable
 
 from companion_harness.event_logger import EventLogger
+from companion_harness.schemas import Event
 
 __all__ = ["DeicticModel", "DeicticDetector"]
 
@@ -62,6 +66,7 @@ class DeicticDetector:
         self._model = model
         self._session_id = session_id
         self._logger = logger
+        self._seq = 0
 
     def classify(
         self,
@@ -71,7 +76,44 @@ class DeicticDetector:
     ) -> tuple[bool, float]:
         """Classify a completed utterance for deictic references.
 
-        Task 6 implements this: calls self._model, logs a deictic_classification
-        event (invariant #1), and returns (is_deictic, confidence).
+        Calls self._model, logs a deictic_classification event (invariant #1),
+        and returns (is_deictic, confidence).
         """
-        raise NotImplementedError
+        is_deictic, confidence = self._model(transcript, audio_buffer)
+        self._emit("deictic_classification", caused_by, is_deictic, confidence)
+        return is_deictic, confidence
+
+    # ------------------------------------------------------------------
+
+    def _next_seq(self) -> int:
+        self._seq += 1
+        return self._seq
+
+    def _emit(
+        self, event_type: str, caused_by: list[str], is_deictic: bool, confidence: float
+    ) -> Event:
+        now_ms = int(time.monotonic() * 1000)
+        seq = self._next_seq()
+        event_id = f"{self._session_id}-deictic-{seq}-{now_ms}"
+        payload_hash = hashlib.sha256(
+            f"{event_type}:{event_id}:{is_deictic}:{confidence:.4f}".encode()
+        ).hexdigest()[:16]
+        evt = Event(
+            event_id=event_id,
+            session_id=self._session_id,
+            schema_version=self.SCHEMA_VERSION,
+            seq_no=seq,
+            event_type=event_type,
+            timestamp_mono_ms=now_ms,
+            timestamp_wall=datetime.now(timezone.utc).isoformat(),
+            source=self.SOURCE,
+            caused_by=caused_by,
+            payload_hash=payload_hash,
+            payload_ref=None,
+            payload_kind="signal",
+            subject_class="self",
+            sensitivity="safe",
+            retention_policy_id="default",
+        )
+        self._logger.log(evt)
+        return evt
