@@ -8,7 +8,7 @@ Success criterion (verbatim):
 import pytest
 
 from companion_harness.memory_manager import MemoryManager, MemoryManagerStub
-from companion_harness.schemas import MemoryItem
+from companion_harness.schemas import MemoryItem, SensitiveField
 
 
 def _item() -> MemoryItem:
@@ -26,7 +26,7 @@ def _item() -> MemoryItem:
         valid_from="2026-01-01T00:00:00Z",
         valid_to=None,
         superseded_by=None,
-        user_visible_summary="test",
+        user_visible_summary=SensitiveField(retention_policy_id="default", value="test"),
     )
 
 
