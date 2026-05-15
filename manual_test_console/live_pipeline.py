@@ -256,6 +256,7 @@ class LivePipeline:
     audio_in: asyncio.Queue[tuple[bytes, str]]
     orchestrator: StreamingRealtimeOrchestrator
     tts_adapter: Any = None
+    vision_sidecar: Any = None
 
     async def start(self) -> None:
         await self.orchestrator.start()
@@ -303,6 +304,7 @@ def build_live_pipeline(
     use_stubs: bool = False,
     audio_out_broker: AudioOutSinkTarget | None = None,
     tts_adapter: Any = None,
+    vision_sidecar: Any = None,
 ) -> LivePipeline:
     """Construct a LivePipeline for one ingest session.
 
@@ -398,6 +400,7 @@ def build_live_pipeline(
         proposal_batch_window_ms=proposal_batch_window_ms,
         decision_trace_dir=decision_trace_dir,
         asr_model=asr_model,
+        vision_sidecar=vision_sidecar,
     )
 
     return LivePipeline(
@@ -405,4 +408,5 @@ def build_live_pipeline(
         audio_in=audio_in,
         orchestrator=orch,
         tts_adapter=tts_adapter,
+        vision_sidecar=vision_sidecar,
     )

@@ -109,15 +109,21 @@ class MiniCPMStreamingModel:
     TTS call, skipping init_tts is safe.
 
     Implements both DuplexModel (infer) and StreamingDuplexModel (infer_stream).
+
+    `init_vision` (default False) gates the MiniCPM-o vision tower. When True
+    the model is loaded with `init_vision=True` and `streaming_prefill` accepts
+    `frame_list=[PIL.Image]` alongside audio so video frames reach the model.
+    The default-off path preserves bit-for-bit backward compat with the
+    audio-only manual-test pipeline.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, init_vision: bool = False) -> None:
         base = AutoModel.from_pretrained(
             _MODEL_ID,
             trust_remote_code=True,
             attn_implementation="sdpa",
             torch_dtype=torch.bfloat16,
-            init_vision=False,
+            init_vision=init_vision,
             init_audio=True,
             init_tts=False,
         ).eval().cuda()
@@ -182,7 +188,18 @@ class MiniCPMStreamingModel:
                     )
                 return None
 
-            async for audio_bytes, _video in frame_iter:
+            async for audio_bytes, video_bytes in frame_iter:
+                # If a video frame is paired with this audio chunk, prefill
+                # the MiniCPM-o vision tower with it BEFORE the audio chunk
+                # is consumed (frame_list goes into the same KV cache).
+                # Per b200 pre-verification: streaming_prefill takes
+                # frame_list=[PIL.Image], not image= or images=.
+                if video_bytes is not None:
+                    from PIL import Image  # local import: optional dep
+                    import io  # noqa: WPS433
+                    img = Image.open(io.BytesIO(video_bytes)).convert("RGB")
+                    duplex.streaming_prefill(frame_list=[img])
+
                 # PCM16 → float32 normalised to [-1, 1]
                 samples = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
                 buf = np.concatenate([buf, samples])
