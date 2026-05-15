@@ -6,7 +6,14 @@ ThinkerProposal events on the display WS.
 
 Out of scope (deferred to a follow-up PR):
   - Voice-back (TTS / audio sink emits no audio bytes).
-  - Real Silero VAD / Pipecat Smart Turn v3 (filed as TODOs).
+
+Detector models:
+  - Default (real models): SileroVADModel + PipecatSmartTurnModel +
+    ASRLexiconBackchannelModel. Pre-constructed by the server at startup and
+    passed in via the `*_model_factory` knobs below.
+  - Stub mode (`use_stubs=True`): EnergyVADModel / SilenceSmartTurnModel /
+    ZeroBackchannelModel — CPU-only, deterministic, used by the contract tests
+    and as a manual-test fallback if a real-model load fails.
 
 Adapter discipline:
   - This module may import MiniCPMStreamingModel (which imports torch on b200).
@@ -245,12 +252,25 @@ def build_live_pipeline(
     foreground_duplex_model: Any,
     decision_trace_dir: Path | None = None,
     proposal_batch_window_ms: int = 200,
+    vad_model: Any = None,
+    smart_turn_model: Any = None,
+    backchannel_model: Any = None,
+    use_stubs: bool = False,
 ) -> LivePipeline:
     """Construct a LivePipeline for one ingest session.
 
     `foreground_duplex_model` must satisfy `StreamingDuplexModel` (it is wrapped
     in a `ForegroundModel`). At server startup the real instance is a singleton
     `MiniCPMStreamingModel`; tests inject a fake.
+
+    `vad_model`, `smart_turn_model`, `backchannel_model` are detector model
+    instances satisfying the corresponding Protocols. They are typically
+    pre-loaded singletons (e.g. SileroVADModel, PipecatSmartTurnModel,
+    ASRLexiconBackchannelModel) constructed once at server startup. When
+    `use_stubs=True` (or any individual model is None), the CPU stubs
+    (EnergyVADModel / SilenceSmartTurnModel / ZeroBackchannelModel) are used
+    in place of any missing detector. Tests rely on this stubs-by-default
+    behavior to avoid loading torch / ONNX.
 
     The shared `logger` is wrapped in a `SharedLoggerProxy` so this session's
     StreamingRealtimeOrchestrator.stop() cannot shut down the Application-owned
@@ -259,8 +279,20 @@ def build_live_pipeline(
     audio_in: asyncio.Queue[tuple[bytes, str]] = asyncio.Queue(maxsize=64)
     shielded_logger = SharedLoggerProxy(logger)
 
+    if use_stubs:
+        vad_model = EnergyVADModel()
+        smart_turn_model = SilenceSmartTurnModel()
+        backchannel_model = ZeroBackchannelModel()
+    else:
+        if vad_model is None:
+            vad_model = EnergyVADModel()
+        if smart_turn_model is None:
+            smart_turn_model = SilenceSmartTurnModel()
+        if backchannel_model is None:
+            backchannel_model = ZeroBackchannelModel()
+
     vad = VADDetector(
-        model=EnergyVADModel(),
+        model=vad_model,
         session_id=session_id,
         logger=shielded_logger,  # type: ignore[arg-type]
         speech_threshold=0.5,
@@ -268,12 +300,12 @@ def build_live_pipeline(
         frame_duration_ms=32,
     )
     smart_turn = SmartTurnDetector(
-        model=SilenceSmartTurnModel(),
+        model=smart_turn_model,
         session_id=session_id,
         logger=shielded_logger,  # type: ignore[arg-type]
     )
     backchannel = BackchannelClassifier(
-        model=ZeroBackchannelModel(),
+        model=backchannel_model,
         session_id=session_id,
         logger=shielded_logger,  # type: ignore[arg-type]
     )
