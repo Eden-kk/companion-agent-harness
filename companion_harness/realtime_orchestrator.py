@@ -58,6 +58,7 @@ from companion_harness.schemas import (
     Event,
     MemoryItem,
     PolicyInputs,
+    SensitiveField,
     SpeakDecision,
     ThinkerProposal,
     TurnSignal,
@@ -430,6 +431,39 @@ class StreamingRealtimeOrchestrator:
                     addressing_signal, inputs.social_mode
                 )
 
+            # --- Invariant #1: emit the ASR transcript as an Event (PR #144 P0). ---
+            # The transcript drives _detect_explicit_remember and the addressing
+            # classifier; per invariant #1 ("no unlogged behavior") it must be
+            # recorded with provenance. Skip emission on empty transcript (no
+            # behavior driven → nothing to log) and when no ASR is wired.
+            transcript_evt_id: str | None = None
+            if self._asr_model is not None and transcript:
+                transcript_evt_id = self._new_event_id()
+                transcript_payload = {
+                    "transcript_text": SensitiveField(
+                        retention_policy_id="transcript_audit_30d",
+                        value=transcript,
+                        sensitivity="sensitive",
+                        source_event_ids=[signal_evt_id],
+                    ),
+                    "signal_event_id": signal_evt_id,
+                    "asr_model_label": getattr(self._asr_model, "label", "asr"),
+                }
+                self._store_payload(transcript_evt_id, transcript_payload)
+                transcript_evt = dataclasses.replace(
+                    self._make_event(
+                        event_id=transcript_evt_id,
+                        event_type="asr_transcript_emitted",
+                        caused_by=[signal_evt_id],
+                        payload_kind="transcript",
+                    ),
+                    subject_class="self",
+                    sensitivity="sensitive",
+                    retention_policy_id="transcript_audit_30d",
+                    payload_ref=f"orchestrator://{transcript_evt_id}",
+                )
+                self._logger.log(transcript_evt)
+
             # --- Retrieval: fires on every EOU before decide() (plan §4.2 v4) ---
             stores_queried: list[str] = []
             retrieved_items: list[MemoryItem] = []
@@ -496,10 +530,17 @@ class StreamingRealtimeOrchestrator:
                     extra_hash=type(exc).__name__,
                 ))
 
+            # signal_event_ids carries the ASR transcript event when one was
+            # emitted (PR #144 P0): the transcript is one of the upstream signals
+            # that drove the decision and a "why did you say that?" query must be
+            # able to find it via the trace.
+            decision_signal_event_ids = [signal_evt_id]
+            if transcript_evt_id is not None:
+                decision_signal_event_ids.append(transcript_evt_id)
             trace = _build_decision_trace(
                 decision=decision,
                 inputs=inputs,
-                signal_event_ids=[signal_evt_id],
+                signal_event_ids=decision_signal_event_ids,
                 decision_id=policy_evt_id,
                 p_backchannel=signal.p_backchannel,
                 retrieval_event_ids=[mre_event_id],
@@ -571,11 +612,16 @@ class StreamingRealtimeOrchestrator:
                     "sensitivity": "sensitive",
                 }
                 self._store_payload(cand_event_id, cand_payload)
+                # caused_by includes the transcript event when emitted (PR #144 P0):
+                # the candidate's content was extracted from the transcript text.
+                cand_caused_by = [signal_evt_id]
+                if transcript_evt_id is not None:
+                    cand_caused_by.append(transcript_evt_id)
                 cand_event = dataclasses.replace(
                     self._make_event(
                         event_id=cand_event_id,
                         event_type="memory_write_candidate",
-                        caused_by=[signal_evt_id],
+                        caused_by=cand_caused_by,
                         payload_kind="memory_op",
                     ),
                     subject_class="self",

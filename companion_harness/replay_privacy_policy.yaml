@@ -99,3 +99,12 @@ retention_policies:
       a manual-test session and for post-session replay reproduction
       (docs/design-config-and-dashboard.md §6).
     ttl_days_or_indefinite: 30
+
+  transcript_audit_30d:
+    description: |
+      ASR transcripts emitted as audit events for invariant #1 compliance
+      (PR #144 P0). 30 days retention is sufficient for "what did the user
+      say at 14:32?" lookback during a manual-test session. The transcript
+      text is wrapped in SensitiveField on the event payload for redaction
+      routing.
+    ttl_days_or_indefinite: 30
