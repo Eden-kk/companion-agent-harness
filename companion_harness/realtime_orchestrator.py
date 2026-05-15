@@ -496,15 +496,15 @@ class StreamingRealtimeOrchestrator:
             stores_queried: list[str] = []
             retrieved_items: list[MemoryItem] = []
             if self._episodic_store is not None:
-                retrieved_items.extend(self._episodic_store.retrieve("", top_k=RETRIEVAL_TOP_K))
+                retrieved_items.extend(self._episodic_store.retrieve(transcript, top_k=RETRIEVAL_TOP_K))
                 stores_queried.append("episodic")
             if self._semantic_store is not None:
-                retrieved_items.extend(self._semantic_store.retrieve("", top_k=RETRIEVAL_TOP_K))
+                retrieved_items.extend(self._semantic_store.retrieve(transcript, top_k=RETRIEVAL_TOP_K))
                 stores_queried.append("semantic_relational")
 
             mre_event_id = self._new_event_id()
             mre_payload = {
-                "query": "",
+                "query": transcript,
                 "top_k": RETRIEVAL_TOP_K,
                 "stores_queried": stores_queried,
                 "result_item_ids": [it.item_id for it in retrieved_items],
