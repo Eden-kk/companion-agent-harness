@@ -388,6 +388,7 @@ async def _handle_ingest_ws(request: web.Request) -> web.WebSocketResponse:
             audio_out_broker=request.app[KEY_AUDIO_OUT_BROKER],  # type: ignore[arg-type]
             tts_adapter=request.app[KEY_TTS_ADAPTER],
             vision_sidecar=sidecar,
+            blob_dir=request.app[KEY_BLOB_DIR],
         )
         active_pipelines[session.session_id] = pipeline
         await pipeline.start()

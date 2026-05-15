@@ -126,7 +126,7 @@ def test_live_pipeline_factory_uses_stubs_by_default(tmp_path) -> None:
             def set_context(self, items):
                 return None
 
-            async def infer_stream(self, frame_iter, caused_by):
+            async def infer_stream(self, frame_iter, caused_by, context_items=()):
                 async def _gen():
                     async for _ in frame_iter:
                         pass

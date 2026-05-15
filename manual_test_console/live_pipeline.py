@@ -38,7 +38,7 @@ from companion_harness.event_logger import EventLogger
 from companion_harness.foreground_model import ForegroundModel
 from companion_harness.input_ingest import IngestSession
 from companion_harness.realtime_orchestrator import StreamingRealtimeOrchestrator
-from companion_harness.schemas import PolicyInputs, ThinkerProposal, TurnSignal
+from companion_harness.schemas import MemoryItem, PolicyInputs, ThinkerProposal, TurnSignal
 from companion_harness.turn_detector_smart import SmartTurnDetector
 from companion_harness.turn_detector_vad import VADDetector
 from manual_test_console.config_schema import ALLOWLIST
@@ -169,6 +169,22 @@ class EmptyTranscriptASRModel:
 
     def __call__(self, audio_chunks: bytes, sample_rate: int = 16000) -> str:
         return ""
+
+
+class EmptyMemoryStore:
+    """No-op MemoryManager stub: retrieve always returns [], writes are no-ops."""
+
+    def commit(self, item: MemoryItem, privacy_mode: str = "normal") -> None:
+        return None
+
+    def retrieve(self, query: str, top_k: int = 5) -> list[MemoryItem]:
+        return []
+
+    def forget(self, item_id: str) -> None:
+        return None
+
+    def hard_delete(self, item_id: str) -> None:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -330,6 +346,10 @@ class LivePipeline:
     orchestrator: StreamingRealtimeOrchestrator
     tts_adapter: Any = None
     vision_sidecar: Any = None
+    session_state_store: Any = None
+    core_store: Any = None
+    episodic_store: Any = None
+    semantic_store: Any = None
 
     async def start(self) -> None:
         await self.orchestrator.start()
@@ -379,6 +399,7 @@ def build_live_pipeline(
     tts_adapter: Any = None,
     vision_sidecar: Any = None,
     config_store: ConfigStore | None = None,
+    blob_dir: Path | None = None,
 ) -> LivePipeline:
     """Construct a LivePipeline for one ingest session.
 
@@ -478,6 +499,15 @@ def build_live_pipeline(
         is_playing_fn=lambda: audio_output.is_playing,
     )
 
+    session_state_store: Any = EmptyMemoryStore()
+    core_store: Any = EmptyMemoryStore()
+    episodic_store: Any = EmptyMemoryStore()
+    semantic_store: Any = EmptyMemoryStore()
+    if blob_dir is not None:
+        mem_root = blob_dir / session_id / "memory"
+        for subdir in ("session", "core", "episodic", "semantic"):
+            (mem_root / subdir).mkdir(parents=True, exist_ok=True)
+
     orch = StreamingRealtimeOrchestrator(
         session_id=session_id,
         logger=shielded_logger,  # type: ignore[arg-type]
@@ -496,6 +526,8 @@ def build_live_pipeline(
         vision_sidecar=vision_sidecar,
         addressing_classifier=addressing_classifier,
         config_store=config_store,
+        episodic_store=episodic_store,
+        semantic_store=semantic_store,
     )
 
     return LivePipeline(
@@ -504,4 +536,8 @@ def build_live_pipeline(
         orchestrator=orch,
         tts_adapter=tts_adapter,
         vision_sidecar=vision_sidecar,
+        session_state_store=session_state_store,
+        core_store=core_store,
+        episodic_store=episodic_store,
+        semantic_store=semantic_store,
     )

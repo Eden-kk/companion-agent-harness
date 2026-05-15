@@ -55,7 +55,7 @@ class _StreamingFake:
     def set_context(self, items: list[Any]) -> None:
         return None
 
-    async def infer_stream(self, frame_iter, caused_by: list[str]):
+    async def infer_stream(self, frame_iter, caused_by: list[str], context_items: tuple = ()):
         async def _gen():
             async for _ in frame_iter:
                 pass

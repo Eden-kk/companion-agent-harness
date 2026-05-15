@@ -71,7 +71,7 @@ class _CapturingStreamingModel:
     def set_context(self, items: list[Any]) -> None:
         return None
 
-    async def infer_stream(self, frame_iter, caused_by: list[str]):
+    async def infer_stream(self, frame_iter, caused_by: list[str], context_items: tuple = ()):
         captured = self.captured
 
         async def _gen():

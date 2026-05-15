@@ -149,6 +149,7 @@ class MiniCPMStreamingModel:
         self,
         frame_iter: AsyncIterator[tuple[bytes, bytes | None]],
         caused_by: list[str],
+        context_items: tuple[MemoryItem, ...] = (),
     ) -> AsyncGenerator[ThinkerProposal, None]:
         """Coroutine returning an AsyncGenerator of ThinkerProposal candidates.
 
@@ -158,7 +159,19 @@ class MiniCPMStreamingModel:
         """
         async def _gen() -> AsyncGenerator[ThinkerProposal, None]:
             duplex = self._duplex
-            duplex.prepare(prefix_system_prompt="Streaming Omni Conversation.")
+            base_prompt = "Streaming Omni Conversation."
+            if context_items:
+                # MiniCPM-o does not support mid-session re-prepare; context is
+                # folded at first-call only. Follow-up: v0.1j to pass live query.
+                numbered = "\n".join(
+                    f"{i + 1}. {item.user_visible_summary.value}"
+                    for i, item in enumerate(context_items)
+                    if item.user_visible_summary is not None
+                )
+                combined = f"{base_prompt}\nRecent context:\n{numbered}"
+            else:
+                combined = base_prompt
+            duplex.prepare(prefix_system_prompt=combined)
 
             buf = np.array([], dtype=np.float32)
 
