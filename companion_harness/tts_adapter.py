@@ -40,6 +40,20 @@ class TtsAdapter(Protocol):
     can stream chunks as they arrive.  Callers obtain a SpeakDecision first and
     pass its allowed_prosody_tags here; the adapter may use them for expressive
     rendering (future) or ignore them (stub).
+
+    **Cancellation contract.** ``synthesize()`` returns an async iterator. When the
+    consumer's task is cancelled, Python propagates ``CancelledError`` into the
+    generator at its current ``yield`` point. Implementations MUST NOT swallow
+    ``CancelledError``. If an implementation holds non-Python state (e.g. an
+    outstanding HTTP request, a GPU decode kernel, a CosyVoice2 stream handle),
+    it MUST release it in a ``finally:`` block or ``__aexit__`` and then let
+    ``CancelledError`` propagate.
+
+    A separate ``aclose()`` is NOT required: ``CancelledError`` propagation through
+    the generator is sufficient for the harness's barge-in path. The graceful
+    path uses ``AudioOutputController.request_stop()``, which sets a stop-event
+    consulted between chunk yields — this requires no cooperation from the
+    adapter beyond yielding chunks of bounded size.
     """
 
     def synthesize(self, text: str, prosody_tags: list[str]) -> AsyncIterator[bytes]: ...

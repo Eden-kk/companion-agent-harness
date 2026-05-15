@@ -1,4 +1,4 @@
-"""StreamingRealtimeOrchestrator — async task-graph live-loop pump (live-loop Task 5b).
+"""StreamingRealtimeOrchestrator — async task-graph live-loop pump (live-loop Task 5b/6).
 
 Pumps: audio_in Queue → _audio_tee_task → T1 (detectors) → T2 (policy gate)
        → T3 (foreground stream) → T4 (synthesis dispatch).
@@ -18,6 +18,13 @@ Causal closure (invariant #1):
 Determinism boundary (invariant #5):
   signal_history is sorted by evidence_event_ids[0] lexicographic BEFORE
   crossing into policy_inputs_builder.  No wall-clock or jitter enters PolicyInputs.
+
+Barge-in (Task 6):
+  T2 also receives _VadOnsetFrame items (p_speech + vad_frame event_id) from T1.
+  When onset predicate fires during playback, T2 emits vad_user_speech_onset and
+  spawns _fire_barge_in as a background task. _fire_barge_in calls request_stop()
+  then hard-cancels via cancel_generation() if play_task does not finish within
+  hard_cancel_after_ms. New event types: vad_user_speech_onset, barge_in_trigger_no_op.
 """
 
 from __future__ import annotations
@@ -27,6 +34,7 @@ import hashlib
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -51,7 +59,16 @@ from companion_harness.turn_detector_vad import VADDetector
 __all__ = ["StreamingRealtimeOrchestrator"]
 
 _SCHEMA_VERSION = "0.1"
+
+
 _SOURCE = "streaming_realtime_orchestrator"
+
+
+@dataclass
+class _VadOnsetFrame:
+    """Lightweight internal item sent from T1 to T2's inbox for onset detection."""
+    p_speech: float
+    frame_event_id: str
 
 _AUDIO_QUEUE_BOUND = 64
 _TURN_SIGNAL_QUEUE_BOUND = 32
@@ -126,6 +143,9 @@ class StreamingRealtimeOrchestrator:
         audio_output: AudioOutputController,
         tts_adapter: TtsAdapter,
         proposal_batch_window_ms: int = 80,
+        hard_cancel_after_ms: int = 120,
+        p_speech_thresh: float = 0.5,
+        p_backchannel_thresh: float = 0.7,
     ) -> None:
         self._session_id = session_id
         self._logger = logger
@@ -142,11 +162,17 @@ class StreamingRealtimeOrchestrator:
         # Empirical calibration required on b200 once MiniCPM-o first-token latency is measured.
         # If first-token consistently exceeds this, edge case (d) fires every batch.
         self._proposal_batch_window_ms = proposal_batch_window_ms
+        self._hard_cancel_after_ms = hard_cancel_after_ms
+        self._p_speech_thresh = p_speech_thresh
+        self._p_backchannel_thresh = p_backchannel_thresh
 
         # Internal queues
         self._tee_to_detectors: asyncio.Queue[tuple[bytes, str]] = asyncio.Queue(maxsize=_AUDIO_QUEUE_BOUND)
         self._tee_to_foreground: asyncio.Queue[tuple[bytes, str]] = asyncio.Queue(maxsize=_AUDIO_QUEUE_BOUND)
-        self._turn_signals: asyncio.Queue[tuple[TurnSignal, str]] = asyncio.Queue(maxsize=_TURN_SIGNAL_QUEUE_BOUND)
+        # T2 inbox: union of _VadOnsetFrame (for onset detection) and TurnSignal tuples (for EOU decisions)
+        self._t2_inbox: asyncio.Queue[_VadOnsetFrame | tuple[TurnSignal, str]] = asyncio.Queue(
+            maxsize=_AUDIO_QUEUE_BOUND + _TURN_SIGNAL_QUEUE_BOUND
+        )
         # 3-tuple: (signal_evt_id, Future[SpeakDecision], policy_decision_event_id)
         self._policy_decisions: asyncio.Queue[tuple[str, asyncio.Future[SpeakDecision], str]] = asyncio.Queue(
             maxsize=_POLICY_DECISIONS_QUEUE_BOUND
@@ -164,6 +190,12 @@ class StreamingRealtimeOrchestrator:
 
         # Signal history for determinism boundary (sorted before crossing into policy_inputs_builder)
         self._signal_history: list[TurnSignal] = []
+
+        # Barge-in state — T2 only (Task 6)
+        self._speech_onset_debounce_active: bool = False
+        self._latest_p_backchannel: float = 0.0
+        self._barge_in_in_flight: bool = False
+        self._barge_in_tasks: list[asyncio.Task[None]] = []
 
         self._seq = 0
         self._tasks: list[asyncio.Task[None]] = []
@@ -191,15 +223,23 @@ class StreamingRealtimeOrchestrator:
         ]
 
     async def stop(self) -> None:
-        """Cancel all tasks, emit orchestrator_stopped, drain logger."""
+        """Cancel all tasks (including barge-in watchdogs), emit orchestrator_stopped, drain logger."""
         for task in self._tasks:
+            task.cancel()
+        for task in self._barge_in_tasks:
             task.cancel()
         for task in self._tasks:
             try:
                 await task
             except (asyncio.CancelledError, Exception):
                 pass
+        for task in self._barge_in_tasks:
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
         self._tasks.clear()
+        self._barge_in_tasks.clear()
 
         self._emit(
             "orchestrator_stopped",
@@ -229,7 +269,7 @@ class StreamingRealtimeOrchestrator:
             _drop_oldest_put(self._tee_to_foreground, item, self._logger, ["_dropped_before_enqueue"])
 
     async def _detector_fanout_task(self) -> None:
-        """T1: Fan audio frames to all detectors; forward TurnSignals to policy gate."""
+        """T1: Fan audio frames to all detectors; forward TurnSignals and VAD onset frames to T2."""
         while True:
             frame_bytes, chunk_event_id = await self._tee_to_detectors.get()
             caused_by = [chunk_event_id]
@@ -238,12 +278,50 @@ class StreamingRealtimeOrchestrator:
                 sig: TurnSignal | None = detector.process_frame(frame_bytes, caused_by)
                 if sig is not None:
                     signal_evt_id = sig.evidence_event_ids[0] if sig.evidence_event_ids else chunk_event_id
-                    await self._turn_signals.put((sig, signal_evt_id))
+                    await self._t2_inbox.put((sig, signal_evt_id))
+
+            # Forward VAD frame onset info to T2 for barge-in detection (Task 6).
+            await self._t2_inbox.put(
+                _VadOnsetFrame(
+                    p_speech=self._vad_detector.last_frame_p_speech,
+                    frame_event_id=self._vad_detector.last_frame_event_id,
+                )
+            )
 
     async def _policy_gate_task(self) -> None:
-        """T2: Gate each EOU TurnSignal through SpeakPolicy.decide(), emit policy_decision."""
+        """T2: Handle VAD onset frames (barge-in) and EOU TurnSignals (policy gate)."""
         while True:
-            signal, signal_evt_id = await self._turn_signals.get()
+            item = await self._t2_inbox.get()
+
+            # --- VAD onset frame: check barge-in predicate ---
+            if isinstance(item, _VadOnsetFrame):
+                if self._should_emit_speech_onset(item):
+                    onset_evt = self._make_event(
+                        event_id=self._new_event_id(),
+                        event_type="vad_user_speech_onset",
+                        caused_by=[item.frame_event_id],
+                        payload_kind="signal",
+                    )
+                    self._logger.log(onset_evt)
+                    self._speech_onset_debounce_active = True
+                    if self.is_barge_in_trigger():
+                        # Set flag synchronously BEFORE create_task (BLOCKER 3).
+                        self._barge_in_in_flight = True
+                        task = asyncio.get_running_loop().create_task(
+                            self._fire_barge_in(onset_evt.event_id),
+                            name="barge_in_watchdog",
+                        )
+                        self._barge_in_tasks.append(task)
+                elif not self._audio_output.is_playing:
+                    # Clear debounce when playback stops.
+                    self._speech_onset_debounce_active = False
+                continue  # VAD frames do not feed the EOU decision path
+
+            # --- TurnSignal: EOU policy decision path ---
+            signal, signal_evt_id = item
+
+            # Track latest backchannel score for barge-in post-validation.
+            self._latest_p_backchannel = signal.p_backchannel
 
             # Coalescing guard (edge case i): skip if a decision_future is still pending.
             if self._pending_decision_future is not None and not self._pending_decision_future.done():
@@ -385,10 +463,18 @@ class StreamingRealtimeOrchestrator:
 
             text = _best_proposal_text(snapshot)
             gen_event_id = self._audio_output.start_generation(caused_by=[policy_evt_id])
+            chunks = self._tts_adapter.synthesize(text, decision.allowed_prosody_tags)
 
+            # Wrap play() in a task so _fire_barge_in can cancel it (Task 6).
+            play_task: asyncio.Task[None] = asyncio.get_running_loop().create_task(
+                self._audio_output.play(chunks, gen_event_id),
+                name=f"play-{gen_event_id}",
+            )
+            self._audio_output.set_generation_task(play_task)
             try:
-                chunks = self._tts_adapter.synthesize(text, decision.allowed_prosody_tags)
-                await self._audio_output.play(chunks, gen_event_id)
+                await play_task
+            except asyncio.CancelledError:
+                pass  # hard-cancel path; cancel_generation() already logged the event
             except Exception as exc:
                 self._logger.log(self._make_event(
                     event_id=self._new_event_id(),
@@ -397,7 +483,10 @@ class StreamingRealtimeOrchestrator:
                     payload_kind="signal",
                     extra_hash=type(exc).__name__,
                 ))
-                self._audio_output.request_stop(caused_by=[gen_event_id])
+                if self._audio_output.is_playing:
+                    self._audio_output.request_stop(caused_by=[gen_event_id])
+            finally:
+                self._audio_output.set_generation_task(None)
 
     def _speak_policy_decide(
         self,
@@ -406,6 +495,65 @@ class StreamingRealtimeOrchestrator:
         p_backchannel: float,
     ) -> SpeakDecision:
         return self._speak_policy_fn(inputs, [signal_evt_id], p_backchannel)
+
+    # ------------------------------------------------------------------
+    # Barge-in helpers (Task 6)
+    # ------------------------------------------------------------------
+
+    def _should_emit_speech_onset(self, frame: _VadOnsetFrame) -> bool:
+        return (
+            frame.p_speech > self._p_speech_thresh
+            and self._audio_output.is_playing
+            and not self._speech_onset_debounce_active
+        )
+
+    def is_barge_in_trigger(self) -> bool:
+        return (
+            self._audio_output.is_playing
+            and not self._barge_in_in_flight
+            and self._latest_p_backchannel < self._p_backchannel_thresh
+        )
+
+    async def _fire_barge_in(self, onset_evt_id: str) -> None:
+        """Graceful stop + bounded hard-cancel fallback. Fire-and-forget background task.
+
+        Accesses AudioOutputController.generation_task from a separate asyncio.Task
+        in the same event loop. Safe by virtue of single-threaded asyncio; do NOT
+        call generation_task from a different OS thread.
+        """
+        play_task = self._audio_output.generation_task
+        if play_task is None or play_task.done():
+            self._logger.log(self._make_event(
+                event_id=self._new_event_id(),
+                event_type="barge_in_trigger_no_op",
+                caused_by=[onset_evt_id],
+                payload_kind="signal",
+            ))
+            self._barge_in_in_flight = False
+            return
+        try:
+            stop_requested_evt_id = self._audio_output.request_stop(caused_by=[onset_evt_id])
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(play_task),
+                    timeout=self._hard_cancel_after_ms / 1000.0,
+                )
+            except asyncio.TimeoutError:
+                self._audio_output.cancel_generation(caused_by=[stop_requested_evt_id])
+                try:
+                    await play_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+        finally:
+            # If _fire_barge_in itself is cancelled (e.g. via stop()) while shield()-waiting,
+            # play_task keeps running behind the shield. Cancel it explicitly.
+            if not play_task.done():
+                play_task.cancel()
+                try:
+                    await play_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            self._barge_in_in_flight = False
 
     # ------------------------------------------------------------------
     # Event construction helpers
