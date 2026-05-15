@@ -132,15 +132,15 @@ async def _handle_index(request: web.Request) -> web.Response:
 
 
 async def _handle_ingest_ws(request: web.Request) -> web.WebSocketResponse:
-    """Accept §4 audio envelopes from a single capture page.
+    """Accept §4 audio + video envelopes from a single capture page.
 
     Envelope shape (per dispatch + VisionClaw §4, JSON over WS):
       {
-        "event_type": "raw_audio",
-        "payload_inline_or_ref": "<base64 PCM16 bytes>",
+        "event_type": "raw_audio" | "raw_video",
+        "payload_inline_or_ref": "<base64 PCM16 bytes or JPEG bytes>",
         "timestamp_mono_ms": <int>,
         "client_id": "<stable id>",
-        "device_label": "<mic label>",
+        "device_label": "<mic or camera label>",
         "timestamp_wall": "<ISO-8601, optional>"
       }
     """
@@ -167,13 +167,12 @@ async def _handle_ingest_ws(request: web.Request) -> web.WebSocketResponse:
                 continue
 
             event_type = envelope.get("event_type")
-            if event_type != "raw_audio":
-                # Phase 1 ignores other modalities; Phase 2 will add raw_video.
+            if event_type not in ("raw_audio", "raw_video"):
                 continue
 
             payload_b64 = envelope.get("payload_inline_or_ref", "")
             try:
-                pcm_bytes = base64.b64decode(payload_b64)
+                payload_bytes = base64.b64decode(payload_b64)
             except (ValueError, TypeError):
                 continue
 
@@ -186,8 +185,12 @@ async def _handle_ingest_ws(request: web.Request) -> web.WebSocketResponse:
                 timestamp_mono_ms=ts_mono,
                 timestamp_wall=ts_wall,
             )
-            ingest.ingest_chunk(session, pcm_bytes, meta)
-            chunk_counter["chunks_ingested"] = chunk_counter.get("chunks_ingested", 0) + 1
+            if event_type == "raw_audio":
+                ingest.ingest_chunk(session, payload_bytes, meta)
+                chunk_counter["chunks_ingested"] = chunk_counter.get("chunks_ingested", 0) + 1
+            else:  # raw_video
+                ingest.ingest_video_frame(session, payload_bytes, meta)
+                chunk_counter["frames_ingested"] = chunk_counter.get("frames_ingested", 0) + 1
     finally:
         await ws.close()
     return ws
@@ -232,6 +235,7 @@ async def _handle_health(request: web.Request) -> web.Response:
         "status": "ok",
         "sessions_opened": chunk_counter.get("sessions_opened", 0),
         "chunks_ingested": chunk_counter.get("chunks_ingested", 0),
+        "frames_ingested": chunk_counter.get("frames_ingested", 0),
         "logger_drain_running": logger._task is not None and not logger._task.done(),
     })
 
@@ -253,7 +257,7 @@ def build_app(blob_dir: Path) -> web.Application:
     app[KEY_LOGGER] = logger
     app[KEY_INGEST] = ingest
     app[KEY_BLOB_DIR] = blob_dir
-    app[KEY_CHUNK_COUNTER] = {"sessions_opened": 0, "chunks_ingested": 0}
+    app[KEY_CHUNK_COUNTER] = {"sessions_opened": 0, "chunks_ingested": 0, "frames_ingested": 0}
 
     app.router.add_get("/", _handle_index)
     app.router.add_get("/healthz", _handle_health)
@@ -289,7 +293,7 @@ def main(argv: list[str] | None = None) -> int:
     app = build_app(blob_dir)
 
     print("=" * 72)
-    print("manual-test console — Phase 1 (audio capture + observability)")
+    print("manual-test console — Phase 2 (audio + video capture + observability)")
     print("-" * 72)
     print(f"  bind:        {args.host}:{args.port}")
     print(f"  blob store:  {blob_dir}")
