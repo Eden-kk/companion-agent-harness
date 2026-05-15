@@ -144,6 +144,97 @@ The blob store does not auto-clean. Delete `/tmp/manual_test_blobs/<session_id>/
 
 ---
 
+### 2.8 Threshold-tuning dashboard
+
+The dashboard is a collapsible tuning panel served at `http://localhost:8800/` alongside the main event console (PR #153). It lets you adjust the 12 Tier-B runtime thresholds without restarting the server. Every change is recorded as an auditable `config_change` event — the dashboard is a first-class audit surface, not a side-channel.
+
+### 2.8.1 Opening the panel
+
+Navigate to `http://localhost:8800/` (same URL as the main console; port 8800 is canonical — do not use 8000). The tuning panel appears in the right column by default. To collapse it, click `[≪ hide]`; the panel shrinks to a `[⚙ Tuning]` header button. Click it again to expand. On screens ≤ 1024 px the panel slides over the right column; press `Esc` to close.
+
+On load the panel issues `GET /config` to populate each slider with the server's current live value. If the panel shows dashes instead of numbers, the server isn't responding — check the `ssh -L` tunnel and the server process (`ss -ltnp | grep :8800` on b200).
+
+### 2.8.2 The three sections
+
+The panel has three sections, matching the `TUNING_SECTIONS` grouping in `manual_test_console/config_schema.py` (12 knobs total; the set is spec-locked per Anchor 1 — see `docs/roadmap-v0.1i-draft.md`):
+
+| Section | Count | Keys | Default expand |
+|---|---|---|---|
+| **Policy** | 3 | `policy.backchannel_threshold`, `policy.audio_visual_conflict_threshold`, `policy.grounding_confidence_threshold` | expanded |
+| **Detectors** | 5 | `detectors.vad.speech_threshold`, `detectors.vad.silence_onset_ms`, `detectors.smart_turn.silence_onset_ms`, `detectors.smart_turn.silence_rms_threshold`, `detectors.backchannel.emit_threshold` | expanded |
+| **Orchestrator** | 4 | `orchestrator.proposal_batch_window_ms`, `orchestrator.hard_cancel_after_ms`, `orchestrator.p_speech_thresh`, `orchestrator.p_backchannel_thresh` | collapsed |
+
+Each slider row shows: label, current numeric value, and `[min … max]` range (from `GET /config`).
+
+### 2.8.3 Drag-to-tune semantics
+
+Drag the slider thumb to a new position. The readout updates locally as you drag; the `POST /config/patch` fires on mouse/touch release. Visual states during a drag-and-release cycle:
+
+- **At default (gray):** value matches schema default.
+- **Modified (blue + bold + `(modified)` badge + active `[↺]`):** value differs from default; not yet submitted.
+- **Pending (`⏳` + knob pulse):** `POST /config/patch` in flight.
+- **Accepted:** server returned 200; row returns to normal color with `(modified)` badge if the new value is still non-default.
+- **Rejected (red row-flash + toast for 3 s + revert):** patch was refused. The slider reverts to the previous value.
+
+Rejection routing (PR #151):
+
+| Rejection reason | HTTP status | Toast message |
+|---|---|---|
+| Key is in Tier-A list (spec-pinned) | 403 | `Tier A — key not tunable` |
+| Key unknown (not in Tier-B allowlist) | 403 | `Unknown key` |
+| Value out of `[min, max]` range | 400 | `Out of range: [min, max]` |
+
+Note: rejecting a request still emits one `operator_action` event (see §2.8.4). No `config_change` event is emitted for a rejected patch.
+
+### 2.8.4 Audit tail click-to-jump
+
+The panel footer shows the last 5 `config_change` events as a scrollable audit tail (most-recent first). Each entry is clickable: clicking it jumps to the corresponding event row in the right-column event log and highlights it.
+
+Event emission contract (one per accepted patch, per PR #151 numeric gate):
+
+- **Every accepted `POST /config/patch` emits exactly one `operator_action` followed by exactly one `config_change`.** The `config_change` payload carries `{key, previous_value, new_value, applied_at_ms, operator_action_event_id}`. The `operator_action` carries `{endpoint, client_ip, request_id, action_type, rejection_reason?}`. Both events use `retention_policy_id="config_change_30d"`.
+- The `config_change` event's `caused_by[]` includes the `operator_action` event's `event_id`, so the DAG closes (invariant #1).
+
+### 2.8.5 Reset semantics
+
+Three granularities of reset:
+
+- **Per-slider `[↺]`** — reverts one key to its schema default. Visible only when the slider is in the modified state.
+- **Per-section `[reset]`** — reverts all keys in the section.
+- **Global `[reset all]`** — issues `POST /config/reset` and reverts every Tier-B key.
+
+Asymmetric event emission on reset (PR #151 contract):
+
+- A key that is already at its default when reset fires still emits one `operator_action` (the request is recorded) but **no** `config_change` (nothing changed).
+- A key that was modified emits `operator_action` + `config_change` exactly once each.
+- A `POST /config/reset` that reverts N modified keys emits N `config_change` events plus a single summary `operator_action`.
+
+### 2.8.6 When a key change does not take effect immediately
+
+The three sections have different propagation timing (PR #152 adapter wiring):
+
+- **Policy thresholds** (`policy.*`, 3 keys): apply within the **current EOU decision** — the orchestrator reads the ConfigStore with a no-await snapshot at EOU time, so the new value is live before the `SpeakDecision` is emitted.
+- **Detector thresholds** (`detectors.*`, 5 keys): apply starting on the **next frame after the current EOU** — the detectors snapshot the store once per frame, not mid-frame.
+- **Orchestrator timing** (`orchestrator.*`, 4 keys): apply at the **next batch boundary** — the orchestrator reads these at the start of each proposal-batch window.
+
+For manual testing this is rarely noticeable, but if you change a threshold and the next event doesn't reflect the new value, wait one more turn and check again.
+
+### 2.8.7 Finding the audit trail after a session
+
+Decision trace blobs at `/tmp/manual_test_blobs/<session_id>/` include `config_change` events in the same event log as `policy_decision` events. When a `config_change` is in scope at decision time, its `event_id` appears in the `caused_by[]` of subsequent `policy_decision` events — the causal chain is closed. To walk the chain:
+
+```sh
+# On b200, list the event log for a session:
+ls /tmp/manual_test_blobs/<session_id>/
+
+# Grep for config_change entries:
+grep '"event_type": "config_change"' /tmp/manual_test_blobs/<session_id>/events.jsonl
+```
+
+The `operator_action_event_id` field in each `config_change` payload points back to the HTTP request that triggered it.
+
+---
+
 ## 3. Phase 2 — Audio + video walkthrough
 
 > Status (2026-05-15): vision capture works (PR #123 — `raw_video_frame` events emit), but **VisionSidecar wiring into the foreground model is in flight**. A fix-coder is implementing the sidecar→MiniCPM-o handoff per the converged plan in `docs/plan-vision-sidecar-wiring.md` (PR #137). Until that merges and the server is restarted with `--enable-vision`, scenarios I–L are cosmetic.
@@ -205,6 +296,7 @@ Until PR #137 lands and the server is restarted with `--enable-vision`, **scenar
 | Server prints "EventLogger drain: blocked" | Drain task didn't start | Restart server; if it persists, the bug is in `event_logger.py` startup |
 | Browser blocks mic for `http://localhost` | Some browsers require HTTPS for `getUserMedia` | Use Chrome; or set `chrome://flags/#unsafely-treat-insecure-origin-as-secure` for `http://localhost:8800` |
 | `ssh -L` connects but page won't load | Port forward established but server isn't bound to `0.0.0.0` | Verify the `--host 0.0.0.0` flag; `--host localhost` only binds to b200's loopback |
+| Slider rejects with a red flash / toast says `Tier A` | You hit the Tier-A allowlist guard (PR #151). Tier-A keys are spec-pinned. | See `docs/design-config-and-dashboard.md` §1 Tier A. Making a key tunable means moving it to the Tier-B allowlist, which requires an event-schema migration and a new `ALLOWLIST` entry. |
 
 If you see something not listed: save the session ID + blob store path + browser console log, and file an issue with all three.
 
@@ -268,6 +360,7 @@ open http://localhost:8800/        # macOS
 - `docs/plan-vision-sidecar-wiring.md` — the converged VisionSidecar plan (PR #137); pinned target for Phase 2 unblock.
 - `docs/architecture-v0.1.md` — the frozen spec. Everything in this handbook is consistent with it; nothing in this handbook overrides it.
 - `docs/remote-dev.md` — the local↔b200 workflow this handbook depends on.
+- `docs/design-config-and-dashboard.md` — the design doc behind the threshold-tuning dashboard, landed via PR #143.
 
 **Relevant PRs that turned components real:**
 - PR #123 — vision capture (`raw_video_frame` events emitted).
