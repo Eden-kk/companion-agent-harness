@@ -18,3 +18,11 @@ class ReasonCode(Enum):
     QUIET_MODE_BLOCKED           = "QUIET_MODE_BLOCKED"
     PRIVACY_MODE_BLOCKED         = "PRIVACY_MODE_BLOCKED"
     SAFETY_OVERRIDE              = "SAFETY_OVERRIDE"
+    DEICTIC_AMBIGUOUS            = "DEICTIC_AMBIGUOUS"
+    VISUAL_LOW_CONFIDENCE        = "VISUAL_LOW_CONFIDENCE"
+    AUDIO_VISUAL_CONFLICT        = "AUDIO_VISUAL_CONFLICT"
+
+
+ReasonCode.DEICTIC_AMBIGUOUS.__doc__     = "The deictic reference cannot be resolved to a single candidate."
+ReasonCode.VISUAL_LOW_CONFIDENCE.__doc__ = "The grounding result confidence is below the hallucination-resistance threshold."
+ReasonCode.AUDIO_VISUAL_CONFLICT.__doc__ = "The audio query and visual scene contradict."
