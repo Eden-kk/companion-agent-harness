@@ -31,6 +31,17 @@ __all__ = [
     "EvaluationCase",
     "ReplayRun",
     "ToolProgressEvidence",
+    "ResponseContentSource",
+]
+
+
+ResponseContentSource = Literal[
+    "no_synthesis",
+    "foreground_response_proposal",
+    "backchannel",
+    "filler_with_tool_evidence",
+    "filler_without_evidence",
+    "operator_injected",
 ]
 
 
@@ -178,6 +189,7 @@ class SpeakDecision:
     budget_bucket:           str | None
     allowed_prosody_tags:    list[str]
     max_duration_ms:         int | None
+    response_content_source: ResponseContentSource = "no_synthesis"
 
 
 @dataclass

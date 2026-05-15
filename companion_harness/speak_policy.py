@@ -10,7 +10,7 @@ free-text reasoning on the policy path (invariant #5 / Stage 0 Tier B replay).
 from __future__ import annotations
 
 from companion_harness.reason_codes import ReasonCode
-from companion_harness.schemas import DecisionTrace, PolicyInputs, SpeakDecision
+from companion_harness.schemas import DecisionTrace, PolicyInputs, ResponseContentSource, SpeakDecision
 from companion_harness.speak_policy_config import (
     SPEC_ALERT_THRESHOLD,
     _LEVEL_TO_FLOAT_THRESHOLD,
@@ -18,6 +18,15 @@ from companion_harness.speak_policy_config import (
 
 POLICY_VERSION = "v0.1d"
 CONFIG_VERSION = "v0.1e"
+
+_RESPONSE_SOURCE_FOR_ACTION: dict[str, ResponseContentSource] = {
+    "silence": "no_synthesis",
+    "full_response": "foreground_response_proposal",
+    "backchannel": "backchannel",
+    # filler is content-dependent — set explicitly at construction:
+    #   tool evidence present → "filler_with_tool_evidence"
+    #   no tool evidence → "filler_without_evidence"
+}
 
 _BLOCKING_SOCIAL_MODES = frozenset({
     "user_addressing_other",
@@ -82,6 +91,7 @@ def decide(
             budget_bucket="alert",
             allowed_prosody_tags=[],
             max_duration_ms=None,
+            response_content_source="foreground_response_proposal",
         )
 
     # 2. User is still speaking — wait.
@@ -106,6 +116,7 @@ def decide(
             budget_bucket="backchannel",
             allowed_prosody_tags=[],
             max_duration_ms=None,
+            response_content_source="backchannel",
         )
 
     # 5. Audio-visual conflict exceeds threshold — surface conflict, do not silently agree.
@@ -119,6 +130,7 @@ def decide(
             budget_bucket="clarification",
             allowed_prosody_tags=[],
             max_duration_ms=None,
+            response_content_source="foreground_response_proposal",
         )
 
     # 6. Deictic grounding below confidence threshold — refuse to invent.
@@ -136,6 +148,7 @@ def decide(
             budget_bucket="clarification",
             allowed_prosody_tags=[],
             max_duration_ms=None,
+            response_content_source="foreground_response_proposal",
         )
 
     # 8. Short reaction: brief proactive reply when the trigger is present and budget allows.
@@ -150,6 +163,7 @@ def decide(
                 budget_bucket="short_reaction",
                 allowed_prosody_tags=[],
                 max_duration_ms=None,
+                response_content_source="foreground_response_proposal",
             )
         return _silence(ReasonCode.COOLDOWN_BLOCKED, caused_by)
 
@@ -165,6 +179,7 @@ def decide(
             budget_bucket="full_response",
             allowed_prosody_tags=[],
             max_duration_ms=None,
+            response_content_source="foreground_response_proposal",
         )
 
     # 10. Aesthetic reaction — lowest priority, fires only when nothing else fires.
@@ -186,6 +201,7 @@ def decide(
             budget_bucket="aesthetic_reaction",
             allowed_prosody_tags=[],
             max_duration_ms=None,
+            response_content_source="foreground_response_proposal",
         )
 
 
@@ -203,6 +219,7 @@ def _silence(reason: ReasonCode, caused_by: list[str]) -> SpeakDecision:
         budget_bucket=None,
         allowed_prosody_tags=[],
         max_duration_ms=None,
+        response_content_source="no_synthesis",
     )
 
 
