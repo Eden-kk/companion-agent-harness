@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+from companion_harness.addressing_classifier import WakeWordAddressingClassifier
 from companion_harness.audio_output_controller import AudioOutputController
 from companion_harness.backchannel_classifier import BackchannelClassifier
 from companion_harness.event_logger import EventLogger
@@ -223,11 +224,15 @@ def _live_policy_inputs_builder(
         and trip `_BLOCKING_SOCIAL_MODES` in speak_policy)
       - `risk_mode = "normal"` (spec default)
 
-    `user_addressed_agent` is derived from `social_mode` per the spec's first-class
-    social signal — no per-utterance classifier is wired (the spec is silent on how to
-    derive `user_addressed_agent` independently; this mechanical derivation honors the
-    spec's enumerated signal). Future work could add per-utterance refinement (speaker
-    diarization, wake-word detection, foreground-derived addressing) — see issue #139.
+    `user_addressed_agent` is set to `False` here as a placeholder. The
+    orchestrator's `AddressingClassifier` (wired below in `build_live_pipeline`)
+    overrides this value after ASR using the 3-tier rule:
+        - explicit wake-word match  -> True
+        - multi-speaker detected    -> False (diarization not wired in v0.1f)
+        - implicit fallback         -> social_mode == "user_addressing_agent"
+    The builder runs BEFORE ASR/classifier, so `False` is safe: the classifier
+    is the authoritative source of `user_addressed_agent` on the live path.
+    See companion_harness/addressing_classifier.py and issue #139.
     """
     max_p_done = max((s.p_done for s in signal_history), default=signal.p_done)
     max_p_continue = max((s.p_continue for s in signal_history), default=signal.p_continue)
@@ -241,7 +246,7 @@ def _live_policy_inputs_builder(
         assistant_speaking=False,
         scene_change_score=0.0,
         deictic_reference=False,
-        user_addressed_agent=(social_mode == "user_addressing_agent"),
+        user_addressed_agent=False,  # placeholder; AddressingClassifier overrides post-ASR.
         urgency_score=0.0,
         proactivity_budget_remaining={},
         privacy_mode="normal",
@@ -398,6 +403,11 @@ def build_live_pipeline(
         sink=sink,
     )
 
+    # WakeWordAddressingClassifier is deterministic and SDK-free; safe in stub
+    # mode too. The orchestrator applies the 3-tier rule (wake-word / speaker-
+    # count placeholder / mechanical fallback) over the ASR transcript on EOU.
+    addressing_classifier = WakeWordAddressingClassifier()
+
     orch = StreamingRealtimeOrchestrator(
         session_id=session_id,
         logger=shielded_logger,  # type: ignore[arg-type]
@@ -414,6 +424,7 @@ def build_live_pipeline(
         decision_trace_dir=decision_trace_dir,
         asr_model=asr_model,
         vision_sidecar=vision_sidecar,
+        addressing_classifier=addressing_classifier,
     )
 
     return LivePipeline(

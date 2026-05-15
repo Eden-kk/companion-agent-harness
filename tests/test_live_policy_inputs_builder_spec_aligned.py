@@ -1,17 +1,26 @@
-"""Spec-aligned test: live builder derives `user_addressed_agent` from `social_mode`.
+"""Spec-aligned test: live builder emits placeholder `user_addressed_agent`;
+the orchestrator's `AddressingClassifier` is the authoritative source.
 
-Replaces the PR #140 stopgap test. The spec (architecture-v0.1.md:793-803) defines
-`privacy_mode`, `social_mode`, `risk_mode` as first-class state with enumerated
-values. The live builder uses these spec-defined enumerations and derives
-`user_addressed_agent` mechanically from `social_mode`.
+History:
+  - PR #140 stopgapped `user_addressed_agent=True` so the harness could speak.
+  - PR #142 replaced that with a mechanical derivation from `social_mode`.
+  - This PR replaces the mechanical derivation with the 3-tier
+    `AddressingClassifier` (wake-word + speaker-count placeholder +
+    mechanical fallback). The builder now emits a `False` placeholder; the
+    orchestrator overrides it post-ASR via the classifier.
+
+The spec (architecture-v0.1.md:793-803) still defines `privacy_mode`,
+`social_mode`, `risk_mode` as first-class enumerated state; this test
+keeps the mode-defaults assertion to guard against regressions there.
 """
 
 from __future__ import annotations
 
-from dataclasses import replace
-
+from companion_harness.addressing_classifier import (
+    WakeWordAddressingClassifier,
+    derive_user_addressed_agent,
+)
 from companion_harness.schemas import TurnSignal
-from companion_harness.speak_policy import _BLOCKING_SOCIAL_MODES
 from manual_test_console.live_pipeline import _live_policy_inputs_builder
 
 # Spec-enumerated values from architecture-v0.1.md:793-803.
@@ -59,12 +68,12 @@ def _make_signal() -> TurnSignal:
     )
 
 
-def test_default_social_mode_addressing_agent_yields_user_addressed_true() -> None:
-    """Single-user manual-test default: social_mode=user_addressing_agent ⇒ True."""
+def test_builder_emits_user_addressed_agent_placeholder_false() -> None:
+    """The builder now emits `False` as a placeholder; the orchestrator's
+    AddressingClassifier overrides this post-ASR per the 3-tier rule."""
     sig = _make_signal()
     inputs = _live_policy_inputs_builder(sig, [sig])
-    assert inputs.social_mode == "user_addressing_agent"
-    assert inputs.user_addressed_agent is True
+    assert inputs.user_addressed_agent is False
 
 
 def test_mode_field_defaults_are_spec_enumerated() -> None:
@@ -77,20 +86,21 @@ def test_mode_field_defaults_are_spec_enumerated() -> None:
     assert inputs.risk_mode in _SPEC_RISK_MODES
 
 
-def test_mechanical_derivation_blocking_social_mode_would_yield_false() -> None:
-    """Override social_mode to a blocking value: derivation must produce False.
-
-    Demonstrates that `user_addressed_agent` is mechanically derived from
-    `social_mode == "user_addressing_agent"` (not hardcoded). Uses dataclass
-    `replace` on the builder output to simulate a hypothetical multi-party
-    scenario, then re-applies the same derivation rule.
-    """
+def test_classifier_overrides_placeholder_to_true_on_addressing_mode() -> None:
+    """End-to-end mechanical fallback: empty transcript + speaker_count=None
+    + social_mode=user_addressing_agent ⇒ classifier returns True. This is
+    the single-user manual-test default behavior (pre-PR-#142 parity)."""
     sig = _make_signal()
     inputs = _live_policy_inputs_builder(sig, [sig])
-    for blocking in _BLOCKING_SOCIAL_MODES:
-        overridden = replace(
-            inputs,
-            social_mode=blocking,
-            user_addressed_agent=(blocking == "user_addressing_agent"),
-        )
-        assert overridden.user_addressed_agent is False
+    clf = WakeWordAddressingClassifier()
+    signal = clf(transcript="", speaker_count=None, social_mode=inputs.social_mode)
+    assert derive_user_addressed_agent(signal, inputs.social_mode) is True
+
+
+def test_classifier_overrides_placeholder_to_false_on_blocking_mode() -> None:
+    """Empty transcript + speaker_count=None + a blocking social_mode ⇒
+    classifier returns False (mechanical fallback path)."""
+    clf = WakeWordAddressingClassifier()
+    for blocking in ("user_addressing_other", "group_conversation", "background_presence"):
+        signal = clf(transcript="", speaker_count=None, social_mode=blocking)
+        assert derive_user_addressed_agent(signal, blocking) is False

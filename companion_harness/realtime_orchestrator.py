@@ -42,6 +42,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from companion_harness.addressing_classifier import (
+    AddressingClassifier,
+    derive_user_addressed_agent,
+)
 from companion_harness.asr_adapter import ASRModel
 from companion_harness.audio_output_controller import AudioOutputController
 from companion_harness.backchannel_classifier import BackchannelClassifier
@@ -181,6 +185,7 @@ class StreamingRealtimeOrchestrator:
         semantic_store: "MemoryManager | None" = None,
         asr_model: ASRModel | None = None,
         vision_sidecar: "VisionSidecar | None" = None,
+        addressing_classifier: AddressingClassifier | None = None,
     ) -> None:
         self._session_id = session_id
         self._logger = logger
@@ -241,6 +246,7 @@ class StreamingRealtimeOrchestrator:
         self._semantic_store = semantic_store
         self._asr_model = asr_model
         self._vision_sidecar = vision_sidecar
+        self._addressing_classifier = addressing_classifier
         # Per-turn audio buffer (PCM16 bytes). Appended on every audio frame in
         # _audio_tee_task; consumed + cleared in T2 on EOU when asr_model is set.
         # No-op (always empty / never consumed) when asr_model is None.
@@ -406,6 +412,23 @@ class StreamingRealtimeOrchestrator:
                     transcript = self._asr_model(bytes(self._turn_audio_buffer))
                 self._turn_audio_buffer.clear()
             inputs.user_transcript = transcript
+
+            # --- Addressing classifier: 3-tier override of user_addressed_agent ---
+            # When wired, the classifier inspects (transcript, speaker_count,
+            # social_mode) and overrides the builder's mechanical value per the
+            # explicit/background/implicit rule (see addressing_classifier.py).
+            # speaker_count is None today (diarization not wired); the tier
+            # collapses to wake-word OR mechanical fallback. Backward-compatible
+            # when classifier is None: builder-supplied value stands.
+            if self._addressing_classifier is not None:
+                addressing_signal = self._addressing_classifier(
+                    transcript=transcript,
+                    speaker_count=None,
+                    social_mode=inputs.social_mode,
+                )
+                inputs.user_addressed_agent = derive_user_addressed_agent(
+                    addressing_signal, inputs.social_mode
+                )
 
             # --- Retrieval: fires on every EOU before decide() (plan §4.2 v4) ---
             stores_queried: list[str] = []
