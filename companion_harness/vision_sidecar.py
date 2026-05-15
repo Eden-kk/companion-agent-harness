@@ -23,9 +23,14 @@ does not run. Full wiring of the grounding pass is implemented in v0.1c Task 7.
 
 from __future__ import annotations
 
+import hashlib
 from collections import deque
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Protocol, runtime_checkable
+
+from companion_harness.event_logger import EventLogger
+from companion_harness.schemas import Event
 
 __all__ = ["SceneScorer", "GroundingModel", "FrameRef", "GroundingResult", "VisionSidecar"]
 
@@ -95,15 +100,20 @@ class VisionSidecar:
         scene_scorer: SceneScorer,
         grounding_model: GroundingModel,
         *,
+        session_id: str = "",
+        logger: EventLogger | None = None,
         privacy_mode: str = "default",
         window_ms: int = _WINDOW_MS,
     ) -> None:
         self._scene_scorer = scene_scorer
         self._grounding_model = grounding_model
+        self._session_id = session_id
+        self._logger = logger
         self._privacy_mode = privacy_mode
         self._window_ms = window_ms
         self._buffer: deque[FrameRef] = deque()
         self._last_frame: bytes | None = None
+        self._seq = 0
 
     # ------------------------------------------------------------------
     # Frame ingest
@@ -129,7 +139,7 @@ class VisionSidecar:
     # ------------------------------------------------------------------
     # Grounding pass (gated by deictic_reference)
 
-    def resolve(self, query: str, *, deictic_reference: bool) -> GroundingResult:
+    def resolve(self, query: str, *, deictic_reference: bool, deictic_evt_id: str = "") -> GroundingResult:
         """Run the deictic-grounding pass against the most recent buffered frame.
 
         Returns not-resolvable when:
@@ -144,11 +154,13 @@ class VisionSidecar:
 
         frame_ref = self._buffer[-1]
         label, confidence = self._grounding_model(frame_ref.frame_bytes, query)
-        return GroundingResult(
+        result = GroundingResult(
             label=label,
             confidence=confidence,
             frame_event_id=frame_ref.event_id,
         )
+        self._emit_grounding_event(frame_ref, label, confidence, deictic_evt_id)
+        return result
 
     # ------------------------------------------------------------------
     # Buffer introspection
@@ -160,6 +172,39 @@ class VisionSidecar:
         return list(self._buffer)
 
     # ------------------------------------------------------------------
+
+    def _next_seq(self) -> int:
+        self._seq += 1
+        return self._seq
+
+    def _emit_grounding_event(self, frame_ref: FrameRef, label: str, confidence: float, deictic_evt_id: str) -> None:
+        if self._logger is None:
+            return
+        seq = self._next_seq()
+        ts_ms = frame_ref.timestamp_mono_ms
+        event_id = f"{self._session_id}-grounding-{seq}-{ts_ms}"
+        payload_hash = hashlib.sha256(
+            f"deictic_grounding:{event_id}:{label}:{confidence:.4f}".encode()
+        ).hexdigest()[:16]
+        caused_by = [frame_ref.event_id, deictic_evt_id] if deictic_evt_id else [frame_ref.event_id]
+        evt = Event(
+            event_id=event_id,
+            session_id=self._session_id,
+            schema_version=self.SCHEMA_VERSION,
+            seq_no=seq,
+            event_type="deictic_grounding",
+            timestamp_mono_ms=ts_ms,
+            timestamp_wall=datetime.now(timezone.utc).isoformat(),
+            source=self.SOURCE,
+            caused_by=caused_by,
+            payload_hash=payload_hash,
+            payload_ref=None,
+            payload_kind="signal",
+            subject_class="self",
+            sensitivity="safe",
+            retention_policy_id="default",
+        )
+        self._logger.log(evt)
 
     def _evict(self, current_ts_ms: int) -> None:
         cutoff = current_ts_ms - self._window_ms

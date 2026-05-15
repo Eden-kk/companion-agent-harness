@@ -1,13 +1,21 @@
-"""VisionSidecar stub — unit tests (v0.1c Task 3).
+"""VisionSidecar stub — unit tests (v0.1c Task 3 + Task 7).
 
 Success criterion (verbatim):
   vision_sidecar.py imports cleanly; ring buffer evicts correctly using event
   timestamps (not wall-clock); the scorer is injectable; under no_camera_memory
   mode the ring buffer is empty and non-resolvable.
+
+Task 7 success criterion (verbatim):
+  pytest -k vision_sidecar passes non-vacuously — the grounding pass fires ONLY
+  under deictic_reference=True (negative path: deictic_reference=False -> no
+  grounding event), and every grounding event has a caused_by[] chain into a
+  raw_video_frame event. The stub's ring-buffer + privacy-guard tests still pass.
 """
 
 import pytest
 
+from companion_harness.event_logger import EventLogger
+from companion_harness.schemas import Event
 from companion_harness.vision_sidecar import (
     FrameRef,
     GroundingModel,
@@ -215,3 +223,75 @@ def test_no_camera_memory_ingest_returns_zero_score():
     ref = FrameRef(event_id="ev-a", timestamp_mono_ms=1_000, frame_bytes=b"\x01")
     score = sidecar.ingest_frame(ref)
     assert score == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Task 7: deictic-gated grounding pass emits logged events with causal chain
+
+
+@pytest.mark.asyncio
+async def test_grounding_event_logged_with_causal_chain_into_raw_video_frame() -> None:
+    """Grounding event must have caused_by[] pointing to the raw_video_frame event_id."""
+    collected: list[Event] = []
+
+    async def sink(event: Event) -> None:
+        collected.append(event)
+
+    logger = EventLogger(sink)
+    await logger.start()
+
+    sidecar = VisionSidecar(
+        scene_scorer=_FakeSceneScorer([]),
+        grounding_model=_FakeGroundingModel("mug", 0.9),
+        session_id="test-session",
+        logger=logger,
+    )
+    frame_event_id = "raw-video-frame-001"
+    deictic_evt_id = "deictic-classification-001"
+    ref = FrameRef(event_id=frame_event_id, timestamp_mono_ms=1_000, frame_bytes=b"\x01")
+    sidecar.ingest_frame(ref)
+
+    result = sidecar.resolve("what is this?", deictic_reference=True, deictic_evt_id=deictic_evt_id)
+    assert result.frame_event_id == frame_event_id
+
+    await logger.stop()
+
+    grounding_events = [e for e in collected if e.event_type == "deictic_grounding"]
+    assert len(grounding_events) == 1, "exactly one grounding event must be emitted"
+
+    ge = grounding_events[0]
+    assert frame_event_id in ge.caused_by, (
+        f"grounding event caused_by={ge.caused_by!r} does not reference raw_video_frame {frame_event_id!r}"
+    )
+    assert deictic_evt_id in ge.caused_by, (
+        f"grounding event caused_by={ge.caused_by!r} does not reference deictic_classification {deictic_evt_id!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_no_grounding_event_when_deictic_reference_false() -> None:
+    """Negative path: deictic_reference=False => no grounding event emitted."""
+    collected: list[Event] = []
+
+    async def sink(event: Event) -> None:
+        collected.append(event)
+
+    logger = EventLogger(sink)
+    await logger.start()
+
+    sidecar = VisionSidecar(
+        scene_scorer=_FakeSceneScorer([]),
+        grounding_model=_FakeGroundingModel("mug", 0.9),
+        session_id="test-session",
+        logger=logger,
+    )
+    ref = FrameRef(event_id="raw-video-frame-002", timestamp_mono_ms=1_000, frame_bytes=b"\x01")
+    sidecar.ingest_frame(ref)
+
+    result = sidecar.resolve("what is this?", deictic_reference=False)
+    assert result.frame_event_id is None
+
+    await logger.stop()
+
+    grounding_events = [e for e in collected if e.event_type == "deictic_grounding"]
+    assert len(grounding_events) == 0, "no grounding event must be emitted when deictic_reference=False"
