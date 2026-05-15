@@ -1,0 +1,42 @@
+{
+  "case_id": "aesthetic_cooldown_001",
+  "stage": 3,
+  "scenario": "aesthetic_cooldown",
+  "modalities": ["audio", "raw_video"],
+  "fixture_ref": "companion_harness/fixtures/aesthetic_cooldown_001/",
+  "sensitivity": "safe_eval_fixture",
+  "expected_events": [
+    "raw_video_frame",
+    "aesthetic_reaction_candidate",
+    "policy_decision",
+    "aesthetic_reaction_candidate",
+    "policy_decision"
+  ],
+  "expected_metrics": {
+    "aesthetic_cooldown_rate": "= 100% on fixture set (at most one expressive reaction per budget window)"
+  },
+  "consent_class": "synthetic_eval",
+  "description": "Two high-novelty visual events occur within 20 seconds. The speak policy must emit at most one aesthetic_reaction (the first), and block the second with silence because the per-mode rate limit (aesthetic_reaction_budget) is exhausted. In normal mode the budget is 1 per 60 min; in walking_outdoor mode it is 1 per 20 min. This fixture uses normal mode. After the first reaction fires, the cooldown blocks the second candidate.",
+  "fixture_conventions": {
+    "skeleton_note": "Per-frame signal values are placeholders. Finalize at Stage 3 activation when the aesthetic_reaction_budget config and cooldown timer are specified.",
+    "task_mode": "normal — aesthetic_reaction_budget is 1 per 60 min per spec Part 6 Stage 3.",
+    "novelty_score": "Scripted visual novelty [0.0, 1.0]. Both events are high enough to qualify.",
+    "cooldown_remaining_ms": "Scripted cooldown timer value at each candidate frame. 0 at first event (budget available); > 0 at second event (budget exhausted).",
+    "expected_action_class_event1": "aesthetic_reaction — first candidate fires; budget consumed.",
+    "expected_action_class_event2": "silence — cooldown active; second candidate blocked.",
+    "expected_reason_code_event1": "PROACTIVITY_BUDGET_AVAILABLE",
+    "expected_reason_code_event2": "COOLDOWN_BLOCKED",
+    "inter_event_gap_ms": "< 20000 — both events within 20s to stress the rate limit.",
+    "frame_duration_ms": "33 — approximate 30fps; to be confirmed at Stage 3 activation.",
+    "expected_events_markers": "event_type strings are fixture-internal role labels, not Part 5 event_type values."
+  },
+  "signal_trace": {
+    "status": "skeleton",
+    "frames": [
+      {"t_ms": 0,     "frame_id": "frame-000", "event_type": "raw_video_frame",             "task_mode": "normal", "novelty_score": null, "cooldown_remaining_ms": 0,    "notes": "PLACEHOLDER — first high-novelty visual event begins"},
+      {"t_ms": 33,    "frame_id": "frame-001", "event_type": "aesthetic_reaction_candidate","task_mode": "normal", "novelty_score": null, "cooldown_remaining_ms": 0,    "resolution_frame": true, "expected_action_class": "aesthetic_reaction", "expected_reason_code": "PROACTIVITY_BUDGET_AVAILABLE", "notes": "PLACEHOLDER — first candidate; budget available; reaction fires; budget consumed"},
+      {"t_ms": 10000, "frame_id": "frame-300", "event_type": "raw_video_frame",             "task_mode": "normal", "novelty_score": null, "cooldown_remaining_ms": null, "notes": "PLACEHOLDER — second high-novelty event within 20s; cooldown still active"},
+      {"t_ms": 10033, "frame_id": "frame-301", "event_type": "aesthetic_reaction_candidate","task_mode": "normal", "novelty_score": null, "cooldown_remaining_ms": null, "resolution_frame": true, "expected_action_class": "silence", "expected_reason_code": "COOLDOWN_BLOCKED", "notes": "PLACEHOLDER — second candidate; cooldown active; silence required"}
+    ]
+  }
+}
