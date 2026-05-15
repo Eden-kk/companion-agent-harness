@@ -12,6 +12,7 @@ from companion_harness import speak_policy
 
 
 def _inputs_from_frame(frame: dict) -> PolicyInputs:
+    # Fields absent from the fixture frame fall through to PolicyInputs dataclass defaults (e.g. quiet_mode_active=False).
     return PolicyInputs(
         user_speaking=frame["user_speaking"],
         eou_probability=frame["eou_probability"],
