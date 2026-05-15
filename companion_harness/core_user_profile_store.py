@@ -10,10 +10,23 @@ import dataclasses
 import json
 import os
 import pathlib
+from datetime import datetime, timezone
 
 from companion_harness.schemas import MemoryItem, SensitiveField
 
 __all__ = ["CoreUserProfileStore"]
+
+
+def _now_utc() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _is_active(item: MemoryItem) -> bool:
+    if item.superseded_by is not None:
+        return False
+    if item.valid_to is None:
+        return True
+    return item.valid_to > _now_utc()
 
 
 def _item_to_dict(item: MemoryItem) -> dict:
@@ -68,7 +81,7 @@ class CoreUserProfileStore:
         results: list[MemoryItem] = []
         for raw in data.values():
             item = _item_from_dict(dict(raw))
-            if item.valid_to is not None or item.superseded_by is not None:
+            if not _is_active(item):
                 continue
             text = json.dumps(item.content).lower()
             if any(t in text for t in tokens):
@@ -78,7 +91,7 @@ class CoreUserProfileStore:
     def forget(self, item_id: str) -> None:
         data = self._load()
         if item_id in data:
-            data[item_id]["valid_to"] = "forgotten"
+            data[item_id]["valid_to"] = _now_utc()
             self._save(data)
 
     def hard_delete(self, item_id: str) -> None:

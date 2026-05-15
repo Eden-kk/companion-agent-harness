@@ -100,3 +100,31 @@ def test_provenance_round_trip(tmp_path: pathlib.Path) -> None:
     assert r.user_visible_summary.retention_policy_id == "pii-30d"
     assert r.user_visible_summary.value == "user's pronouns"
     assert r.user_visible_summary.sensitivity == "sensitive"
+
+
+def test_future_valid_to_remains_active(tmp_path: pathlib.Path) -> None:
+    store = CoreUserProfileStore(tmp_path / "profile.json")
+    item = _make_item(item_id="item-future", valid_to="2099-01-01T00:00:00+00:00")
+    store.commit(item)
+    results = store.retrieve("Alice")
+    assert any(r.item_id == "item-future" for r in results)
+
+
+def test_past_valid_to_excluded(tmp_path: pathlib.Path) -> None:
+    store = CoreUserProfileStore(tmp_path / "profile.json")
+    item = _make_item(item_id="item-past", valid_to="2020-01-01T00:00:00+00:00")
+    store.commit(item)
+    results = store.retrieve("Alice")
+    assert not any(r.item_id == "item-past" for r in results)
+
+
+def test_superseded_by_excluded(tmp_path: pathlib.Path) -> None:
+    store = CoreUserProfileStore(tmp_path / "profile.json")
+    old_item = _make_item(item_id="item-old", superseded_by="item-new")
+    new_item = _make_item(item_id="item-new")
+    store.commit(old_item)
+    store.commit(new_item)
+    results = store.retrieve("Alice")
+    ids = [r.item_id for r in results]
+    assert "item-old" not in ids
+    assert "item-new" in ids
