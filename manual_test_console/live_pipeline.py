@@ -50,6 +50,7 @@ from companion_harness.schemas import MemoryItem, PolicyInputs, ThinkerProposal,
 from companion_harness.turn_detector_smart import SmartTurnDetector
 from companion_harness.turn_detector_vad import VADDetector
 from companion_harness.memory_manager import CommitResult
+from companion_harness.provenance_minicpm import ProvenanceComputer
 from companion_harness.sleep_time_agent import SleepTimeAgent
 from companion_harness.urgency_scorer import UrgencyScorer, _NullUrgencyScorer
 from manual_test_console.config_schema import ALLOWLIST
@@ -482,6 +483,7 @@ def build_live_pipeline(
     blob_dir: Path | None = None,
     wire_sleep_time_agent: bool = False,
     minicpm_text_model: Any = None,
+    provenance_computer: "ProvenanceComputer | None" = None,
 ) -> LivePipeline:
     """Construct a LivePipeline for one ingest session.
 
@@ -653,6 +655,7 @@ def build_live_pipeline(
             stores=stores,
             event_logger=shielded_logger,  # type: ignore[arg-type]
             payload_reader=lambda evt_id: orch._memory_event_payloads.get(evt_id),
+            provenance_computer=provenance_computer,
         )
 
     return LivePipeline(
