@@ -1291,7 +1291,7 @@ def build_app(
     seam_defaults: dict[str, bool] | None = None,
     blob_retention_days: int = 30,
     event_log_maxsize: int = 16384,
-    display_sampling_rate: int = 5,
+    display_sampling_rate: int = 1,
 ) -> web.Application:
     """Build the aiohttp Application. Caller is responsible for run/cleanup.
 
