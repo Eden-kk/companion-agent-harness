@@ -34,6 +34,7 @@
   .row.highlighted { background: rgba(95, 179, 255, 0.15); transition: background 0.4s ease; }
   .row .body { color: var(--fg); opacity: 0.85; word-break: break-all; }
   .row .body small { opacity: 0.6; }
+  .payload-preview { color: var(--muted); font-family: monospace; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; max-width: 100%; }
   .log { padding: 6px 12px; font-size: 11px; background: #11151c; border-top: 1px solid #1f2530; max-height: 80px; overflow-y: auto; }
   .log div { opacity: 0.8; }
   .video-area { padding: 6px 12px; background: #11151c; border-top: 1px solid #1f2530; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
@@ -272,6 +273,28 @@
     return (mono_ms / 1000).toFixed(3) + "s";
   }
 
+  function escapeHtml(s) {
+    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+
+  function eventPreview(evt) {
+    const p = evt.payload_inline || {};
+    if (evt.event_type === "asr_transcript_emitted") return (p.text || "").slice(0, 80);
+    if (evt.event_type === "policy_decision") return "";
+    if (evt.event_type === "speak_decision") return (p.reason || p.action_type || "");
+    if (evt.event_type === "foreground_proposal") return (p.text || p.content || "").slice(0, 80);
+    if (evt.event_type === "model_swap_requested" || evt.event_type === "model_swap_completed" || evt.event_type === "model_swap_rejected") {
+      return `${p.seam || "?"} → ${p.requested_state ?? p.new_state ?? p.attempted_enabled ?? "?"}`;
+    }
+    if (evt.event_type === "rubric_violation") return `${p.rubric || "?"}: ${(p.summary || "").slice(0, 60)}`;
+    if (evt.event_type === "signal_producer_fallback") return `${p.primary_producer} → ${p.fallback_producer} (${p.reason})`;
+    if (evt.event_type === "reasoner_budget_exhausted") return `${p.budget_kind} limit=${p.limit} observed=${p.observed}`;
+    if (evt.event_type === "addressing_classified") return `addressed=${p.user_addressed_agent} (${p.classifier_source || "?"})`;
+    const keys = Object.keys(p).slice(0, 2);
+    if (keys.length === 0) return "";
+    return keys.map(k => `${k}=${JSON.stringify(p[k]).slice(0, 30)}`).join(" ");
+  }
+
   // Subscribers wired by other modules (e.g. tuning panel audit-tail).
   const eventSubscribers = [];
   function subscribeEvents(fn) { eventSubscribers.push(fn); }
@@ -313,7 +336,9 @@
     const body = document.createElement("div");
     body.className = "body";
     const cb = (evt.caused_by || []).map((s) => s.slice(0, 12)).join(",") || "-";
-    body.innerHTML = `<small>${fmtTs(evt.timestamp_mono_ms)} src=${evt.source} seq=${evt.seq_no} caused_by=[${cb}] hash=${(evt.payload_hash || "").slice(0,12)}</small>`;
+    const preview = eventPreview(evt);
+    body.innerHTML = preview ? `<span class="payload-preview">${escapeHtml(preview)}</span>` : "";
+    row.title = `${fmtTs(evt.timestamp_mono_ms)}  src=${evt.source}  seq=${evt.seq_no}\ncaused_by=[${cb}]  hash=${(evt.payload_hash || "").slice(0,12)}\nevent_id=${evt.event_id}`;
 
     const isIngest = evt.payload_kind === "raw_audio" || evt.payload_kind === "raw_video";
     const target = isIngest ? ingestRows : (SIGNAL_TYPES.has(evt.event_type) || evt.payload_kind === "signal") ? signalRows : ingestRows;
@@ -1470,7 +1495,9 @@
     const body = document.createElement("div");
     body.className = "body";
     const cb = (evt.caused_by || []).map((s) => s.slice(0, 12)).join(",") || "-";
-    body.innerHTML = `<small>${fmtTs(evt.timestamp_mono_ms)} src=${evt.source} seq=${evt.seq_no} caused_by=[${cb}] hash=${(evt.payload_hash || "").slice(0,12)}</small>`;
+    const preview = eventPreview(evt);
+    body.innerHTML = preview ? `<span class="payload-preview">${escapeHtml(preview)}</span>` : "";
+    row.title = `${fmtTs(evt.timestamp_mono_ms)}  src=${evt.source}  seq=${evt.seq_no}\ncaused_by=[${cb}]  hash=${(evt.payload_hash || "").slice(0,12)}\nevent_id=${evt.event_id}`;
 
     const pinBtn = document.createElement("button");
     pinBtn.className = "pin-btn" + (isPinned ? " pinned" : "");
