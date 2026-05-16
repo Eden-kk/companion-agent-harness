@@ -128,6 +128,7 @@ KEY_ADAPTER_LABELS: web.AppKey[dict] = web.AppKey("adapter_labels", dict)
 KEY_STREAMING_RAW_MODE: web.AppKey[bool] = web.AppKey("streaming_raw_mode", bool)
 KEY_BACKGROUND_REASONER: web.AppKey[object] = web.AppKey("background_reasoner", object)
 KEY_EVENT_RATE_COUNTER: web.AppKey[object] = web.AppKey("event_rate_counter", object)
+KEY_START_TIME: web.AppKey[float] = web.AppKey("start_time", float)
 
 # Session id stamped onto operator_action + config_change events emitted from
 # the /config/* HTTP endpoints. These events are decoupled from any /ws/ingest
@@ -837,6 +838,63 @@ async def _handle_health(request: web.Request) -> web.Response:
     })
 
 
+async def _handle_metrics(request: web.Request) -> web.Response:
+    """Prometheus text-format metrics endpoint."""
+    counter: _EventRateCounter = request.app[KEY_EVENT_RATE_COUNTER]  # type: ignore[assignment]
+    uptime = time.monotonic() - request.app[KEY_START_TIME]
+    events_per_second = counter.rate_per_second()
+
+    detector_labels: dict[str, str] = request.app[KEY_DETECTOR_LABELS]
+    adapter_labels: dict[str, str] = request.app[KEY_ADAPTER_LABELS]
+    tts_label: str = request.app[KEY_TTS_LABEL]
+    vision_enabled: bool = request.app[KEY_VISION_ENABLED]
+
+    adapters: dict[str, bool] = {
+        "vad": _label_is_ready(detector_labels.get("vad")),
+        "smart_turn": _label_is_ready(detector_labels.get("smart_turn")),
+        "backchannel": _label_is_ready(detector_labels.get("backchannel")),
+        "asr": _label_is_ready(detector_labels.get("asr")),
+        "tts": _label_is_ready(tts_label),
+        "vision": _label_is_ready(adapter_labels.get("scene_scorer")) and vision_enabled,
+    }
+
+    gpu_allocated_mb: float | None = None
+    gpu_device = "cuda:0"
+    try:
+        import torch  # noqa: WPS433
+        if torch.cuda.is_available():
+            gpu_allocated_mb = torch.cuda.memory_allocated() / (1024 * 1024)
+    except Exception:
+        pass
+
+    lines: list[str] = [
+        "# HELP harness_uptime_seconds Uptime since process start",
+        "# TYPE harness_uptime_seconds gauge",
+        f"harness_uptime_seconds {uptime:.3f}",
+        "# HELP harness_events_per_second_last_60s Event throughput",
+        "# TYPE harness_events_per_second_last_60s gauge",
+        f"harness_events_per_second_last_60s {events_per_second:.3f}",
+        "# HELP harness_adapter_ready Adapter readiness state (1 = real, 0 = stub/disabled)",
+        "# TYPE harness_adapter_ready gauge",
+    ]
+    for name, ready in adapters.items():
+        lines.append(f'harness_adapter_ready{{adapter="{name}"}} {1 if ready else 0}')
+
+    if gpu_allocated_mb is not None:
+        lines += [
+            "# HELP harness_gpu_memory_allocated_mb GPU memory allocated",
+            "# TYPE harness_gpu_memory_allocated_mb gauge",
+            f'harness_gpu_memory_allocated_mb{{device="{gpu_device}"}} {gpu_allocated_mb:.1f}',
+        ]
+
+    lines.append("")
+    body = "\n".join(lines)
+    return web.Response(
+        body=body.encode(),
+        headers={"Content-Type": "text/plain; version=0.0.4; charset=utf-8"},
+    )
+
+
 # ---------------------------------------------------------------------------
 # /config HTTP endpoints
 # ---------------------------------------------------------------------------
@@ -1232,6 +1290,7 @@ def build_app(
     app[KEY_LOGGER] = logger
     app[KEY_INGEST] = ingest
     app[KEY_EVENT_RATE_COUNTER] = event_rate_counter
+    app[KEY_START_TIME] = time.monotonic()
     app[KEY_BLOB_DIR] = blob_dir
     app[KEY_CHUNK_COUNTER] = {"sessions_opened": 0, "chunks_ingested": 0, "frames_ingested": 0}
     app[KEY_AUDIO_OUT_BROKER] = audio_out_broker
@@ -1302,6 +1361,7 @@ def build_app(
 
     app.router.add_get("/", _handle_index)
     app.router.add_get("/healthz", _handle_health)
+    app.router.add_get("/metrics", _handle_metrics)
     app.router.add_get("/ws/ingest", _handle_ingest_ws)
     app.router.add_get("/ws/display", _handle_display_ws)
     app.router.add_get("/ws/audio_out", _handle_audio_out_ws)
