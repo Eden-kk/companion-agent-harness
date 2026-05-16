@@ -105,11 +105,6 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "run":
-        if args.timing_mode == "synthetic_clock":
-            raise NotImplementedError(
-                "synthetic_clock available in Phase A.5; "
-                "see plan-eval-phase-a-execution.md §F5."
-            )
         if args.adapter != "harness_native":
             print(
                 f"adapter '{args.adapter}' not implemented in Phase A; "

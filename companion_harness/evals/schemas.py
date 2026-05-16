@@ -60,3 +60,50 @@ class ReporterConfig:
 
     output_dir: str
     formats: tuple[str, ...]
+
+
+# ---------------------------------------------------------------------------
+# Eval event-type schema table (eval-subsystem-spec.md §New event types)
+#
+# Classification axes for eval-bookkeeping event types introduced in Phase A.5.
+# Mirrors the structure of companion_harness/v0_1g_event_schema.py.
+# Axis values are stamped onto every emitted Event; retention_policy_ids
+# referenced here must exist in companion_harness/replay_privacy_policy.yaml.
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class EvalEventSchema:
+    """Classification axes for one eval-subsystem event type."""
+
+    payload_kind: str
+    subject_class: str
+    sensitivity: str
+    retention_policy_id: str
+
+
+EVAL_EVENT_TYPE_SCHEMAS: dict[str, EvalEventSchema] = {
+    "fixture_audio_chunk_injected": EvalEventSchema(
+        payload_kind="raw_audio",
+        subject_class="self",
+        sensitivity="sensitive",
+        retention_policy_id="raw_media_default_300s",
+    ),
+    "synthetic_clock_tick": EvalEventSchema(
+        payload_kind="signal",
+        subject_class="self",
+        sensitivity="safe",
+        retention_policy_id="eval_run_30d",
+    ),
+    "benchmark_case_started": EvalEventSchema(
+        payload_kind="signal",
+        subject_class="self",
+        sensitivity="safe",
+        retention_policy_id="eval_run_30d",
+    ),
+    "benchmark_case_completed": EvalEventSchema(
+        payload_kind="signal",
+        subject_class="self",
+        sensitivity="safe",
+        retention_policy_id="eval_run_30d",
+    ),
+}
