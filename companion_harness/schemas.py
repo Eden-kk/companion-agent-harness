@@ -180,6 +180,7 @@ class PolicyInputs:
     tool_status:                 str | None = None  # v0.1f Task 5: "in_progress" | None
     tool_progress_evidence:      ToolProgressEvidence | None = None  # v0.1f Anchor 4
     user_transcript:             str = ""  # ASR output for the current/just-completed turn. v0.1f addition.
+    current_speaker_id:          str | None = None  # v0.2b: latest speaker_id from DiarizationAdapter; None when diarization disabled.
 
 
 @dataclass

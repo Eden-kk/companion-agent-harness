@@ -119,6 +119,8 @@ KEY_AV_CONFLICT_SCORER: web.AppKey[object] = web.AppKey("av_conflict_scorer", ob
 KEY_DEICTIC_MODEL: web.AppKey[object] = web.AppKey("deictic_model", object)
 KEY_URGENCY_SCORER: web.AppKey[object] = web.AppKey("urgency_scorer", object)
 KEY_EMBEDDER: web.AppKey[object] = web.AppKey("embedder", object)
+# v0.2b: per-session diarization adapter factory (None = _NullDiarizationAdapter used by live_pipeline).
+KEY_DIARIZATION_ADAPTER_FACTORY: web.AppKey[object] = web.AppKey("diarization_adapter_factory", object)
 KEY_ADAPTER_LABELS: web.AppKey[dict] = web.AppKey("adapter_labels", dict)
 # True when --minicpm-streaming-raw is set. Mutually exclusive with
 # --minicpm-only and --use-stubs. DEMO MODE: bypasses SpeakPolicy + audit gates.
@@ -558,6 +560,7 @@ async def _handle_ingest_ws(request: web.Request) -> web.WebSocketResponse:
             deictic_model=request.app[KEY_DEICTIC_MODEL],
             embedder=request.app[KEY_EMBEDDER],
             background_reasoner=request.app[KEY_BACKGROUND_REASONER],
+            diarization_adapter_factory=request.app[KEY_DIARIZATION_ADAPTER_FACTORY],
         )
         active_pipelines[session.session_id] = pipeline
         await pipeline.start()
@@ -594,7 +597,7 @@ async def _handle_ingest_ws(request: web.Request) -> web.WebSocketResponse:
                 evt = ingest.ingest_chunk(session, payload_bytes, meta)
                 chunk_counter["chunks_ingested"] = chunk_counter.get("chunks_ingested", 0) + 1
                 if pipeline is not None:
-                    pipeline.push_audio(payload_bytes, evt.event_id)
+                    pipeline.push_audio(payload_bytes, evt.event_id, ts_mono)
             else:  # raw_video
                 video_evt = ingest.ingest_video_frame(session, payload_bytes, meta)
                 chunk_counter["frames_ingested"] = chunk_counter.get("frames_ingested", 0) + 1
@@ -1102,6 +1105,7 @@ def build_app(
     deictic_model: Any = None,
     urgency_scorer: Any = None,
     embedder: Any = None,
+    diarization_adapter_factory: Any = None,
     streaming_raw_mode: bool = False,
     seam_defaults: dict[str, bool] | None = None,
 ) -> web.Application:
@@ -1179,6 +1183,7 @@ def build_app(
     app[KEY_DEICTIC_MODEL] = deictic_model
     app[KEY_URGENCY_SCORER] = urgency_scorer
     app[KEY_EMBEDDER] = embedder
+    app[KEY_DIARIZATION_ADAPTER_FACTORY] = diarization_adapter_factory
     app[KEY_ADAPTER_LABELS] = {
         "scene_scorer": (
             f"real:{type(scene_scorer).__name__}" if scene_scorer is not None
@@ -1203,6 +1208,10 @@ def build_app(
         "embedder": (
             f"real:{type(embedder).__name__}" if embedder is not None
             else "stub:_NullEmbeddingAdapter"
+        ),
+        "diarization_adapter": (
+            f"real:{diarization_adapter_factory.__name__}" if diarization_adapter_factory is not None
+            else "stub:_NullDiarizationAdapter"
         ),
     }
 
@@ -1580,6 +1589,13 @@ def main(argv: list[str] | None = None) -> int:
         help="Wire SentenceTransformerEmbedder in place of _NullEmbeddingAdapter (issue #183). Default ON since v0.2e.",
     )
     parser.add_argument(
+        "--enable-diarization",
+        dest="enable_diarization",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Wire PyannoteDiarizationAdapter in place of _NullDiarizationAdapter. Default OFF (v0.2b). Requires pyannote.audio>=3.0.",
+    )
+    parser.add_argument(
         "--minicpm-only",
         dest="minicpm_only",
         action="store_true",
@@ -1649,7 +1665,7 @@ def main(argv: list[str] | None = None) -> int:
             # Force all opt-in vision/aux adapter flags off.
             for flag_name in (
                 "enable_clip_scene", "enable_grounding", "enable_av_conflict",
-                "enable_deictic", "enable_urgency", "enable_embeddings",
+                "enable_deictic", "enable_urgency", "enable_embeddings", "enable_diarization",
             ):
                 if getattr(args, flag_name, False):
                     print(
@@ -1715,6 +1731,7 @@ def main(argv: list[str] | None = None) -> int:
     real_urgency_scorer: Any = None
     real_embedder: Any = None
     real_deictic_model: Any = None
+    real_diarization_adapter_factory: Any = None
 
     if args.live_pipeline and not args.use_stubs:
         if args.enable_clip_scene:
@@ -1747,6 +1764,14 @@ def main(argv: list[str] | None = None) -> int:
                 real_embedder = SentenceTransformerEmbedder()
             except Exception as exc:
                 print(f"SentenceTransformerEmbedder init FAILED: {type(exc).__name__}: {exc}", flush=True)
+        if args.enable_diarization:
+            try:
+                from companion_harness.diarization_pyannote import PyannoteDiarizationAdapter  # noqa: WPS433
+                # Factory so each session gets its own per-session adapter instance.
+                real_diarization_adapter_factory = PyannoteDiarizationAdapter
+                print("PyannoteDiarizationAdapter: ready (per-session instances)", flush=True)
+            except Exception as exc:
+                print(f"PyannoteDiarizationAdapter init FAILED: {type(exc).__name__}: {exc}", flush=True)
 
     # Build seam_defaults from --disable-seam flags.  Unknown seam names are
     # silently ignored here; the HTTP route rejects them at runtime.
@@ -1778,6 +1803,7 @@ def main(argv: list[str] | None = None) -> int:
         deictic_model=real_deictic_model,
         urgency_scorer=real_urgency_scorer,
         embedder=real_embedder,
+        diarization_adapter_factory=real_diarization_adapter_factory,
         streaming_raw_mode=args.minicpm_streaming_raw,
         seam_defaults=seam_defaults,
     )
@@ -1819,6 +1845,7 @@ def main(argv: list[str] | None = None) -> int:
             (args.enable_deictic, "deictic"),
             (args.enable_urgency, "urgency"),
             (args.enable_embeddings, "embeddings"),
+            (args.enable_diarization, "diarization"),
         )
         if flag
     ) or "(none — all null stubs)"

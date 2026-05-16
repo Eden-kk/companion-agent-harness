@@ -254,6 +254,8 @@ def derive_user_addressed_agent(
     signal: AddressingSignal,
     social_mode: str,
     transcript: str = "",
+    current_speaker_id: str | None = None,
+    last_anchored_speaker_id: str | None = None,
 ) -> bool:
     """Convert `AddressingSignal` + `social_mode` into the `PolicyInputs` bool.
 
@@ -264,18 +266,39 @@ def derive_user_addressed_agent(
                          WHISPER_HALLUCINATION_DENYLIST.
                          Invariant #8: silence wins ties.
 
+    v0.1k speaker-continuity tie-breaker (Anchor 7): if the implicit/background
+    tier would return False AND `current_speaker_id` matches `last_anchored_speaker_id`
+    (the speaker captured at the most recent wake-word confirmation), return True.
+    The tie-breaker is placed here (not in MiniCPMAddressingClassifier) because
+    MiniCPM is gated on issue #157; this path is always active.
+
     `transcript` is optional for log-only call sites that don't need the
     implicit-tier gate; omitting it conservatively returns False for implicit.
+    `current_speaker_id` and `last_anchored_speaker_id` are optional; when either
+    is None the tie-breaker is skipped (backward-compatible default).
     """
     if signal.confidence == "explicit":
         return True
     if signal.confidence == "background":
-        return False
+        # Background tier returns False, but speaker-continuity can override.
+        return _speaker_continuity_override(current_speaker_id, last_anchored_speaker_id)
     # Implicit tier: require positive evidence from the transcript.
     tokens = _tokenize(transcript)
     if len(tokens) < IMPLICIT_MIN_TOKENS:
-        return False
+        return _speaker_continuity_override(current_speaker_id, last_anchored_speaker_id)
     normalised = " ".join(tokens)
     if normalised in WHISPER_HALLUCINATION_DENYLIST:
-        return False
+        return _speaker_continuity_override(current_speaker_id, last_anchored_speaker_id)
     return True
+
+
+def _speaker_continuity_override(
+    current_speaker_id: str | None,
+    last_anchored_speaker_id: str | None,
+) -> bool:
+    """Return True when the same speaker who triggered the last wake-word is still talking."""
+    return (
+        current_speaker_id is not None
+        and last_anchored_speaker_id is not None
+        and current_speaker_id == last_anchored_speaker_id
+    )

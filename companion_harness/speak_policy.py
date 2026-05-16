@@ -10,23 +10,14 @@ free-text reasoning on the policy path (invariant #5 / Stage 0 Tier B replay).
 from __future__ import annotations
 
 from companion_harness.reason_codes import ReasonCode
-from companion_harness.schemas import DecisionTrace, PolicyInputs, ResponseContentSource, SensitiveField, SpeakDecision, ThinkerProposal
+from companion_harness.schemas import DecisionTrace, PolicyInputs, SensitiveField, SpeakDecision, ThinkerProposal
 from companion_harness.speak_policy_config import (
     SPEC_ALERT_THRESHOLD,
     _LEVEL_TO_FLOAT_THRESHOLD,
 )
 
-POLICY_VERSION = "v0.1j"
+POLICY_VERSION = "v0.1k"
 CONFIG_VERSION = "v0.1e"
-
-_RESPONSE_SOURCE_FOR_ACTION: dict[str, ResponseContentSource] = {
-    "silence": "no_synthesis",
-    "full_response": "foreground_response_proposal",
-    "backchannel": "backchannel",
-    # filler is content-dependent — set explicitly at construction:
-    #   tool evidence present → "filler_with_tool_evidence"
-    #   no tool evidence → "filler_without_evidence"
-}
 
 _BLOCKING_SOCIAL_MODES = frozenset({
     "user_addressing_other",

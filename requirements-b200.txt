@@ -50,3 +50,9 @@ kokoro-onnx==0.3.3
 # the canonical venv can be reconstructed deterministically.
 espeakng-loader==0.2.4
 phonemizer-fork==3.3.1
+
+# v0.2b: pyannote speaker diarization (Anchor 1).
+# Install BEFORE upgrading numpy; if pyannote resolver pulls numpy>=2,
+# pin back immediately: pip install "numpy<2"
+# Verify post-install: python -c "import librosa; import numpy; assert numpy.__version__ < '2'"
+pyannote.audio>=3.0

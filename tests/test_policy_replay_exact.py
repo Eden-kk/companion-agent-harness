@@ -576,9 +576,9 @@ def test_policy_replay_exact_stage3():
     alert (all four modes), aesthetic_reaction (permitted / quiet_mode_blocked /
     mode_blocked / cooldown_blocked), short_reaction (budget replenished /
     exhausted), backchannel, clarification, full_response, and silence fallthrough.
-    No fixture-loader involvement.  Verifies invariant #5 and POLICY_VERSION == "v0.1j".
+    No fixture-loader involvement.  Verifies invariant #5 and POLICY_VERSION == "v0.1k".
     """
-    assert speak_policy.POLICY_VERSION == "v0.1j"
+    assert speak_policy.POLICY_VERSION == "v0.1k"
     assert len(_STAGE3_TRACE) == len(_STAGE3_BASELINE)
     assert len(_STAGE3_TRACE) == len(_STAGE3_P_BACKCHANNEL)
 
@@ -746,10 +746,10 @@ def test_policy_replay_exact_stage4():
     asserts (a) feeding populated retrieved_items through decide() does not
     perturb decisions, and (b) DecisionTrace.retrieval_used co-emission is
     deterministic across repeated calls with identical inputs.
-    POLICY_VERSION is "v0.1j" after Wave 7 Task 18 bump; retrieval plumbing changes
+    POLICY_VERSION is "v0.1k" after v0.2b bump; retrieval plumbing changes
     do not independently bump policy_version (spec line 202–209).
     """
-    assert speak_policy.POLICY_VERSION == "v0.1j"
+    assert speak_policy.POLICY_VERSION == "v0.1k"
     assert len(_STAGE4_TRACE) == len(_STAGE4_BASELINE)
     assert len(_STAGE4_TRACE) == len(_STAGE4_RETRIEVAL_EVENT_IDS)
 
@@ -983,9 +983,9 @@ def test_policy_replay_behavioral_tolerance_stage5():
     invariant #6 behavioral tuple (action_class + interaction_intent + safety_class)
     is stable across two decide() runs and matches the expected class bucketing.
     Covers all five leaf action classes used by v0.1j Wave 2-5 producers.
-    POLICY_VERSION == "v0.1j".
+    POLICY_VERSION == "v0.1k".
     """
-    assert speak_policy.POLICY_VERSION == "v0.1j"
+    assert speak_policy.POLICY_VERSION == "v0.1k"
     assert len(_STAGE5_TRACE) == len(_STAGE5_P_BACKCHANNEL)
     assert len(_STAGE5_TRACE) == len(_STAGE5_EXPECTED_BEHAVIORAL_TUPLES)
 
@@ -1100,10 +1100,10 @@ def test_policy_replay_exact_stage6():
     """Tier B: bit-identical replay for v0.1g threshold_path strings.
 
     Covers "aesthetic_reaction:rubric_blocked" (PR #195) and
-    "attachment_risk:dampen_blocked" (PR #212).  Verifies POLICY_VERSION == "v0.1j"
+    "attachment_risk:dampen_blocked" (PR #212).  Verifies POLICY_VERSION == "v0.1k"
     and that both new path strings are emitted by _threshold_path_for().
     """
-    assert speak_policy.POLICY_VERSION == "v0.1j"
+    assert speak_policy.POLICY_VERSION == "v0.1k"
     assert len(_STAGE6_TRACE) == len(_STAGE6_BASELINE)
     assert len(_STAGE6_TRACE) == len(_STAGE6_PROPOSALS)
 
