@@ -116,6 +116,13 @@ class ForegroundModel:
         self._session_id = session_id
         self._logger = logger
         self._seq = 0
+        # If the injected model is a MiniCPMStreamingModel (singleton loaded at
+        # server start with no logger/session_id), bind it to this session so
+        # its _emit_invocation calls log under the correct session and EventLogger.
+        # This closes the G1 caused_by orphan gap: -nd- event IDs were created but
+        # never logged because the singleton had logger=None at construction time.
+        if hasattr(model, "set_session"):
+            model.set_session(session_id, logger)  # type: ignore[union-attr]
 
     def set_context(self, items: list[MemoryItem]) -> None:
         """Pass retrieved memory items to the underlying model."""
