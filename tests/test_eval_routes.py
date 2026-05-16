@@ -134,10 +134,10 @@ async def test_get_event_log_streams_jsonl(tmp_path: Path) -> None:
     blobs.mkdir(parents=True)
     run_id = "run-evtlog"
     case_id = "case-001"
-    log_dir = blobs / "eval_reports" / run_id / case_id
+    log_dir = blobs / "eval_reports" / run_id / "event_logs"
     log_dir.mkdir(parents=True)
     jsonl_content = b'{"kind":"vad_frame"}\n{"kind":"policy_decision"}\n'
-    (log_dir / "events.jsonl").write_bytes(jsonl_content)
+    (log_dir / f"{case_id}.jsonl").write_bytes(jsonl_content)
 
     app = _make_app(tmp_path)
     server = TestServer(app)
