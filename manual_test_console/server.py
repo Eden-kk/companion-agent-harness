@@ -53,7 +53,12 @@ from companion_harness.input_ingest import CaptureMetadata, InputIngest
 from companion_harness.schemas import Event
 from manual_test_console.config_schema import ALLOWLIST, tier_a_keys, validate_patch
 from manual_test_console.config_store import ConfigChange, ConfigStore
-from manual_test_console.live_pipeline import LivePipeline, build_live_pipeline
+from manual_test_console.live_pipeline import (
+    LivePipeline,
+    StreamingRawPipeline,
+    build_live_pipeline,
+    build_streaming_raw_pipeline,
+)
 
 __all__ = ["build_app", "main"]
 
@@ -105,6 +110,9 @@ KEY_DEICTIC_MODEL: web.AppKey[object] = web.AppKey("deictic_model", object)
 KEY_URGENCY_SCORER: web.AppKey[object] = web.AppKey("urgency_scorer", object)
 KEY_EMBEDDER: web.AppKey[object] = web.AppKey("embedder", object)
 KEY_ADAPTER_LABELS: web.AppKey[dict] = web.AppKey("adapter_labels", dict)
+# True when --minicpm-streaming-raw is set. Mutually exclusive with
+# --minicpm-only and --use-stubs. DEMO MODE: bypasses SpeakPolicy + audit gates.
+KEY_STREAMING_RAW_MODE: web.AppKey[bool] = web.AppKey("streaming_raw_mode", bool)
 
 # Session id stamped onto operator_action + config_change events emitted from
 # the /config/* HTTP endpoints. These events are decoupled from any /ws/ingest
@@ -360,15 +368,27 @@ async def _handle_ingest_ws(request: web.Request) -> web.WebSocketResponse:
     chunk_counter: dict[str, int] = request.app[KEY_CHUNK_COUNTER]
     live_enabled: bool = request.app[KEY_LIVE_PIPELINE_ENABLED]
     foreground_model = request.app[KEY_FOREGROUND_MODEL]
-    active_pipelines: dict[str, LivePipeline] = request.app[KEY_ACTIVE_PIPELINES]
+    active_pipelines: dict[str, Any] = request.app[KEY_ACTIVE_PIPELINES]
+    streaming_raw_mode: bool = request.app[KEY_STREAMING_RAW_MODE]
 
     client_id = f"ws-{uuid.uuid4().hex[:8]}"
     session = ingest.open_session(client_id)
     chunk_counter["sessions_opened"] = chunk_counter.get("sessions_opened", 0) + 1
 
     # Per-connection live pipeline (if enabled and a foreground model is available).
-    pipeline: LivePipeline | None = None
-    if live_enabled and foreground_model is not None:
+    pipeline: LivePipeline | StreamingRawPipeline | None = None
+    if streaming_raw_mode and foreground_model is not None:
+        # DEMO MODE: bypasses SpeakPolicy + audit gates per spec invariants #2/#4.
+        pipeline = build_streaming_raw_pipeline(
+            session_id=session.session_id,
+            logger=logger,
+            foreground_duplex_model=foreground_model,
+            tts_adapter=request.app[KEY_TTS_ADAPTER],
+            audio_out_broker=request.app[KEY_AUDIO_OUT_BROKER],  # type: ignore[arg-type]
+        )
+        active_pipelines[session.session_id] = pipeline
+        await pipeline.start()
+    elif live_enabled and foreground_model is not None:
         # Per-session VisionSidecar when --enable-vision is set. The sidecar
         # buffers the most-recent frame; _bounded_frame_gen pairs it with the
         # next audio chunk so the MiniCPM-o vision tower runs once per frame
@@ -543,7 +563,8 @@ async def _handle_health(request: web.Request) -> web.Response:
     logger: EventLogger = request.app[KEY_LOGGER]  # type: ignore[assignment]
     live_enabled: bool = request.app[KEY_LIVE_PIPELINE_ENABLED]
     foreground_model = request.app[KEY_FOREGROUND_MODEL]
-    active_pipelines: dict[str, LivePipeline] = request.app[KEY_ACTIVE_PIPELINES]
+    active_pipelines: dict[str, Any] = request.app[KEY_ACTIVE_PIPELINES]
+    streaming_raw_mode: bool = request.app[KEY_STREAMING_RAW_MODE]
     detector_labels: dict[str, str] = request.app[KEY_DETECTOR_LABELS]
     audio_out_counter: dict[str, int] = request.app[KEY_AUDIO_OUT_COUNTER]
     tts_label: str = request.app[KEY_TTS_LABEL]
@@ -551,7 +572,7 @@ async def _handle_health(request: web.Request) -> web.Response:
     vision_enabled: bool = request.app[KEY_VISION_ENABLED]
     frames_buffered = 0
     last_frame_event_id: str | None = None
-    if vision_enabled:
+    if vision_enabled and not streaming_raw_mode:
         for p in active_pipelines.values():
             if p.vision_sidecar is None:
                 continue
@@ -560,8 +581,17 @@ async def _handle_health(request: web.Request) -> web.Response:
             if efid is not None:
                 last_frame_event_id = efid
     adapter_labels: dict[str, str] = request.app[KEY_ADAPTER_LABELS]
+    if streaming_raw_mode:
+        server_mode = "minicpm_streaming_raw"
+    elif not live_enabled:
+        server_mode = "capture_only"
+    elif request.app[KEY_USE_STUBS]:
+        server_mode = "stubs"
+    else:
+        server_mode = "live"
     return web.json_response({
         "status": "ok",
+        "mode": server_mode,
         "sessions_opened": chunk_counter.get("sessions_opened", 0),
         "chunks_ingested": chunk_counter.get("chunks_ingested", 0),
         "frames_ingested": chunk_counter.get("frames_ingested", 0),
@@ -811,6 +841,7 @@ def build_app(
     deictic_model: Any = None,
     urgency_scorer: Any = None,
     embedder: Any = None,
+    streaming_raw_mode: bool = False,
 ) -> web.Application:
     """Build the aiohttp Application. Caller is responsible for run/cleanup.
 
@@ -858,6 +889,7 @@ def build_app(
     app[KEY_FOREGROUND_MODEL] = foreground_model
     app[KEY_ACTIVE_PIPELINES] = {}
     app[KEY_USE_STUBS] = use_stubs
+    app[KEY_STREAMING_RAW_MODE] = streaming_raw_mode
     app[KEY_VAD_MODEL] = None
     app[KEY_SMART_TURN_MODEL] = None
     app[KEY_BACKCHANNEL_MODEL] = None
@@ -922,7 +954,8 @@ def build_app(
 
     async def _on_startup(_app: web.Application) -> None:
         await logger.start()
-        if live_pipeline_enabled and foreground_model is None and foreground_model_factory is not None:
+        needs_foreground = live_pipeline_enabled or streaming_raw_mode
+        if needs_foreground and foreground_model is None and foreground_model_factory is not None:
             print("Loading MiniCPM-o foreground model (this may take minutes)...", flush=True)
             t0 = time.monotonic()
             try:
@@ -931,10 +964,37 @@ def build_app(
                 print(f"MiniCPM-o load FAILED: {type(exc).__name__}: {exc}", flush=True)
                 print("Falling back to capture-only mode (no live pipeline).", flush=True)
                 _app[KEY_LIVE_PIPELINE_ENABLED] = False
+                _app[KEY_STREAMING_RAW_MODE] = False
                 return
             elapsed = time.monotonic() - t0
             _app[KEY_FOREGROUND_MODEL] = model
             print(f"MiniCPM-o loaded in {elapsed:.1f}s", flush=True)
+
+        # In streaming_raw_mode: load TTS then return (no detectors needed).
+        if _app[KEY_STREAMING_RAW_MODE]:
+            if _app[KEY_TTS_ADAPTER] is None and tts_adapter_factory is not None:
+                print(f"Loading {tts_adapter_name} TTS adapter (raw mode)...", flush=True)
+                t0 = time.monotonic()
+                try:
+                    _app[KEY_TTS_ADAPTER] = tts_adapter_factory()
+                except Exception as exc:
+                    print(
+                        f"{tts_adapter_name} TTS load FAILED: {type(exc).__name__}: {exc} "
+                        "— falling back to stub:NoopTtsAdapter",
+                        flush=True,
+                    )
+                    from manual_test_console.live_pipeline import NoopTtsAdapter  # noqa: WPS433
+                    _app[KEY_TTS_ADAPTER] = NoopTtsAdapter()
+                    _app[KEY_TTS_LABEL] = "stub:NoopTtsAdapter"
+                else:
+                    elapsed = time.monotonic() - t0
+                    _app[KEY_TTS_LABEL] = f"{tts_adapter_name} (loaded in {elapsed:.2f}s)"
+                    print(f"{tts_adapter_name} loaded in {elapsed:.2f}s", flush=True)
+            elif _app[KEY_TTS_ADAPTER] is None:
+                from manual_test_console.live_pipeline import NoopTtsAdapter  # noqa: WPS433
+                _app[KEY_TTS_ADAPTER] = NoopTtsAdapter()
+                _app[KEY_TTS_LABEL] = "stub:NoopTtsAdapter"
+            return  # skip detector loading in raw mode
 
         if not _app[KEY_LIVE_PIPELINE_ENABLED] or _app[KEY_USE_STUBS]:
             # Stub/disabled mode: ensure tts_adapter falls back to Noop.
@@ -1259,6 +1319,20 @@ def main(argv: list[str] | None = None) -> int:
             "Mutually exclusive with --use-stubs (--use-stubs wins)."
         ),
     )
+    parser.add_argument(
+        "--minicpm-streaming-raw",
+        dest="minicpm_streaming_raw",
+        action="store_true",
+        default=False,
+        help=(
+            "DEMO MODE: bypass SpeakPolicy, ASR, addressing, and all detector "
+            "gates. Audio flows mic → MiniCPM infer_stream → native TTS → "
+            "audio_out, with no policy filtering. "
+            "Mutually exclusive with --minicpm-only and --use-stubs "
+            "(most restrictive wins). "
+            "Explicitly bypasses spec invariants #2, #4, and parts of #1."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if args.minicpm_only and args.use_stubs:
@@ -1269,24 +1343,69 @@ def main(argv: list[str] | None = None) -> int:
     elif args.minicpm_only:
         args.tts_adapter = "native_minicpm"
 
+    # --minicpm-streaming-raw: mutually exclusive with --minicpm-only and --use-stubs.
+    # Most-restrictive-wins: use_stubs > minicpm_only > minicpm_streaming_raw.
+    if args.minicpm_streaming_raw:
+        if args.use_stubs:
+            print(
+                "WARNING: --use-stubs overrides --minicpm-streaming-raw; "
+                "running with stub detectors and NoOp TTS.",
+                flush=True,
+            )
+            args.minicpm_streaming_raw = False
+        elif args.minicpm_only:
+            print(
+                "WARNING: --minicpm-only overrides --minicpm-streaming-raw; "
+                "running with minicpm-only mode (SpeakPolicy active).",
+                flush=True,
+            )
+            args.minicpm_streaming_raw = False
+        else:
+            # Force all opt-in vision/aux adapter flags off.
+            for flag_name in (
+                "enable_clip_scene", "enable_grounding", "enable_av_conflict",
+                "enable_deictic", "enable_urgency", "enable_embeddings",
+            ):
+                if getattr(args, flag_name, False):
+                    print(
+                        f"WARNING: --minicpm-streaming-raw: ignoring --{flag_name.replace('_', '-')} "
+                        "(no aux adapters in raw mode).",
+                        flush=True,
+                    )
+                    setattr(args, flag_name, False)
+            args.tts_adapter = "native_minicpm"
+            print(
+                "WARNING: --minicpm-streaming-raw bypasses SpeakPolicy, ASR, addressing, "
+                "and audit gates. Use only for demo/comparison.",
+                flush=True,
+            )
+
     blob_dir: Path = args.blob_dir
     blob_dir.mkdir(parents=True, exist_ok=True)
 
-    if args.live_pipeline:
-        if args.enable_vision:
+    if args.live_pipeline or args.minicpm_streaming_raw:
+        if args.enable_vision and not args.minicpm_streaming_raw:
             def factory() -> Any:  # noqa: WPS430
                 return _load_minicpm_streaming_model(init_vision=True)
         else:
             factory = _load_minicpm_streaming_model
     else:
         factory = None
-    if args.live_pipeline and not args.use_stubs:
+    if args.minicpm_streaming_raw:
+        # DEMO MODE: bypasses SpeakPolicy + audit gates per spec invariants #2/#4.
+        # No detector factories; TTS is native MiniCPM for the raw path.
+        vad_factory: Optional[Callable[[], Any]] = None
+        smart_turn_factory: Optional[Callable[[], Any]] = None
+        backchannel_factory: Optional[Callable[[], Any]] = None
+        tts_factory: Optional[Callable[[], Any]] = _load_native_minicpm_tts_adapter
+        asr_factory: Optional[Callable[[], Any]] = None
+    elif args.live_pipeline and not args.use_stubs:
         if args.minicpm_only:
-            vad_factory: Optional[Callable[[], Any]] = None
-            smart_turn_factory: Optional[Callable[[], Any]] = None
-            backchannel_factory: Optional[Callable[[], Any]] = None
-            tts_factory: Optional[Callable[[], Any]] = _load_native_minicpm_tts_adapter
-            asr_factory: Optional[Callable[[], Any]] = _load_asr_model
+            vad_factory = None
+            smart_turn_factory = None
+            backchannel_factory = None
+            tts_factory = _load_native_minicpm_tts_adapter
+            asr_factory = _load_asr_model
         else:
             vad_factory = _load_silero_vad_model
             smart_turn_factory = _load_pipecat_smart_turn_model
@@ -1363,13 +1482,19 @@ def main(argv: list[str] | None = None) -> int:
         deictic_model=real_deictic_model,
         urgency_scorer=real_urgency_scorer,
         embedder=real_embedder,
+        streaming_raw_mode=args.minicpm_streaming_raw,
     )
     # Stamp the deictic_model label as "pending-foreground-load" so
     # _on_startup_finalize_deictic knows the operator asked for it.
     if args.live_pipeline and not args.use_stubs and args.enable_deictic:
         app[KEY_ADAPTER_LABELS]["deictic_model"] = "real:pending-foreground-load"
 
-    if not args.live_pipeline:
+    if args.minicpm_streaming_raw:
+        pipeline_label = (
+            "MINICPM-STREAMING-RAW (DEMO MODE: SpeakPolicy/ASR/addressing bypassed; "
+            "MiniCPM infer_stream → native TTS → audio_out)"
+        )
+    elif not args.live_pipeline:
         pipeline_label = "disabled"
     elif args.use_stubs:
         pipeline_label = "ENABLED (loading MiniCPM-o + CPU-stub detectors)"
@@ -1377,11 +1502,12 @@ def main(argv: list[str] | None = None) -> int:
         pipeline_label = "MINICPM-ONLY (MiniCPM-o + native TTS + ASR; VAD/SmartTurn/Backchannel stubbed)"
     else:
         pipeline_label = "ENABLED (loading MiniCPM-o + real detectors at startup)"
-    lanes_label = (
-        "VAD, SmartTurn, Backchannel, SpeakPolicy, MiniCPM proposals"
-        if args.live_pipeline
-        else "capture-only"
-    )
+    if args.minicpm_streaming_raw:
+        lanes_label = "DEMO MODE: no VAD/ASR/SpeakPolicy — raw audio → MiniCPM → TTS"
+    elif args.live_pipeline:
+        lanes_label = "VAD, SmartTurn, Backchannel, SpeakPolicy, MiniCPM proposals"
+    else:
+        lanes_label = "capture-only"
 
     if args.enable_vision:
         vision_label = "ENABLED (init_vision=True, +~18 GB VRAM)"
