@@ -171,6 +171,13 @@
         <span class="filter-label">search:</span>
         <input id="filter-search" class="filter-search" type="text" placeholder="event type, payload, caused_by…" autocomplete="off" />
         <button id="filter-rc-btn" class="filter-chip" title="Filter by reason code">reason code: all</button>
+        <span class="filter-label">cap:</span>
+        <select id="filter-cap" class="filter-chip" title="Retained-line cap for audit panel" style="padding:1px 4px;cursor:pointer;">
+          <option value="100">100</option>
+          <option value="500" selected>500</option>
+          <option value="1000">1000</option>
+          <option value="0">unlimited</option>
+        </select>
         <span id="filter-counter" class="filter-counter">Showing 0 of 0</span>
       </div>
       <div class="filter-row">
@@ -1335,6 +1342,7 @@
   // only display is affected. State persisted to localStorage under "auditFilter".
 
   const LS_KEY = "auditFilter";
+  const MAX_AUDIT_ROWS = 500;
 
   // High-signal types ON by default; high-volume types OFF.
   const DEFAULT_ON = new Set([
@@ -1357,6 +1365,7 @@
   let filterReasonCode = "";  // "" = all
   let filterTypes = new Map(); // type → bool
   const pinnedIds = new Set();
+  let auditRowCap = MAX_AUDIT_ROWS; // 0 = unlimited
 
   // All signal-panel events (rendered or not), for re-render on filter change.
   const allSignalEvents = [];
@@ -1370,6 +1379,7 @@
         for (const [k, v] of Object.entries(saved.types)) filterTypes.set(k, !!v);
       }
       if (Array.isArray(saved.pinned)) saved.pinned.forEach((id) => pinnedIds.add(id));
+      if (typeof saved.cap === "number") auditRowCap = saved.cap;
     } catch (e) { /* ignore corrupted storage */ }
   }
 
@@ -1382,6 +1392,7 @@
         reasonCode: filterReasonCode,
         types,
         pinned: Array.from(pinnedIds),
+        cap: auditRowCap,
       }));
     } catch (e) {}
   }
@@ -1418,6 +1429,7 @@
   const filterSearchEl = document.getElementById("filter-search");
   const filterCounterEl = document.getElementById("filter-counter");
   const filterRcBtn = document.getElementById("filter-rc-btn");
+  const filterCapEl = document.getElementById("filter-cap");
   const typeChecklist = document.getElementById("type-checklist");
 
   // Reason-code chip filter: cycle through seen reason codes.
@@ -1434,6 +1446,12 @@
 
   filterSearchEl.addEventListener("input", () => {
     filterSearch = filterSearchEl.value;
+    saveFilterState();
+    applyFilter();
+  });
+
+  filterCapEl.addEventListener("change", () => {
+    auditRowCap = parseInt(filterCapEl.value, 10);
     saveFilterState();
     applyFilter();
   });
@@ -1461,13 +1479,17 @@
   }
 
   function applyFilter() {
-    let shown = 0;
     const total = allSignalEvents.length;
 
     // Pinned events always at top; normal events filtered.
     const pinned = allSignalEvents.filter((e) => pinnedIds.has(e.event_id));
-    const normal = allSignalEvents.filter((e) => !pinnedIds.has(e.event_id) && eventMatchesFilter(e));
-    shown = pinned.length + normal.length;
+    let normal = allSignalEvents.filter((e) => !pinnedIds.has(e.event_id) && eventMatchesFilter(e));
+
+    // Apply retained-line cap to non-pinned rows (keep newest).
+    const capActive = auditRowCap > 0;
+    if (capActive && normal.length > auditRowCap) normal = normal.slice(-auditRowCap);
+
+    const shown = pinned.length + normal.length;
 
     // Re-render signal-rows in order: pinned first, then matching.
     signalRows.innerHTML = "";
@@ -1475,7 +1497,8 @@
       const row = buildSignalRow(evt);
       signalRows.appendChild(row);
     }
-    filterCounterEl.textContent = `Showing ${shown} of ${total}`;
+    const capLabel = capActive ? ` (cap: ${auditRowCap})` : "";
+    filterCounterEl.textContent = `Showing ${shown} of ${total}${capLabel}`;
     signalRows.scrollTop = signalRows.scrollHeight;
   }
 
@@ -1558,6 +1581,7 @@
     filterRcBtn.textContent = `rc: ${filterReasonCode}`;
     filterRcBtn.classList.add("active");
   }
+  filterCapEl.value = String(auditRowCap);
   filterCounterEl.textContent = "Showing 0 of 0";
 })();
 </script>
