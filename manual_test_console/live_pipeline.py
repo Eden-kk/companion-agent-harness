@@ -40,7 +40,7 @@ from companion_harness.attachment_risk_monitor import EventStreamAttachmentRiskM
 from companion_harness.audio_output_controller import AudioOutputController
 from companion_harness.av_conflict_scorer import AudioVisualConflictScorer, _NullAudioVisualConflictScorer
 from companion_harness.backchannel_classifier import BackchannelClassifier
-from companion_harness.deictic_detector import DeicticDetector, _NullDeicticModel
+from companion_harness.deictic_detector import DeicticDetector, DeicticModel, _NullDeicticModel
 from companion_harness.event_logger import EventLogger
 from companion_harness.foreground_model import ForegroundModel
 from companion_harness.input_ingest import IngestSession
@@ -49,7 +49,7 @@ from companion_harness.realtime_orchestrator import StreamingRealtimeOrchestrato
 from companion_harness.schemas import MemoryItem, PolicyInputs, ThinkerProposal, TurnSignal
 from companion_harness.turn_detector_smart import SmartTurnDetector
 from companion_harness.turn_detector_vad import VADDetector
-from companion_harness.memory_manager import CommitResult
+from companion_harness.memory_manager import CommitResult, EmbeddingAdapter
 from companion_harness.provenance_minicpm import ProvenanceComputer
 from companion_harness.sleep_time_agent import SleepTimeAgent
 from companion_harness.urgency_scorer import UrgencyScorer, _NullUrgencyScorer
@@ -418,6 +418,12 @@ class LivePipeline:
     episodic_store: Any = None
     semantic_store: Any = None
     sleep_time_agent: SleepTimeAgent | None = None
+    # Optional real-adapter handles exposed for /healthz + tests. None means the
+    # corresponding null stub is being used inside the pipeline.
+    av_conflict_scorer: AudioVisualConflictScorer | None = None
+    urgency_scorer: UrgencyScorer | None = None
+    deictic_model: DeicticModel | None = None
+    embedder: EmbeddingAdapter | None = None
 
     async def start(self) -> None:
         await self.orchestrator.start()
@@ -484,6 +490,10 @@ def build_live_pipeline(
     wire_sleep_time_agent: bool = False,
     minicpm_text_model: Any = None,
     provenance_computer: "ProvenanceComputer | None" = None,
+    av_conflict_scorer: AudioVisualConflictScorer | None = None,
+    urgency_scorer: UrgencyScorer | None = None,
+    deictic_model: DeicticModel | None = None,
+    embedder: EmbeddingAdapter | None = None,
 ) -> LivePipeline:
     """Construct a LivePipeline for one ingest session.
 
@@ -526,6 +536,12 @@ def build_live_pipeline(
         backchannel_model = ZeroBackchannelModel()
         tts_adapter = NoopTtsAdapter()
         asr_model = EmptyTranscriptASRModel()
+        # Stub mode also disables every optional real adapter — mirrors the
+        # TTS rule above (stubs must never reach for real model plumbing).
+        av_conflict_scorer = None
+        urgency_scorer = None
+        deictic_model = None
+        embedder = None
     else:
         if vad_model is None:
             vad_model = EnergyVADModel()
@@ -579,7 +595,7 @@ def build_live_pipeline(
         minicpm_addressing = _NullMiniCPMAddressingClassifier()
     safety_net_addressing = WakeWordAddressingClassifier()
     deictic_detector = DeicticDetector(
-        model=_NullDeicticModel(),
+        model=deictic_model if deictic_model is not None else _NullDeicticModel(),
         session_id=session_id,
         logger=shielded_logger,  # type: ignore[arg-type]
     )
@@ -598,7 +614,8 @@ def build_live_pipeline(
     policy_inputs_builder = _make_live_policy_inputs_builder(
         is_playing_fn=lambda: audio_output.is_playing,
         vision_sidecar=vision_sidecar,
-        urgency_scorer=_NullUrgencyScorer(),
+        av_scorer=av_conflict_scorer,
+        urgency_scorer=urgency_scorer if urgency_scorer is not None else _NullUrgencyScorer(),
         attachment_risk_monitor=arm,
     )
 
@@ -668,4 +685,8 @@ def build_live_pipeline(
         episodic_store=episodic_store,
         semantic_store=semantic_store,
         sleep_time_agent=sleep_agent,
+        av_conflict_scorer=av_conflict_scorer,
+        urgency_scorer=urgency_scorer,
+        deictic_model=deictic_model,
+        embedder=embedder,
     )
