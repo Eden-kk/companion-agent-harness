@@ -260,6 +260,7 @@ class StreamingRealtimeOrchestrator:
         tool_progress_emitter: "Any | None" = None,
         background_reasoner: "Any | None" = None,
         audio_tee_depth: int = _AUDIO_TEE_DEPTH,
+        use_streaming_speculative: bool = False,
     ) -> None:
         self._session_id = session_id
         self._logger = logger
@@ -368,6 +369,8 @@ class StreamingRealtimeOrchestrator:
         # FIFO-capped payload dict for memory_write_candidate and memory_retrieval_event.
         # Keyed by event_id; consumers access via payload_reader callback.
         self._memory_event_payloads: OrderedDict[str, dict] = OrderedDict()
+
+        self._use_streaming_speculative: bool = use_streaming_speculative
 
         self._seq = 0
         self._tasks: list[asyncio.Task[None]] = []

@@ -703,6 +703,12 @@ def build_live_pipeline(
         for subdir in ("session", "core", "episodic", "semantic"):
             (mem_root / subdir).mkdir(parents=True, exist_ok=True)
 
+    use_streaming_speculative = bool(
+        config_store.get("orchestrator.use_streaming_speculative")
+        if config_store is not None
+        else False
+    )
+
     orch = StreamingRealtimeOrchestrator(
         session_id=session_id,
         logger=shielded_logger,  # type: ignore[arg-type]
@@ -733,6 +739,7 @@ def build_live_pipeline(
         tool_router=None,
         tool_progress_emitter=None,
         background_reasoner=background_reasoner,
+        use_streaming_speculative=use_streaming_speculative,
     )
 
     sleep_agent: SleepTimeAgent | None = None
