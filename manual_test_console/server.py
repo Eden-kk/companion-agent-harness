@@ -1217,6 +1217,12 @@ def build_app(
     app.router.add_get("/config/seams", _handle_get_config_seams)
     app.router.add_post("/config/model-swap", _handle_post_model_swap)
 
+    # --- Eval console PR1 (E4) ---
+    from manual_test_console.eval_routes import register_eval_routes
+    _eval_reports_dir = blob_dir / "eval_reports"
+    _eval_reports_dir.mkdir(parents=True, exist_ok=True)
+    register_eval_routes(app, eval_reports_dir=_eval_reports_dir)
+
     async def _on_startup(_app: web.Application) -> None:
         await logger.start()
         needs_foreground = live_pipeline_enabled or streaming_raw_mode

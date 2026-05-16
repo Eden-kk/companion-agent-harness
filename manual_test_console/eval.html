@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>eval console — companion-agent-harness</title>
+<link rel="stylesheet" href="/eval/static/eval_style.css" />
+</head>
+<body>
+<header>
+  <h1>eval console</h1>
+  <nav class="page-switcher">
+    <a href="/">Live</a>
+    <a href="/eval" class="active">Eval</a>
+  </nav>
+  <span class="spacer"></span>
+  <span id="conn-status">ready</span>
+</header>
+<main>
+  <div class="panel" id="adapter-panel">
+    <h2>Run launcher</h2>
+    <select id="adapter-sel"></select>
+    <div>
+      <span id="adapter-badge" class="badge synthetic">SYNTHETIC</span>
+      <span id="adapter-notes" class="adapter-notes"></span>
+    </div>
+    <button id="run-btn">Run</button>
+    <div id="run-status"></div>
+    <h2 style="margin-top:16px;">Runs</h2>
+    <div style="overflow-y:auto;flex:1;">
+      <table class="run-table">
+        <thead>
+          <tr>
+            <th>run_id</th>
+            <th>adapter</th>
+            <th>started</th>
+            <th>status</th>
+            <th>pass/total</th>
+          </tr>
+        </thead>
+        <tbody id="runs-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+  <div id="detail-area">
+    <div style="color:var(--muted);font-size:11px;padding:12px;">Click a run to view details.</div>
+    <div class="failure-placeholder">
+      Failure inspector — coming in PR2; requires CausalFailureSliceExtractor wiring.
+    </div>
+  </div>
+</main>
+<script src="/eval/static/eval_app.js"></script>
+</body>
+</html>
