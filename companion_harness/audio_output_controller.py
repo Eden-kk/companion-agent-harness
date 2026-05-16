@@ -72,6 +72,7 @@ class AudioOutputController:
         self._sink = sink
         self._seq = 0
         self._playing = False
+        self._synthesizing = False  # True during TTS synthesis; barge-in deferred until first chunk
         self._stop_event = asyncio.Event()
         self._generation_task: asyncio.Task[None] | None = None
 
@@ -88,6 +89,7 @@ class AudioOutputController:
         evt = self._emit("assistant_generation_start", caused_by, payload_kind="model_output")
         self._emit("tts_synthesis_started", [evt.event_id], payload_kind="signal")
         self._playing = True
+        self._synthesizing = True  # barge-in deferred until first audio chunk arrives
         self._stop_event.clear()
         return evt.event_id
 
@@ -100,6 +102,7 @@ class AudioOutputController:
         """Log that the audio buffer has been fully flushed (utterance complete)."""
         self._emit("assistant_audio_buffer_flushed", caused_by, payload_kind="model_output")
         self._emit("tts_synthesis_completed", caused_by, payload_kind="signal")
+        self._synthesizing = False
         self._playing = False
 
     def request_stop(self, caused_by: list[str]) -> str:
@@ -133,6 +136,7 @@ class AudioOutputController:
         if self._generation_task is not None and not self._generation_task.done():
             self._generation_task.cancel()
             self._generation_task = None
+        self._synthesizing = False
         self._playing = False
 
     async def play(self, chunks: AsyncIterable[bytes], generation_event_id: str) -> None:
@@ -148,7 +152,11 @@ class AudioOutputController:
         ratio of chunks-attempted vs chunks-sent to the WS sink can be diagnosed
         without sampling /healthz counters.
         """
+        first_chunk = True
         async for chunk in chunks:
+            if first_chunk:
+                self._synthesizing = False  # synthesis phase done; barge-in now permitted
+                first_chunk = False
             if self._stop_event.is_set():
                 self._emit(
                     "assistant_audio_stop_completed",
@@ -165,6 +173,16 @@ class AudioOutputController:
     @property
     def is_playing(self) -> bool:
         return self._playing
+
+    @property
+    def is_synthesizing(self) -> bool:
+        """True while TTS synthesis is running but no audio chunk has been sent yet.
+
+        Barge-in is deferred while this is True so that ambient VAD noise during
+        the synthesis latency window (1-3 s) cannot cancel playback before a single
+        audio chunk reaches the speaker.
+        """
+        return self._synthesizing
 
     # ------------------------------------------------------------------
     # Internal helpers

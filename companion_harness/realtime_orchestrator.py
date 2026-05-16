@@ -1186,6 +1186,7 @@ class StreamingRealtimeOrchestrator:
     def is_barge_in_trigger(self) -> bool:
         return (
             self._audio_output.is_playing
+            and not self._audio_output.is_synthesizing  # don't barge-in during TTS synthesis window
             and not self._barge_in_in_flight
             and self._latest_p_backchannel < self._p_backchannel_thresh
         )
