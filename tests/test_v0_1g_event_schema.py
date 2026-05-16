@@ -56,6 +56,8 @@ EXPECTED_EVENT_TYPES = {
     # v0.2b T1: diarization event types
     "diarization_frame_produced",
     "speaker_continuity_anchor",
+    # F4 fix: typed payload for synthesis skip diagnosability
+    "synthesis_skipped_no_proposal",
 }
 
 

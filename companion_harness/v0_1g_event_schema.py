@@ -175,6 +175,28 @@ EVENT_TYPE_SCHEMAS: dict[str, StageSixEventSchema] = {
         ),
     ),
 
+    # F4 fix: emitted by _synthesis_dispatch_task when the proposal batch
+    # window expires before any ThinkerProposal arrives.  Carries the
+    # dispatcher state, batch-window sizing, and the TurnSignal event id so
+    # operators can determine WHICH turn timed out and HOW long the window was.
+    "synthesis_skipped_no_proposal": StageSixEventSchema(
+        payload_kind="signal",
+        subject_class="self",
+        sensitivity="safe",
+        retention_policy_id="signal_default_30d",
+        required_fields=(
+            "dispatcher_state", "batch_window_ms",
+            "batch_open_at_ms", "batch_close_at_ms", "signal_evt_id",
+        ),
+        notes=(
+            "Emitted when the synthesis dispatcher's grace window expires "
+            "before any ThinkerProposal arrives.  payload_inline carries "
+            "dispatcher_state, batch_window_ms, batch_open_at_ms, "
+            "batch_close_at_ms, and signal_evt_id so operators can triage "
+            "F0c-class proposer-timing failures without source spelunking."
+        ),
+    ),
+
     # Task 9 (Wave 5): receipt for user reduction command compliance
     # (spec line 678-680).  Reuses commit_audit_30d retention.
     "user_reduction_command_applied": StageSixEventSchema(
