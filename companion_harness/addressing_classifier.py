@@ -31,13 +31,17 @@ heuristics; they belong to a later phase (see issue #139).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from companion_harness.foreground_model_minicpm import MiniCPMDuplexModel
 
 __all__ = [
     "AddressingConfidence",
     "AddressingSignal",
     "AddressingClassifier",
     "MiniCPMAddressingClassifier",
+    "MiniCPMAddressingClassifierImpl",
     "_NullMiniCPMAddressingClassifier",
     "WakeWordAddressingClassifier",
     "derive_user_addressed_agent",
@@ -86,8 +90,6 @@ class MiniCPMAddressingClassifier(Protocol):
     Returns `AddressingSignal` when inference is available, or `None` when the
     model is unavailable so the orchestrator falls back to the safety-net
     (`WakeWordAddressingClassifier`).
-
-    # UNAVAILABLE: #157 — libcudart blocker, MiniCPM-derived addressing unavailable
     """
 
     def __call__(
@@ -98,13 +100,52 @@ class MiniCPMAddressingClassifier(Protocol):
     ) -> AddressingSignal | None: ...
 
 
+_ADDRESSING_PROMPT = (
+    "Transcript: '{transcript}'. "
+    "Is the user addressing an AI assistant? "
+    "Answer with only 'yes' or 'no'."
+)
+
+
+class MiniCPMAddressingClassifierImpl:
+    """MiniCPM-o backed implementation of MiniCPMAddressingClassifier.
+
+    Uses MiniCPMDuplexModel.chat() with a yes/no prompt to determine
+    addressing intent from the transcript text.  Audio bytes are accepted
+    for interface compatibility but are not used (text-only path).
+
+    Returns AddressingSignal or None if the model response is unparseable.
+    """
+
+    def __init__(self, model: "MiniCPMDuplexModel") -> None:
+        self._model = model
+
+    def __call__(
+        self,
+        transcript: str,
+        speaker_count: int | None,
+        social_mode: str,
+    ) -> AddressingSignal | None:
+        if not transcript.strip():
+            return None
+        prompt = _ADDRESSING_PROMPT.format(transcript=transcript)
+        try:
+            raw = self._model.chat(prompt, max_new_tokens=4)
+        except Exception:
+            return None
+        answer = raw.strip().lower()
+        if answer.startswith("yes"):
+            return AddressingSignal(confidence="explicit", evidence="minicpm_classifier:yes")
+        if answer.startswith("no"):
+            return AddressingSignal(confidence="implicit", evidence="minicpm_classifier:no")
+        return None
+
+
 class _NullMiniCPMAddressingClassifier:
-    """Stub for `MiniCPMAddressingClassifier` when libcudart is unavailable.
+    """Stub for `MiniCPMAddressingClassifier` when MiniCPM model is not loaded.
 
     Always returns `None` so the orchestrator falls back to
     `WakeWordAddressingClassifier` (safety-net).
-
-    # UNAVAILABLE: #157 — libcudart blocker, MiniCPM-derived addressing unavailable
     """
 
     def __call__(
@@ -113,7 +154,6 @@ class _NullMiniCPMAddressingClassifier:
         speaker_count: int | None,
         social_mode: str,
     ) -> AddressingSignal | None:
-        # UNAVAILABLE: #157 — libcudart blocker, MiniCPM-derived addressing unavailable
         return None
 
 
