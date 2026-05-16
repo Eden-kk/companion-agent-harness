@@ -12,6 +12,8 @@ from typing import Any
 import pytest
 
 from companion_harness.event_logger import EventLogger
+from companion_harness.memory_manager import CommitResult
+from companion_harness.privacy_gates import _SkipCommit, check_privacy_gate
 from companion_harness.schemas import Event, MemoryItem, SensitiveField
 from companion_harness.sleep_time_agent import (
     CONFIDENCE_DEFAULT,
@@ -96,8 +98,15 @@ class _InMemoryStore:
     def __init__(self) -> None:
         self.committed: list[MemoryItem] = []
 
-    def commit(self, item: MemoryItem, privacy_mode: str = "normal") -> None:
+    def commit(self, item: MemoryItem, privacy_mode: str = "normal") -> CommitResult:
+        try:
+            check_privacy_gate(item, privacy_mode)
+        except _SkipCommit:
+            return CommitResult.SKIPPED_PRIVACY
+        except ValueError:
+            return CommitResult.SKIPPED_CAMERA
         self.committed.append(item)
+        return CommitResult.COMMITTED
 
     def retrieve(self, query: str, top_k: int = 5) -> list[MemoryItem]:
         return []

@@ -1,16 +1,15 @@
 """Task 19: no_camera_memory privacy-mode store-level tests (v0.1e).
 
 Spec: architecture-v0.1.md lines 823-827.
-Success criterion: visual-content commits raise ValueError; non-visual commits succeed.
+Success criterion: visual-content commits return SKIPPED_CAMERA; non-visual commits succeed.
 """
 
 from __future__ import annotations
 
 import pathlib
 
-import pytest
-
 from companion_harness.episodic_memory_store import EpisodicMemoryStore
+from companion_harness.memory_manager import CommitResult
 from companion_harness.schemas import MemoryItem, SensitiveField
 from companion_harness.semantic_relational_store import SemanticRelationalStore
 
@@ -59,10 +58,11 @@ def _nonvisual_item(store: str = "episodic") -> MemoryItem:
     )
 
 
-def test_episodic_visual_raises_value_error(tmp_path: pathlib.Path) -> None:
+def test_episodic_visual_returns_skipped_camera(tmp_path: pathlib.Path) -> None:
     store = EpisodicMemoryStore(tmp_path / "ep")
-    with pytest.raises(ValueError, match="no_camera_memory"):
-        store.commit(_visual_item(), privacy_mode="no_camera_memory")
+    result = store.commit(_visual_item(), privacy_mode="no_camera_memory")
+    assert result == CommitResult.SKIPPED_CAMERA
+    assert store.retrieve("") == []
 
 
 def test_episodic_nonvisual_succeeds(tmp_path: pathlib.Path) -> None:
@@ -71,7 +71,7 @@ def test_episodic_nonvisual_succeeds(tmp_path: pathlib.Path) -> None:
     assert len(store.retrieve("tea")) == 1
 
 
-def test_semantic_visual_raises_value_error(tmp_path: pathlib.Path) -> None:
+def test_semantic_visual_returns_skipped_camera(tmp_path: pathlib.Path) -> None:
     store = SemanticRelationalStore(tmp_path / "sr")
     item = MemoryItem(
         item_id="sr-vis-001",
@@ -92,8 +92,9 @@ def test_semantic_visual_raises_value_error(tmp_path: pathlib.Path) -> None:
             value="alice seen at park",
         ),
     )
-    with pytest.raises(ValueError, match="no_camera_memory"):
-        store.commit(item, privacy_mode="no_camera_memory")
+    result = store.commit(item, privacy_mode="no_camera_memory")
+    assert result == CommitResult.SKIPPED_CAMERA
+    assert store.retrieve("alice") == []
 
 
 def test_semantic_nonvisual_succeeds(tmp_path: pathlib.Path) -> None:

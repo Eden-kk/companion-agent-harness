@@ -20,6 +20,8 @@ from typing import TYPE_CHECKING
 
 from companion_harness.schemas import Event, MemoryItem, SensitiveField
 
+from companion_harness.memory_manager import CommitResult
+
 if TYPE_CHECKING:
     from companion_harness.event_logger import EventLogger
     from companion_harness.memory_manager import MemoryManager
@@ -39,6 +41,7 @@ def _make_event(
     event_type: str,
     caused_by: list[str],
     seq: int,
+    reason: str | None = None,
 ) -> Event:
     now_ms = int(time.monotonic() * 1000)
     return Event(
@@ -52,7 +55,7 @@ def _make_event(
         source="sleep_time_agent",
         caused_by=caused_by,
         payload_hash="",
-        payload_ref=None,
+        payload_ref=reason,
         payload_kind="memory_op",
         subject_class="unknown",
         sensitivity="safe",
@@ -104,14 +107,6 @@ class SleepTimeAgent:
             return
 
         payload = self._read_payload(event)
-
-        if payload.get("privacy_mode") == "guest_present":
-            self._seq += 1
-            self._event_logger.log(
-                _make_event("memory_commit_skipped", [event.event_id], self._seq)
-            )
-            return
-
         item = self._finalize_provenance(payload)
 
         store = self._stores.get(payload["store"])
@@ -121,12 +116,25 @@ class SleepTimeAgent:
             )
             return
 
-        store.commit(item, privacy_mode=payload.get("privacy_mode", "normal"))
+        try:
+            result = store.commit(item, privacy_mode=payload.get("privacy_mode", "normal"))
+        except Exception as exc:
+            sys.stderr.write(f"[SleepTimeAgent] commit error: {exc}\n")
+            return
 
         self._seq += 1
-        self._event_logger.log(
-            _make_event("memory_commit_completed", [event.event_id], self._seq)
-        )
+        if result == CommitResult.COMMITTED:
+            self._event_logger.log(
+                _make_event("memory_commit_completed", [event.event_id], self._seq)
+            )
+        elif result == CommitResult.SKIPPED_PRIVACY:
+            self._event_logger.log(
+                _make_event("memory_commit_skipped", [event.event_id], self._seq, reason="privacy_mode")
+            )
+        elif result == CommitResult.SKIPPED_CAMERA:
+            self._event_logger.log(
+                _make_event("memory_commit_skipped", [event.event_id], self._seq, reason="no_camera_memory_visual")
+            )
 
     def _read_payload(self, event: Event) -> dict:
         if self._payload_reader is not None:
