@@ -626,7 +626,11 @@ def build_live_pipeline(
     # MiniCPM-derived classifier is the final-product primary (issue #139).
     # WakeWordAddressingClassifier is the safety-net, active when MiniCPM returns None.
     if minicpm_text_model is not None:
-        minicpm_addressing = MiniCPMAddressingClassifierImpl(minicpm_text_model)
+        minicpm_addressing = MiniCPMAddressingClassifierImpl(
+            minicpm_text_model,
+            logger=shielded_logger,  # type: ignore[arg-type]
+            session_id=session_id,
+        )
     else:
         minicpm_addressing = _NullMiniCPMAddressingClassifier(
             logger=shielded_logger, session_id=session_id

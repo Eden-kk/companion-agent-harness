@@ -176,6 +176,46 @@ class MiniCPMStreamingModel:
                 enable_thinking=False,
             )
 
+    def classify_yes_no(self, prompt: str) -> tuple[bool, float]:
+        """Logprob-based binary classification.
+
+        Runs ONE forward pass on the prompt and compares the next-token
+        logprob mass on yes-tokens vs no-tokens. No autoregressive generation
+        happens, so KV cache and state of self._duplex / self._base are not
+        advanced. Deterministic given fixed weights.
+
+        Returns:
+            (is_yes, prob_yes) where prob_yes is the softmax mass on the
+            yes-token set, normalized against the no-token set: p / (p_yes + p_no).
+        """
+        if not hasattr(self, "_yes_no_token_ids"):
+            tok = self._tokenizer
+            yes_ids: list[int] = []
+            no_ids: list[int] = []
+            for word in (" yes", " Yes", " YES", "yes", "Yes"):
+                ids = tok.encode(word, add_special_tokens=False)
+                if len(ids) == 1:
+                    yes_ids.append(ids[0])
+            for word in (" no", " No", " NO", "no", "No"):
+                ids = tok.encode(word, add_special_tokens=False)
+                if len(ids) == 1:
+                    no_ids.append(ids[0])
+            assert yes_ids and no_ids, "tokenizer produced no single-token yes/no ids"
+            self._yes_no_token_ids = (yes_ids, no_ids)
+
+        yes_ids, no_ids = self._yes_no_token_ids
+        inputs = self._tokenizer(prompt, return_tensors="pt").to(self._base.device)
+        with torch.no_grad():
+            out = self._base(**inputs)
+        last_logits = out.logits[0, -1, :]
+        probs = torch.softmax(last_logits, dim=-1)
+        p_yes = float(sum(probs[i].item() for i in yes_ids))
+        p_no  = float(sum(probs[i].item() for i in no_ids))
+        if p_yes + p_no <= 0.0:
+            return False, 0.5
+        prob_yes = p_yes / (p_yes + p_no)
+        return prob_yes > 0.5, prob_yes
+
     def infer(self, audio_frame: bytes, video_frame: bytes | None = None) -> ThinkerProposal | None:
         """DuplexModel Protocol stub — single-frame path not used for streaming."""
         return None

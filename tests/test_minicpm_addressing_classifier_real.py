@@ -30,35 +30,35 @@ from companion_harness.addressing_classifier import (
 
 
 # ---------------------------------------------------------------------------
-# Fake model for CPU-only tests
+# Fake model for CPU-only tests (logprob interface)
 # ---------------------------------------------------------------------------
 
 
 class _FakeYesModel:
-    """Fake MiniCPMDuplexModel that returns 'yes' for any chat prompt."""
+    """Fake model returning (True, 0.9) from classify_yes_no."""
 
-    def chat(self, text: str, max_new_tokens: int = 4) -> str:
-        return "yes"
+    def classify_yes_no(self, prompt: str) -> tuple[bool, float]:
+        return True, 0.9
 
 
 class _FakeNoModel:
-    """Fake MiniCPMDuplexModel that returns 'no' for any chat prompt."""
+    """Fake model returning (False, 0.1) from classify_yes_no."""
 
-    def chat(self, text: str, max_new_tokens: int = 4) -> str:
-        return "no"
+    def classify_yes_no(self, prompt: str) -> tuple[bool, float]:
+        return False, 0.1
 
 
-class _FakeGarbageModel:
-    """Fake MiniCPMDuplexModel that returns an unparseable response."""
+class _FakeAmbivalentModel:
+    """Fake model returning ambivalent prob_yes=0.5 from classify_yes_no."""
 
-    def chat(self, text: str, max_new_tokens: int = 4) -> str:
-        return "maybe"
+    def classify_yes_no(self, prompt: str) -> tuple[bool, float]:
+        return False, 0.5
 
 
 class _FakeRaisingModel:
-    """Fake MiniCPMDuplexModel that raises on chat()."""
+    """Fake model that raises on classify_yes_no."""
 
-    def chat(self, text: str, max_new_tokens: int = 4) -> str:
+    def classify_yes_no(self, prompt: str) -> tuple[bool, float]:
         raise RuntimeError("model unavailable")
 
 
@@ -79,7 +79,7 @@ def test_minicpm_classifier_yes_returns_explicit_signal() -> None:
     result = clf("what time is it", speaker_count=None, social_mode="user_addressing_agent")
     assert isinstance(result, AddressingSignal)
     assert result.confidence == "explicit"
-    assert result.evidence == "minicpm_classifier:yes"
+    assert result.evidence.startswith("minicpm_logprob:yes:")
 
 
 def test_minicpm_classifier_no_returns_implicit_signal() -> None:
@@ -87,13 +87,7 @@ def test_minicpm_classifier_no_returns_implicit_signal() -> None:
     result = clf("tell him about it", speaker_count=None, social_mode="user_addressing_other")
     assert isinstance(result, AddressingSignal)
     assert result.confidence == "implicit"
-    assert result.evidence == "minicpm_classifier:no"
-
-
-def test_minicpm_classifier_garbage_response_returns_none() -> None:
-    clf = MiniCPMAddressingClassifierImpl(_FakeGarbageModel())  # type: ignore[arg-type]
-    result = clf("something", speaker_count=None, social_mode="user_addressing_agent")
-    assert result is None
+    assert result.evidence.startswith("minicpm_logprob:no:")
 
 
 def test_minicpm_classifier_raising_model_returns_none() -> None:
@@ -145,10 +139,10 @@ if not torch.cuda.is_available():
 
 @pytest.mark.gpu
 def test_minicpm_addressing_classifier_real_inference() -> None:
-    """Real MiniCPMDuplexModel.chat() is called; return is AddressingSignal or None."""
-    from companion_harness.foreground_model_minicpm import MiniCPMDuplexModel
+    """Real MiniCPMStreamingModel.classify_yes_no() is called; return is AddressingSignal or None."""
+    from companion_harness.foreground_model_minicpm import MiniCPMStreamingModel
 
-    model = MiniCPMDuplexModel()
+    model = MiniCPMStreamingModel()
     clf = MiniCPMAddressingClassifierImpl(model)
 
     result = clf("hey assistant what time is it", speaker_count=None, social_mode="user_addressing_agent")

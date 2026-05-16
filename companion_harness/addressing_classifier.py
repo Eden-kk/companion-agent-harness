@@ -40,7 +40,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from companion_harness.foreground_model_minicpm import MiniCPMDuplexModel
+    from companion_harness.event_logger import EventLogger
+    from companion_harness.foreground_model_minicpm import MiniCPMDuplexModel, MiniCPMStreamingModel
 
 __all__ = [
     "AddressingConfidence",
@@ -141,19 +142,30 @@ _ADDRESSING_PROMPT = (
     "Answer with only 'yes' or 'no'."
 )
 
+# Ambiguity band: [0.45, 0.55] triggers a low-confidence audit event.
+_LOW_CONF_LO = 0.45
+_LOW_CONF_HI = 0.55
+
 
 class MiniCPMAddressingClassifierImpl:
     """MiniCPM-o backed implementation of MiniCPMAddressingClassifier.
 
-    Uses MiniCPMDuplexModel.chat() with a yes/no prompt to determine
-    addressing intent from the transcript text.  Audio bytes are accepted
-    for interface compatibility but are not used (text-only path).
+    Uses logprob-based binary classification (classify_yes_no) to determine
+    addressing intent from the transcript text.  No autoregressive generation
+    — one forward pass, next-token logprob comparison on yes/no token sets.
 
-    Returns AddressingSignal or None if the model response is unparseable.
+    Returns AddressingSignal or None if the model raises.
     """
 
-    def __init__(self, model: "MiniCPMDuplexModel") -> None:
+    def __init__(
+        self,
+        model: "MiniCPMStreamingModel",
+        logger: "EventLogger | None" = None,
+        session_id: str = "",
+    ) -> None:
         self._model = model
+        self._logger = logger
+        self._session_id = session_id
 
     def __call__(
         self,
@@ -165,15 +177,52 @@ class MiniCPMAddressingClassifierImpl:
             return None
         prompt = _ADDRESSING_PROMPT.format(transcript=transcript)
         try:
-            raw = self._model.chat(prompt, max_new_tokens=4)
+            is_yes, prob_yes = self._model.classify_yes_no(prompt)
         except Exception:
             return None
-        answer = raw.strip().lower()
-        if answer.startswith("yes"):
-            return AddressingSignal(confidence="explicit", evidence="minicpm_classifier:yes")
-        if answer.startswith("no"):
-            return AddressingSignal(confidence="implicit", evidence="minicpm_classifier:no")
-        return None
+        if _LOW_CONF_LO <= prob_yes <= _LOW_CONF_HI and self._logger is not None:
+            self._emit_low_confidence(transcript, prob_yes)
+        if is_yes:
+            return AddressingSignal(
+                confidence="explicit",
+                evidence=f"minicpm_logprob:yes:{prob_yes:.3f}",
+            )
+        return AddressingSignal(
+            confidence="implicit",
+            evidence=f"minicpm_logprob:no:{prob_yes:.3f}",
+        )
+
+    def _emit_low_confidence(self, transcript: str, confidence: float) -> None:
+        from companion_harness.schemas import Event, SensitiveField  # local to avoid circularity
+        now_ms = int(time.monotonic() * 1000)
+        preview = SensitiveField(
+            retention_policy_id="signal_default_30d",
+            value=transcript[:80],
+            sensitivity="sensitive",
+        )
+        evt = Event(
+            event_id=f"addr-lowconf-{uuid.uuid4().hex[:8]}",
+            session_id=self._session_id,
+            schema_version="0.1",
+            seq_no=0,
+            event_type="addressing_classifier_low_confidence",
+            timestamp_mono_ms=now_ms,
+            timestamp_wall="",
+            source="addressing_classifier",
+            caused_by=["session_open"],
+            payload_hash="",
+            payload_ref=None,
+            payload_kind="signal",
+            subject_class="self",
+            sensitivity="sensitive",
+            retention_policy_id="signal_default_30d",
+            payload_inline={
+                "confidence": confidence,
+                "transcript_preview": preview.value,
+                "classifier": "MiniCPMAddressingClassifierImpl",
+            },
+        )
+        self._logger.log(evt)  # type: ignore[union-attr]
 
 
 class _NullMiniCPMAddressingClassifier:
