@@ -43,12 +43,15 @@ After this plan ships:
   dispatch nor the `build_live_pipeline` extension exist in main
   today. The `mcp` SDK import stays inside `MCPBackgroundReasoner`;
   `server.py` only sees the abstract Protocol.
-- A new `signal_producer_fallback`-class event is emitted whenever
-  MCP returns a tool not in the local registry (the existing
+- A new `signal_producer_fallback`-class event is emitted when
+  `MCPBackgroundReasoner` is constructed with a non-None
+  `allowed_tools` set and MCP returns a tool name not in that set
+  (when `allowed_tools=None`, MCP is trusted unconditionally and no
+  fallback event fires — per OQ-2.3). The existing
   `signal_producer_fallback` event-type, already used for
   producer-routing telemetry in
   `realtime_orchestrator.py:528`/`703`, is reused; v0.2a adds a
-  schema-registry entry to formalise it).
+  schema-registry entry to formalise it.
 - All v0.1f contract tests against `FakeBackgroundReasoner` continue
   to pass unchanged; the new MCP-backed contract tests pass against a
   recorded fixture MCP server.
@@ -130,15 +133,15 @@ event-emission helper inside `MCPBackgroundReasoner` mirrors
 `FastToolDispatcher._make_event()`'s shape but lives in the reasoner
 module (no shared base class — see Anchor A4).
 
-### Anchor A4 — Module-level `BackgroundReasonerBudgetExhausted`; inline `_budget_remaining` per concrete reasoner; NO base class
+### Anchor A4 — Module-level `BackgroundReasonerBudgetExhausted`; inline `_budget_wall_clock_s` / `_budget_step_count` per concrete reasoner; NO base class
 
 The exception lives at module scope in
 `companion_harness/background_reasoner.py` and is importable as
 `from companion_harness.background_reasoner import
 BackgroundReasonerBudgetExhausted`. Each concrete reasoner
 (`MCPBackgroundReasoner`, future `LLMBackgroundReasoner`) carries
-its own inline `_budget_remaining_wall_clock_s: float` and
-`_budget_remaining_steps: int` counters. `FakeBackgroundReasoner`
+its own inline `_budget_wall_clock_s: float` and
+`_budget_step_count: int` counters. `FakeBackgroundReasoner`
 does **not** need budget enforcement (its event emission is
 synchronous and bounded by construction).
 
@@ -361,9 +364,17 @@ T1's PR before merging.
    `background_reasoner.py`:
    ```python
    class BackgroundReasonerBudgetExhausted(RuntimeError):
-       """Raised when wall-clock or step-count budget is exceeded.
-       Carries: budget_kind ('wall_clock' | 'step_count'),
-       limit, observed."""
+       """Raised when wall-clock or step-count budget is exceeded."""
+       def __init__(
+           self,
+           budget_kind: str,        # 'wall_clock' | 'step_count'
+           limit: int | float,
+           observed: int | float,
+       ) -> None:
+           super().__init__(f"{budget_kind} budget exceeded: {observed} > {limit}")
+           self.budget_kind = budget_kind
+           self.limit = limit
+           self.observed = observed
    ```
 2. Add `MCPBackgroundReasoner` class implementing the existing
    `BackgroundReasoner` Protocol. Constructor signature:
@@ -405,6 +416,8 @@ T1's PR before merging.
    first progress → `"started"`; terminal → `"completed"`. Unknown
    stage labels default to `"scanning"` and log a
    `signal_producer_fallback` event with
+   `primary_producer="mcp_background_reasoner"`,
+   `fallback_producer="progress_stage_default"`,
    `reason="unknown_mcp_progress_stage"` (OQ-D5).
 9. Budget enforcement (inline, no base class — Anchor A4):
    - On `select_and_call` entry, capture `start_mono_ms = int(time.monotonic() * 1000)`.
@@ -419,6 +432,8 @@ T1's PR before merging.
      `budget_kind` set accordingly (per OQ-D2).
 10. Unknown MCP tool (MCP returns a tool name not in local
     registry): emit `signal_producer_fallback` event with
+    `primary_producer="mcp_background_reasoner"`,
+    `fallback_producer="tool_call_cancelled"`,
     `reason="unknown_mcp_tool"`, then emit
     `tool_call_cancelled`, then return normally (no exception).
     The orchestrator's `_smart_path_task` keeps draining (OQ-D5).
@@ -465,8 +480,11 @@ T1's PR before merging.
 - `tests/test_mcp_background_reasoner_unknown_tool.py`
   (`test_unknown_mcp_tool_emits_signal_producer_fallback`): MCP
   returns a tool name `"definitely_not_registered"`; assert one
-  `signal_producer_fallback` event with `reason="unknown_mcp_tool"`
-  fires, and the terminal event is `tool_call_cancelled`.
+  `signal_producer_fallback` event with
+  `primary_producer="mcp_background_reasoner"`,
+  `fallback_producer="tool_call_cancelled"`,
+  `reason="unknown_mcp_tool"` fires, and the terminal event is
+  `tool_call_cancelled`.
 - `tests/test_mcp_background_reasoner_summarize_provenance.py`
   (`test_summarize_source_event_id_traces_to_tool_call_completed`):
   after a successful `select_and_call`, build a
