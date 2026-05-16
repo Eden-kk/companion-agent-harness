@@ -11,7 +11,7 @@
 1. **`datasets` library only.** No custom HTTP downloader, no `huggingface_hub` snapshot calls, no S3 SDK. The single dependency is `datasets>=2.16` (already in `pyproject.toml [project.optional-dependencies] eval`).
 2. **`streaming=True` default.** Every `load_dataset(...)` call streams. No full-corpus materialization to disk in Wave 3. Smoke runs (`--limit 200` or below) MUST never download more than the rows consumed.
 3. **Per-adapter schema mapper.** Each loader owns a `_<name>_row_to_evaluation_case(row)` function. No "generic adapter-agnostic mapper" — three call sites do not justify shared abstraction (CLAUDE.md coding rule 2).
-4. **Real-mode opt-in via `--mode real`.** Default remains `--mode synthetic`. `--mode real` flips `CandorCaseSource(synthetic=False)` and the new FDB `real=True` flag, then runs the loader path.
+4. **Real-mode opt-in via `--mode real`.** Default remains `--mode synthetic`. `--mode real` flips `CandorCaseSource(synthetic=False)` and the new FDB `FullDuplexBenchV1CaseSource(synthetic=False)` flag (same `synthetic: bool = True` default pattern as CANDOR — no separate `real=True` flag), then runs the loader path.
 5. **Audio goes in `EvaluationCase.inputs`.** The schema (`companion_harness/schemas.py:300`) has `inputs: dict | None`. Real-mode CANDOR rows produce `inputs = {'audio_pcm_bytes': <bytes>, 'sample_rate': <int>, ...timing fields...}`. **DO NOT add a new `audio_bytes` field to `EvaluationCase`.** That would be a schema change touching the spec-frozen 8 positional fields region and is out of scope.
 6. **HF auth as hard prerequisite.** Before T1 begins, `huggingface-cli whoami` must succeed AND the dev account must have accepted the CANDOR + FDB V1/V1.5 gates. Loader init does the same check at runtime and fails loudly with an actionable error if `HF_TOKEN` is missing or the user has not accepted the gate. The check is **not** retry-on-failure; it is fail-fast.
 
@@ -23,7 +23,7 @@ These OQs were left ambiguous in `docs/roadmap-v0.2-draft.md` §Wave 3 and are d
 
 | OQ | Resolution in v0.2c |
 |---|---|
-| Dataset `revision=` pinning | Every `load_dataset()` call pins `revision=<commit_hash>` in the loader docstring + code. If the upstream dataset does not pin row ordering at a given revision, the loader applies a deterministic `sort_by_stable_key(row)` fallback inside the streaming generator (sort by `(speaker_id, start_time)` for CANDOR; by `(scenario, case_id)` for FDB) so `real_mode_eval_score_replay_match_rate == 1.0` (roadmap gate). |
+| Dataset `revision=` pinning | Every `load_dataset()` call pins `revision=<commit_hash>` in the loader docstring + code. If the upstream dataset does not pin row ordering at a given revision, the loader applies a deterministic sort fallback — but **only over the first 100 rows consumed** (bounded buffer to preserve the no-materialization invariant of Anchor 2). Sort key: `(speaker_id, start_time)` for CANDOR; `(scenario, case_id)` for FDB. The 100-row cap is sufficient for the determinism check (`real_mode_eval_score_replay_match_rate == 1.0` smoke gate uses `--limit 5`). Full-corpus runs beyond 100 rows accept whatever order the streaming dataset delivers. |
 | License / auth posture | Treated as a **hard prerequisite block**, not a risk row. Pre-flight (§Pre-flight) gates the entire Wave; if any of the three datasets is ungated or revoked for the dev account, **defer Wave 2 dispatch to a follow-on PR**. Loader docstring records the pinned license string; loader init refuses if upstream license string changes. |
 | `--filter K=V` | **Removed** for v0.2c. Only `--limit N` ships. The roadmap mentioned `--filter K=V` (Task 14); v0.2c defers it because (a) every real-mode smoke fixture uses `--limit 5`, (b) downstream slicing is the per-adapter mapper's job, (c) `K=V` parsing is a CLI surface and stub registry we don't need yet. If a use case appears, file a follow-on. |
 | `consent_class` for real-mode rows | Reuse the existing `"safe_eval_fixture"` constant. New vocabulary (`"licensed_corpus_research_only"`, etc.) is deferred to a follow-on schema PR. Rationale: every Wave 3 dataset is already-published research data; the consent class distinction is unused downstream in v0.2c and would force a schema-test update for zero benefit. |
@@ -69,8 +69,9 @@ This block is non-optional. It runs at the start of T0a (the dispatch agent read
           │
           ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│ Wave 1 (seams + dispatch — must land before any loader work)       │
-│   T0a: Add real/synthetic flag + NotImplementedError to FDB v1/v1.5│
+│ Wave 1 (seams + CLI flags + dispatch — must land before loader work)│
+│   T0a: Add synthetic flag + NotImplementedError to FDB v1/v1.5     │
+│   T5:  --mode {synthetic,real} + --limit N CLI args                │
 │   T0b: Extend runners.py to dispatch candor + fdb_v1 + fdb_v1_5    │
 └─────────┬───────────────────────────────────────────────────────────┘
           │
@@ -83,9 +84,8 @@ T2 driver       T4 mappers (per-version, inline)
 T6a tests       T6b tests
           │
           ▼
-Wave 3 (CLI surface)
-   T5: --mode {synthetic,real} + --limit N
-   T6c: CLI tests
+Wave 3 (CLI tests)
+   T6c: CLI tests (test_eval_runner_cli_mode_flag.py)
 ```
 
 ---
@@ -95,10 +95,10 @@ Wave 3 (CLI surface)
 | Wave | Concurrency | Tasks | Notes |
 |---|---|---|---|
 | Pre-flight | sequential, manual | PF1–PF4 | Dispatch agent runs these and selects from §Pre-flight outcome matrix. |
-| 1 | sequential | T0a → T0b | T0b's `if/elif` dispatch references the FDB case source seam from T0a. Same PR; commits in order. |
-| 2A | **1×** | T1, T2, T6a | CANDOR path; tight coupling between loader, driver extension, tests. One coder agent. |
-| 2B | **1×** | T3, T4, T6b | FDB V1 + V1.5; one coder agent because the two versions share a parent module and the inline mappers are tiny. |
-| 3 | sequential | T5 → T6c | CLI surface, then CLI tests. |
+| 1 | sequential | T0a → T5 → T0b | T0a (FDB seam) is doable offline and is NOT blocked by PF2/PF3. T5 (CLI flags) ships next so `args.mode` and `args.limit` exist before T0b references them. T0b extends runner dispatch last; its `if/elif` chain reads CLI args introduced by T5. Wave 1 as a whole ships the seams + dispatch + CLI flags as the foundation; HF gated-auth (PF3) only blocks Wave 2 (loader bodies). |
+| 2A | **1×** | T1, T2, T6a | CANDOR path; tight coupling between loader, driver extension, tests. One coder agent. Blocked on PF2 + PF3. |
+| 2B | **1×** | T3, T4, T6b | FDB V1 + V1.5; one coder agent because the two versions share a parent module and the inline mappers are tiny. Blocked on PF2 + PF3. |
+| 3 | **1×** | T6c | CLI tests only (T5 moved to Wave 1). |
 
 **Max realistic concurrency: 2 agents** (Wave 2A and 2B run in parallel). Total task count is small enough that a single coder could ship the whole PR, but splitting Wave 2A/2B halves wall-clock time and keeps loader scope tight per agent.
 
@@ -108,8 +108,10 @@ Wave 3 (CLI surface)
 
 **Pre-flight + Wave 1 are blocking gates.** No loader code (Wave 2A or 2B) is written until:
 - PF1–PF4 outcomes are recorded in the PR description.
-- T0a (FDB seam) is merged into the working branch — otherwise T3's `iter_cases(split)` cannot branch on `real`.
-- T0b (runner dispatch) is merged — otherwise `python -m companion_harness.evals run --adapter candor` exits 2 ("not implemented in Phase A").
+- T0a (FDB seam) is merged into the working branch — otherwise T3's `iter_cases(split)` cannot branch on `real`. T0a is NOT blocked by PF2/PF3; it is pure seam work and can ship offline.
+- T5 (CLI flags `--mode` / `--limit`) is merged — so `args.mode` and `args.limit` exist before T0b reads them.
+- T0b (runner dispatch) is merged — otherwise `python -m companion_harness.evals run --adapter candor` exits 2 ("not implemented in Phase A"). T0b uses `getattr(args, "mode", "synthetic")` / `getattr(args, "limit", None)` as a safety net in case T5 is not yet in place, but the canonical commit order is T0a → T5 → T0b.
+- HF gated-auth (PF3) only blocks Wave 2 loader bodies (T1/T3); Wave 1 ships regardless.
 
 ---
 
@@ -123,12 +125,12 @@ Wave 3 (CLI surface)
 
 **Change:**
 - Add `synthetic: bool = True` to `FullDuplexBenchV1CaseSource` and `FullDuplexBenchV15CaseSource`.
-- In each `iter_cases(split)`, branch: if `self.synthetic`, return existing cases; else `raise NotImplementedError("Real FDB ingestion requires HF datasets + accepted gate; see plan-v0.2c-execution.md T3.")`.
+- In each `iter_cases(split)`, branch: if `self.synthetic`, return existing cases; else `raise NotImplementedError("Real FDB ingestion not yet implemented. Set up HF_TOKEN, accept the FDB gate, and see docs/eval-quickstart.md#real-mode-troubleshooting.")`.
 - Surface `synthetic` in the dataclass docstring.
 - Existing `__post_init__` only builds synthetic cases when `synthetic=True` (move the synthetic-case build inside the branch to avoid wasted work in real mode).
 - `build_v1()` and `build_v1_5()` factory signatures: add `synthetic: bool = True` passthrough.
 
-**Success criterion:** `pytest tests/test_full_duplex_bench_adapter.py` still passes (synthetic default unchanged); a new `test_fdb_real_mode_raises_not_implemented` in T6b will turn green.
+**Success criterion:** `pytest tests/test_full_duplex_bench_adapter.py` still passes (synthetic default unchanged); a new `test_fdb_v1_real_mode_raises_when_seam_only` in T6b will turn green.
 
 **Discipline note:** Mirror the CANDOR seam shape (`candor.py:101-108`) verbatim where possible.
 
@@ -155,6 +157,7 @@ Wave 3 (CLI surface)
   ```
 - Add `_run_candor` and `_run_fdb` runner functions modeled on `_run_harness_native` (existing pattern at `runners.py:27-64`): build adapter with `synthetic = (mode == "synthetic")`, iterate `case_source.iter_cases(split)` (sliced to `[:limit]` if `limit is not None`), call `scenario_driver.run(case, ...)`, write `run.json`.
 - No `_AdapterRegistry` class. No dispatch table. Three `elif` branches is too few to justify either (CLAUDE.md coding rule 2).
+- **Forward-compatibility note:** T0b reads `args.mode` and `args.limit` which T5 introduces. To avoid cross-task coupling, T0b's `_run_candor` / `_run_fdb` helpers accept `mode` and `limit` as regular Python parameters with defaults (`mode: str = "synthetic"`, `limit: int | None = None`). The dispatch chain uses `getattr(args, "mode", "synthetic")` and `getattr(args, "limit", None)` so T0b is safe to commit before T5 adds those arguments to the `argparse` subparser. T5 then adds the `--mode` / `--limit` CLI arguments so the `getattr` falls through to the real values. This eliminates the T0b → T5 ordering hard-dependency.
 
 **Success criterion:** `python -m companion_harness.evals run --adapter candor` succeeds (synthetic by default); `--adapter full_duplex_bench_v1` succeeds; `--adapter full_duplex_bench_v1_5` succeeds; `--adapter bogus` still exits 2. All covered by T6c tests.
 
@@ -172,8 +175,10 @@ Wave 3 (CLI surface)
   from datasets import load_dataset
   ds = load_dataset(_CANDOR_HF_SLUG, split=split, streaming=True, revision=_CANDOR_REVISION)
   # Sort-by-stable-key fallback (OQ resolution): if streaming ordering is not
-  # guaranteed at this revision, buffer-and-sort by (speaker_id, start_time).
-  yield from _ordered(ds, key=_candor_stable_key)
+  # guaranteed at this revision, buffer-and-sort the first 100 rows by
+  # (speaker_id, start_time) for determinism; rows beyond 100 stream in
+  # arrival order (bounded buffer; no full-corpus materialization per Anchor 2).
+  yield from _ordered(ds, key=_candor_stable_key, sort_head=100)
   ```
 - Add `_candor_row_to_evaluation_case(row: dict, index: int) -> EvaluationCase` mapper. Required fields:
   - `case_id`: `f"candor_real_{index:04d}"`
@@ -228,7 +233,7 @@ Wave 3 (CLI surface)
 - Two module-level mapper functions, inline below the loader functions. Each maps a streaming row to an `EvaluationCase`:
   - `case_id`: `f"fdb_v1_real_{index:04d}_{scenario}"` / `f"fdb_v1_5_real_{index:04d}_{scenario}"`.
   - `scenario`: pulled from the row's scenario / category field (key verified at impl time; if absent, use `"fdb_unspecified"` and increment skip counter to flag).
-  - `inputs`: `{'audio_pcm_bytes': row['audio']['bytes'], 'sample_rate': row['audio']['sampling_rate'], 'real': True}`.
+  - `inputs`: `{'audio_pcm_bytes': row['audio']['bytes'], 'sample_rate': row['audio']['sampling_rate'], 'synthetic': False}`.
   - All other fields mirror `_make_synthetic_cases` (`full_duplex_bench.py:54-80`).
 - V1 mapper handles the 10 scenarios from `_SCENARIOS_V1`. V1.5 mapper handles the 15 from `_SCENARIOS_V1_5`. Unrecognized scenario labels in the row → skip + increment counter (do NOT silently map to a default).
 
@@ -289,7 +294,7 @@ Wave 3 (CLI surface)
 
 ### T6c — Tests: CLI surface
 
-**Files:** `tests/test_eval_runner_cli.py` (extend existing file if present; otherwise new).
+**Files:** `tests/test_eval_runner_cli_mode_flag.py` (new file; do not extend `tests/test_eval_runner_cli.py` if it exists — keep v0.2c CLI tests in a dedicated file so they can be added or reverted atomically).
 
 **Cases:**
 - `test_candor_adapter_dispatches` — `main(["run", "--adapter", "candor"])` returns 0 (synthetic default, no HF call).
@@ -332,7 +337,7 @@ Wave 3 (CLI surface)
 
 This PR ships exactly one outcome: **(b) implementations that turn the following `pytest.skip`s and "not implemented" branches into passing tests + working real-mode loaders.**
 
-Aggregate success: `pytest tests/test_candor_real_loader.py tests/test_fdb_real_loader.py tests/test_eval_runner_cli.py` passes with default markers, AND on b200 with `HF_TOKEN` set, `pytest -m real_corpus tests/` passes, AND `python -m companion_harness.evals run --adapter candor --mode real --limit 5` produces a valid `run.json` with `skip_stats.skip_rate < 0.05`.
+Aggregate success: `pytest tests/test_candor_real_loader.py tests/test_fdb_real_loader.py tests/test_eval_runner_cli_mode_flag.py` passes with default markers, AND on b200 with `HF_TOKEN` set, `pytest -m real_corpus tests/` passes, AND `python -m companion_harness.evals run --adapter candor --mode real --limit 5` produces a valid `run.json` with `skip_stats.skip_rate < 0.05`.
 
 ---
 
