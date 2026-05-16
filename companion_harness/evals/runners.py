@@ -10,7 +10,58 @@ Phase A ships only --adapter harness_native. Other adapter names exit 2.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+import time
+import uuid
+from pathlib import Path
+
+
+class _RunConfig:
+    """Minimal run configuration passed to scenario drivers."""
+
+    def __init__(self, output_dir: Path) -> None:
+        self.output_dir = output_dir
+
+
+def _run_harness_native(output: str, split: str) -> int:
+    from companion_harness.evals.adapters import harness_native  # eval-internal import
+
+    run_id = f"hn-{int(time.time())}-{uuid.uuid4().hex[:6]}"
+    output_dir = Path(output) / run_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Attempt to detect repo root (parent of companion_harness package)
+    import companion_harness
+    repo_root = Path(companion_harness.__file__).parent.parent
+
+    adapter = harness_native.build(repo_root=repo_root)
+    run_config = _RunConfig(output_dir=output_dir)
+
+    print(f"run_id={run_id}")
+
+    case_results: list[dict] = []
+    has_error = False
+
+    for case in adapter.case_source.iter_cases(split):
+        replay_run = adapter.scenario_driver._run_sync(case, output_dir)  # type: ignore[attr-defined]
+        passed = replay_run.final_status in ("completed", "skipped")
+        if replay_run.final_status == "error":
+            has_error = True
+        case_results.append({
+            "case_id": replay_run.case_id,
+            "final_status": replay_run.final_status,
+            "results": replay_run.results,
+            "event_log_path": str(replay_run.event_log_path),
+        })
+        status_str = "OK" if passed else "ERROR"
+        print(f"  [{status_str}] {case.case_id}: {replay_run.final_status}")
+
+    run_json_path = output_dir / "run.json"
+    run_json_path.write_text(json.dumps({"run_id": run_id, "cases": case_results}, indent=2))
+    print(f"[eval] wrote {run_json_path}")
+
+    return 1 if has_error else 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -66,9 +117,7 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
-        # A3 wires the harness_native adapter; Phase A2 skeleton returns 0.
-        print(f"[eval] adapter={args.adapter} output={args.output} split={args.split}")
-        return 0
+        return _run_harness_native(args.output, args.split)
 
     parser.print_help()
     return 0
