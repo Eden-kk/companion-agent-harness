@@ -181,7 +181,7 @@ class PolicyInputs:
 class SpeakDecision:
     action_type:             Literal[
                                  "silence", "backchannel", "short_reaction", "full_response",
-                                 "clarification", "alert", "tool_status", "aesthetic_reaction"
+                                 "clarification", "alert", "tool_call", "tool_status", "aesthetic_reaction"
                              ]
     primary_reason_code:     ReasonCode
     supporting_reason_codes: list[ReasonCode]

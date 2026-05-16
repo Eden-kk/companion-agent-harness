@@ -608,6 +608,8 @@ def build_live_pipeline(
         deictic_detector=deictic_detector,
         episodic_store=episodic_store,
         semantic_store=semantic_store,
+        tool_router=None,
+        tool_progress_emitter=None,
     )
 
     sleep_agent: SleepTimeAgent | None = None

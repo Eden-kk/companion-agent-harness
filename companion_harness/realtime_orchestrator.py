@@ -67,6 +67,7 @@ from companion_harness.schemas import (
 )
 from companion_harness.speak_policy import build_decision_trace as _build_decision_trace
 from companion_harness.speak_policy import decide as _default_speak_policy_decide
+from companion_harness.tool_router import ToolDispatchRequest
 from companion_harness.tts_adapter import TtsAdapter
 from companion_harness.turn_detector_smart import SmartTurnDetector
 from companion_harness.turn_detector_vad import VADDetector
@@ -206,6 +207,8 @@ class StreamingRealtimeOrchestrator:
         config_store: "ConfigStore | None" = None,
         native_duplex_eou_source: NativeDuplexEouSource | None = None,
         deictic_detector: "DeicticDetector | None" = None,
+        tool_router: "Any | None" = None,
+        tool_progress_emitter: "Any | None" = None,
     ) -> None:
         self._session_id = session_id
         self._logger = logger
@@ -278,6 +281,8 @@ class StreamingRealtimeOrchestrator:
             native_duplex_eou_source if native_duplex_eou_source is not None else _NullNativeDuplexEouSource()
         )
         self._deictic_detector = deictic_detector
+        self._tool_router = tool_router
+        self._tool_progress_emitter = tool_progress_emitter
         # Last-applied policy thresholds (read from config_store at EOU); when
         # config_store is None we fall back to speak_policy.decide()'s defaults
         # by leaving these as None and not passing kwargs.
@@ -806,6 +811,26 @@ class StreamingRealtimeOrchestrator:
             self._pending_retrieved_items = []
 
             if decision.action_type == "silence":
+                self.proposal_buffer.clear()
+                self._first_proposal_event.clear()
+                continue
+
+            # Tool dispatch path — non-blocking; all events forwarded to logger.
+            if decision.action_type == "tool_call" and self._tool_router is not None:
+                tool_name = (decision.budget_bucket or "unknown_tool")
+                request = ToolDispatchRequest(
+                    tool_name=tool_name,
+                    arguments={},
+                    caused_by=[policy_evt_id],
+                    routing_hint="fast",
+                )
+                result = await self._tool_router.dispatch(request)
+                for evt in result.events:
+                    self._logger.log(evt)
+                if self._tool_progress_emitter is not None:
+                    now_ms = int(__import__("time").monotonic() * 1000)
+                    if self._tool_progress_emitter.should_emit_filler(result.tool_call_id, now_ms):
+                        self._tool_progress_emitter.record_filler(result.tool_call_id, now_ms)
                 self.proposal_buffer.clear()
                 self._first_proposal_event.clear()
                 continue
