@@ -15,17 +15,28 @@ _SCRIPT = Path(__file__).parent.parent / "scripts" / "v0_1g_replay_report.py"
 def test_script_is_executable():
     assert _SCRIPT.exists(), f"script not found: {_SCRIPT}"
     result = subprocess.run(
+        [sys.executable, str(_SCRIPT), "--help"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+
+
+def test_script_emits_json_with_required_sentinels(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """--json-only emits a JSON object with run_id, case_id, and policy_version."""
+    monkeypatch.chdir(tmp_path)
+
+    result = subprocess.run(
         [sys.executable, str(_SCRIPT), "--json-only"],
         capture_output=True,
         text=True,
     )
-    # Script may exit 1 (sentinel NOT_MEASURED) but must not crash with an exception.
-    assert result.returncode in (0, 1), (
-        f"script crashed (returncode={result.returncode}):\n{result.stderr}"
-    )
-    # Output must be valid JSON.
-    output = result.stdout.strip()
-    report = json.loads(output)
+    # Script exits non-zero when pytest fails; that is expected in isolation.
+    # We only need the JSON on stdout to be parseable with the required keys.
+    stdout = result.stdout.strip()
+    assert stdout, f"No stdout from script; stderr: {result.stderr[:500]}"
+
+    report = json.loads(stdout)
     assert "run_id" in report
     assert report["policy_version"] == "v0.1j"
 

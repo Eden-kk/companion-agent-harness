@@ -39,3 +39,6 @@ markers = [
 # (ubuntu-latest) and machines without GPU / model weights.
 # Run GPU tests on b200: pytest -m gpu tests/
 addopts = "-m 'not gpu'"
+# Cap each test at 120 s so a hanging subprocess can't consume the whole CI budget.
+# Tests that legitimately need more time should mark themselves with @pytest.mark.timeout(N).
+timeout = 120
