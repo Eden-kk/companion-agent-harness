@@ -25,7 +25,6 @@ KNOWN_UNAVAILABLE_ISSUES: frozenset[int] = frozenset({
     172,  # real visual grounding model pending model wiring
     183,  # real embedding model pending selection
     188,  # LLM-driven confidence/salience scorer pending
-    213,  # EventStreamAttachmentRiskMonitor wiring into live builder
 })
 
 _MARKER_RE = re.compile(r"#\s*UNAVAILABLE:\s*#(\d+)")
