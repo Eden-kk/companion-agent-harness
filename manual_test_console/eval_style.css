@@ -1,0 +1,211 @@
+:root {
+  --bg: #0e1116;
+  --fg: #cdd6e0;
+  --row: #161a22;
+  --accent: #5fb3ff;
+  --warn: #ffa657;
+  --err: #f97583;
+  --ok: #56d364;
+  --muted: #7c8694;
+}
+
+html, body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  margin: 0;
+}
+
+body {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  height: 100vh;
+}
+
+header {
+  padding: 8px 12px;
+  background: #11151c;
+  border-bottom: 1px solid #1f2530;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+header h1 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.page-switcher {
+  display: flex;
+  gap: 4px;
+}
+
+.page-switcher a {
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 3px;
+  border: 1px solid #2c3340;
+}
+
+.page-switcher a.active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: rgba(95, 179, 255, 0.1);
+}
+
+.page-switcher a:hover:not(.active) {
+  color: var(--fg);
+  border-color: var(--fg);
+}
+
+.spacer { flex: 1; }
+
+#conn-status {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 3px;
+  background: rgba(86, 211, 100, 0.15);
+  color: var(--ok);
+}
+
+main {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  overflow: hidden;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-right: 1px solid #1f2530;
+  padding: 12px;
+}
+
+.panel:last-child { border-right: none; }
+
+.panel h2 {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--accent);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+select, button {
+  background: #1f2530;
+  color: var(--fg);
+  border: 1px solid #2c3340;
+  padding: 4px 8px;
+  cursor: pointer;
+  border-radius: 3px;
+  font: inherit;
+  font-size: 12px;
+}
+
+select { width: 100%; margin-bottom: 6px; }
+
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+
+.badge {
+  font-size: 9.5px;
+  padding: 1px 5px;
+  border-radius: 2px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.badge.synthetic {
+  color: var(--warn);
+  background: rgba(255, 166, 87, 0.12);
+  border: 1px solid rgba(255, 166, 87, 0.3);
+}
+
+.badge.ready {
+  color: var(--ok);
+  background: rgba(86, 211, 100, 0.12);
+  border: 1px solid rgba(86, 211, 100, 0.3);
+}
+
+.badge.disabled {
+  color: var(--err);
+  background: rgba(249, 117, 131, 0.12);
+  border: 1px solid rgba(249, 117, 131, 0.3);
+}
+
+.adapter-notes { font-size: 10px; color: var(--muted); margin-top: 4px; }
+
+#run-btn { width: 100%; margin-top: 6px; }
+
+#run-status { font-size: 11px; margin-top: 6px; color: var(--muted); }
+
+.run-table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+
+.run-table th {
+  text-align: left;
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  padding: 4px 8px;
+  border-bottom: 1px solid #1f2530;
+}
+
+.run-table td { padding: 4px 8px; border-bottom: 1px dotted #1f2530; }
+
+.run-table tr:hover td { background: var(--row); cursor: pointer; }
+
+.status-completed { color: var(--ok); }
+.status-failed { color: var(--err); }
+.status-started { color: var(--warn); }
+.status-cancelled { color: var(--muted); }
+
+#detail-area { padding: 12px; overflow-y: auto; font-size: 11.5px; }
+
+.summary-box {
+  background: var(--row);
+  border: 1px solid #1f2530;
+  border-radius: 4px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+
+.summary-box dt { color: var(--muted); font-size: 10.5px; }
+.summary-box dd { margin: 0 0 6px; color: var(--fg); }
+
+.case-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-bottom: 1px dotted #1f2530;
+}
+
+.case-row .case-id { flex: 1; }
+
+.artifact-links { margin-top: 12px; }
+.artifact-links a { color: var(--accent); font-size: 11px; margin-right: 12px; }
+
+.failure-placeholder {
+  margin-top: 16px;
+  padding: 10px 12px;
+  border: 1px solid #1f2530;
+  border-radius: 4px;
+  background: var(--row);
+  color: var(--muted);
+  font-size: 11px;
+  font-style: italic;
+}
+
+.event-log-table { width: 100%; border-collapse: collapse; font-size: 11px; margin-top: 8px; }
+.event-log-table th { color: var(--accent); text-align: left; padding: 2px 6px; }
+.event-log-table td { padding: 2px 6px; border-bottom: 1px dotted #1f2530; word-break: break-all; }

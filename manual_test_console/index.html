@@ -116,6 +116,10 @@
 <body>
 <header>
   <h1>manual-test console</h1>
+  <nav class="page-switcher" style="display:flex;gap:4px;">
+    <a href="/" style="color:var(--accent);text-decoration:none;font-size:12px;padding:2px 8px;border-radius:3px;border:1px solid var(--accent);background:rgba(95,179,255,0.1);">Live</a>
+    <a href="/eval" style="color:var(--muted);text-decoration:none;font-size:12px;padding:2px 8px;border-radius:3px;border:1px solid #2c3340;">Eval</a>
+  </nav>
   <span class="meta">Phase 3 — audio + video capture + audio-out playback</span>
   <button id="btn-start">Start mic</button>
   <button id="btn-stop" disabled>Stop</button>
