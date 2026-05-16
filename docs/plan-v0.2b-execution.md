@@ -26,6 +26,10 @@ The two accuracy-style gates (`diarization_speaker_continuity_addressing_accurac
 
 **Justification:** the v0.1j discipline ("no hardcoded gated-token requirement at first contact") carries forward. The 3.0 fallback lets fresh-checkout `manual_test_console` runs work without operator HF-account setup; opting into 3.1 is a deliberate `HF_TOKEN` + accept-gate action documented in `docs/remote-dev.md`.
 
+**Stack compatibility (b200 venv constraint):** pyannote.audio 3.x must be installed without breaking `librosa==0.9` and `numpy<2` already present in `/raid/yid042/venvs/companion-harness`. Install ordering: install `pyannote.audio` BEFORE upgrading numpy; if pyannote's resolver pulls numpy ≥ 2, pin back with `pip install "numpy<2"` immediately after. The T2 PR checklist MUST include a post-install `python -c "import librosa; import numpy; assert numpy.__version__ < '2'"` smoke step.
+
+**Fast local import guard:** add `tests/test_pyannote_importable.py` (NOT b200-gated) containing a single `import pyannote.audio` inside a try/except that calls `pytest.fail(...)` with a clear message if the import fails. This test runs in the base CI matrix so a broken venv is caught before dispatching a b200 job.
+
 **Replay impact:** the chosen pin is recorded in the `diarization_frame_produced` event payload (`model_revision: "pyannote/speaker-diarization-3.{0,1}"`) so replay reports surface which pin was active. Tier-B replay determinism is unaffected because the policy path consumes only the derived `speaker_id` / `confidence` numerics.
 
 ### Anchor 2 — `DiarizationAdapter.process_chunk` is the Protocol surface; mute state is a parameter, not side-channel
@@ -52,7 +56,9 @@ The mute window opens when the live pipeline sees `assistant_audio_buffer_queued
 
 **Justification:** TTS audio re-captured by the room microphone is the documented Wave-2 acoustic-feedback edge case (`roadmap-v0.2-draft.md` §Risk #2). The 300 ms trailing edge covers room reverberation tail (single-room manual-test conditions). Cross-room or far-field rigs are out of scope for v0.2 (deferred to v0.3 deployment posture per Anchor 5 of roadmap).
 
-**Replay impact:** the mute-window decision is **derived from event-log state**, not from wall-clock or external timers, so Tier-B replay reconstructs it bit-identically.
+**Live-path implementation detail:** the mute-window flag passed to `process_chunk(muted=...)` MUST be derived from `audio_output_controller.is_synthesizing` (the boolean flag introduced in PR #271), NOT from reading the system clock. The caller (live pipeline) reads the flag at chunk-dispatch time and passes it as a positional argument. This keeps the adapter a pure function of its inputs and avoids any implicit time dependency that would break determinism.
+
+**Replay impact:** the mute-window decision is **derived from event-log state** (the `assistant_audio_buffer_queued` / `assistant_audio_buffer_flushed` event pair, from which `is_synthesizing` is reconstructed), not from wall-clock or external timers, so Tier-B replay reconstructs it bit-identically.
 
 ### Anchor 4 — Two new event types: `diarization_frame_produced` (per non-trivial frame) + `speaker_continuity_anchor` (at wake-word confirmation)
 
@@ -83,7 +89,11 @@ The current `POLICY_VERSION` on `main` is **`v0.1j`** (`companion_harness/speak_
 
 **Fixture JSON files:** zero hits for the literal `"v0.1j"` in `companion_harness/fixtures/**/*.json` on `origin/main`. Fixtures pin schema via `schema_version` / `event_type`, not policy_version. **No fixture-JSON migration is needed.** Verified by `grep -rln "v0.1j" companion_harness/fixtures/` (empty).
 
-**`test_policy_replay_exact`** (`tests/test_policy_replay_exact.py`) — read at execution time to enumerate any internal version pins; expected to follow the `POLICY_VERSION` constant via import, but the explicit check is part of Task T4 success criteria.
+**`test_policy_replay_exact`** (`tests/test_policy_replay_exact.py`) — contains literal `"v0.1j"` strings at **lines 581, 751, and 987** (verified by grep on `origin/main`). These three literals MUST be updated to `"v0.1k"` in the same atomic PR as the constant bump. Add to the T4 PR checklist: `grep -n '"v0\.1j"' tests/test_policy_replay_exact.py` must return zero hits before the PR is opened.
+
+**T4 PR description checklist requirement:** the T4 PR description MUST include a checklist confirming: (a) zero `"v0.1j"` literals remain across the entire repo (`grep -rn '"v0\.1j"'` returns only the intentionally-frozen `test_v0_1j_replay_report_script.py`); (b) `test_policy_replay_exact` passes locally in full before push; (c) no intermediate CI-red commit exists in the PR branch (squash if necessary before opening).
+
+**Single-PR / single-commit constraint:** T4 MUST land as a single merge commit. No stacked sub-PRs for this task. An intermediate state where `POLICY_VERSION == "v0.1k"` but fixture literals still read `"v0.1j"` is a CI-red regression and is forbidden.
 
 ### Anchor 6 — `_NullDiarizationAdapter` returns a Protocol-conformant `DiarizationFrame`, NOT a raw tuple
 
@@ -210,7 +220,8 @@ Wave 2 (b200 work) and Wave 3 (local-only) **CAN run in parallel** in two worktr
 **File:** `companion_harness/realtime_orchestrator.py` (emit `speaker_continuity_anchor` at wake-word confirmation site).
 
 **Deliverable:**
-- Add `current_speaker_id: str | None = None` to `PolicyInputs` (default `None` so all existing call sites continue to type-check; opt-in path sets it via live builder).
+- Add `current_speaker_id: str | None = None` to `PolicyInputs` at the **END of the field list** (after all existing fields, before any `__post_init__`). Positional construction in `_STAGE3_TRACE`, `_STAGE4_TRACE`, `_STAGE5_TRACE`, and `_STAGE6_TRACE` fixture helpers relies on field order; appending preserves backward compatibility.
+- Non-test call sites that construct `PolicyInputs` and must be updated: `companion_harness/realtime_orchestrator.py` and `manual_test_console/live_pipeline.py`. Both currently use keyword arguments so the default-None field requires no immediate change, but the T3 PR checklist MUST confirm both files type-check under `mypy --strict` (or the project's equivalent gate) with the new field present.
 - At the orchestrator site where `AddressingClassifier` returns `confidence="explicit"` AND the diarization adapter has a non-null `speaker_id` for the same chunk, emit `speaker_continuity_anchor` with `payload={speaker_id, wake_word_event_id}` and `caused_by=[<wake-word AddressingSignal event id>]`. Idempotent within a wake-word episode (don't emit twice for the same wake-word event).
 
 **Success criterion:** new contract test `test_speaker_continuity_anchor_emitted_at_wake_word` passes.
