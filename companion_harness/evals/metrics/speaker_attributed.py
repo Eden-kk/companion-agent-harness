@@ -59,23 +59,6 @@ def _addressing_events(replay_run: ReplayRun) -> list[dict]:
     return events
 
 
-def _policy_decisions(replay_run: ReplayRun) -> list[dict]:
-    """Return all policy_decision events from the event log."""
-    log_path = replay_run.event_log_path
-    if log_path is None or not log_path.exists():
-        return []
-    decisions = []
-    with log_path.open(encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            obj = json.loads(line)
-            if obj.get("event_type") == "policy_decision":
-                decisions.append(obj)
-    return decisions
-
-
 def _histogram(values: list[float], bucket_width: float) -> dict:
     if not values:
         return {"buckets": {}, "count": 0, "mean_ms": None, "p50_ms": None}
@@ -148,6 +131,7 @@ class TurnGapMsDistributionPerSpeakerMetric:
         self._fixture_path = fixture_path
 
     def compute(self, replay_run: ReplayRun) -> MetricValue:
+        _ = replay_run  # unused; metric derives from self._fixture_path
         gt_utterances = _load_gt(self._fixture_path)
         sorted_utts = sorted(gt_utterances, key=lambda u: u["t_start_ms"])
 
@@ -192,17 +176,34 @@ class ReplayMatchRateVsGroundTruthMetric:
 
     def compute(self, replay_run: ReplayRun) -> MetricValue:
         gt_utterances = _load_gt(self._fixture_path)
-        decisions = _policy_decisions(replay_run)
 
-        # Map utterance_id → action_type from the event log.
-        # Each policy_decision event follows its addressing_classified event; we
-        # read the log in order and pair decisions with utterances by position.
-        ac_events = _addressing_events(replay_run)
-        utt_id_sequence = [e.get("utterance_id") for e in ac_events if "utterance_id" in e]
+        # Single-pass: collect addressing_classified and policy_decision events.
+        ac_events, decisions = [], []
+        log_path = replay_run.event_log_path
+        if log_path is not None and log_path.exists():
+            with log_path.open(encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    obj = json.loads(line)
+                    if obj.get("event_type") == "addressing_classified":
+                        ac_events.append(obj)
+                    elif obj.get("event_type") == "policy_decision":
+                        decisions.append(obj)
+
+        # Map utterance_id → action_type via caused_by links (not positional zip).
+        ac_id_to_utt_id = {
+            e["event_id"]: e["utterance_id"]
+            for e in ac_events
+            if "event_id" in e and "utterance_id" in e
+        }
         action_by_utt: dict[str, str] = {}
-        for utt_id, dec in zip(utt_id_sequence, decisions):
-            inline = dec.get("payload_inline") or {}
-            action_by_utt[utt_id] = inline.get("action_type", "silence")
+        for dec in decisions:
+            for ref in dec.get("caused_by", []):
+                if ref in ac_id_to_utt_id:
+                    inline = dec.get("payload_inline") or {}
+                    action_by_utt[ac_id_to_utt_id[ref]] = inline.get("action_type", "silence")
 
         total = len(gt_utterances)
         matched = 0

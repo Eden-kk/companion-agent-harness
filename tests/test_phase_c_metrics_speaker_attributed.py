@@ -176,6 +176,40 @@ def test_replay_match_rate_partial(tmp_path: Path) -> None:
     assert result.value["mismatches"][0]["utterance_id"] == "u0"
 
 
+def test_replay_match_rate_handles_interleaved_proactive_decisions(tmp_path: Path) -> None:
+    """caused_by lookup must not pair a proactive decision to the wrong utterance.
+
+    Log order: ac(A), proactive-decision(no caused_by to A), ac(B), decision(caused_by A).
+    Positional zip would assign the proactive decision to A and the real decision to B.
+    caused_by lookup must assign only the decision that references ac(A) to utterance A.
+    """
+    utterances = [
+        {"utterance_id": "uA", "t_start_ms": 0, "t_end_ms": 1000, "speaker_id": "A", "addressed_agent": True},
+        {"utterance_id": "uB", "t_start_ms": 2000, "t_end_ms": 3000, "speaker_id": "B", "addressed_agent": False},
+    ]
+    fixture_path = _make_fixture(tmp_path, utterances)
+    log_path = _make_event_log(tmp_path, [
+        # addressing event for A
+        {"event_id": "ac_A", "event_type": "addressing_classified", "utterance_id": "uA", "current_speaker_id": "A", "caused_by": []},
+        # proactive decision — NOT caused by ac_A; would confuse positional zip
+        {"event_id": "pd_proactive", "event_type": "policy_decision", "caused_by": [], "payload_inline": {"action_type": "backchannel", "primary_reason_code": "PROACTIVE", "supporting_reason_codes": []}},
+        # addressing event for B
+        {"event_id": "ac_B", "event_type": "addressing_classified", "utterance_id": "uB", "current_speaker_id": "B", "caused_by": ["ac_A"]},
+        # the real decision for A (delayed, but references ac_A)
+        {"event_id": "pd_A", "event_type": "policy_decision", "caused_by": ["ac_A"], "payload_inline": {"action_type": "full_response", "primary_reason_code": "EOU_CONFIRMED", "supporting_reason_codes": []}},
+    ])
+    replay_run = _make_replay_run(log_path)
+    metric = ReplayMatchRateVsGroundTruthMetric(fixture_path=fixture_path)
+    result = metric.compute(replay_run)
+    # uA → full_response → addressed=True → match
+    # uB → no decision recorded (pd_proactive not linked to ac_B) → no_decision_recorded mismatch
+    assert result.value["matched"] == 1
+    assert result.value["total"] == 2
+    mismatch_ids = [m["utterance_id"] for m in result.value["mismatches"]]
+    assert "uB" in mismatch_ids
+    assert "uA" not in mismatch_ids
+
+
 def test_replay_match_rate_all_addressed_action_types_count(tmp_path: Path) -> None:
     """All action types in _ADDRESSED_ACTION_TYPES count as addressed=True matches."""
     from companion_harness.evals.metrics.speaker_attributed import _ADDRESSED_ACTION_TYPES

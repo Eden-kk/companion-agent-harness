@@ -25,7 +25,7 @@ from companion_harness.evals.protocols import CaseSource
 from companion_harness.schemas import EvaluationCase
 from companion_harness.speak_policy import POLICY_VERSION
 
-_DEFAULT_FIXTURES_ROOT = Path("tests/fixtures/phase_c")
+_DEFAULT_FIXTURES_ROOT = Path("tests/fixtures/phase_c")  # Relative; callers should pass absolute paths.
 
 
 @dataclass
