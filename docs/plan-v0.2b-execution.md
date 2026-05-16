@@ -22,6 +22,8 @@ The two accuracy-style gates (`diarization_speaker_continuity_addressing_accurac
 
 `PyannoteDiarizationAdapter` attempts to load `pyannote/speaker-diarization-3.1` first (HuggingFace user-agreement gated). If `HF_TOKEN` is missing or the gate is unaccepted, it falls back to `pyannote/speaker-diarization-3.0` (ungated public release, November 2023). Both releases share API parity per the pyannote 3.x release notes; the adapter's streaming inference loop is unchanged across the two pins.
 
+> **PLACEHOLDER — fallback checkpoint string unconfirmed.** `pyannote/speaker-diarization-3.0` is the intended fallback model ID but has NOT been verified against HuggingFace at plan ratification time (it is not present in any requirements file or adapter code on `main`). T2 implementer MUST verify the exact HF repo ID string before shipping. Sub-task: **"Verify `pyannote/speaker-diarization-3.0` checkpoint string on HuggingFace Hub before T2 ships"** (add to T2 PR checklist).
+
 **Justification:** the v0.1j discipline ("no hardcoded gated-token requirement at first contact") carries forward. The 3.0 fallback lets fresh-checkout `manual_test_console` runs work without operator HF-account setup; opting into 3.1 is a deliberate `HF_TOKEN` + accept-gate action documented in `docs/remote-dev.md`.
 
 **Replay impact:** the chosen pin is recorded in the `diarization_frame_produced` event payload (`model_revision: "pyannote/speaker-diarization-3.{0,1}"`) so replay reports surface which pin was active. Tier-B replay determinism is unaffected because the policy path consumes only the derived `speaker_id` / `confidence` numerics.
@@ -53,6 +55,8 @@ The mute window opens when the live pipeline sees `assistant_audio_buffer_queued
 **Replay impact:** the mute-window decision is **derived from event-log state**, not from wall-clock or external timers, so Tier-B replay reconstructs it bit-identically.
 
 ### Anchor 4 — Two new event types: `diarization_frame_produced` (per non-trivial frame) + `speaker_continuity_anchor` (at wake-word confirmation)
+
+> **All artifacts in this anchor are net-new — `main` has no precedent.** Neither `diarization_frame_produced` nor `speaker_continuity_anchor` is stubbed on `main` at plan ratification. They are introduced by this plan: T1 adds both event-type schema entries in `companion_harness/v0_1k_event_schema.py` (new file); T3 emits `speaker_continuity_anchor`; T2 emits `diarization_frame_produced`. Similarly, `mute-window logic` is net-new (T2 adapter + T6 live-pipeline subscription), the `diarization_adapter` module (`_NullDiarizationAdapter` + `PyannoteDiarizationAdapter`) is net-new (T1 + T2), and the speaker-continuity tier-3 tie-breaker in `derive_user_addressed_agent` is net-new (T5).
 
 - `diarization_frame_produced` is emitted for every chunk that produces a non-trivial frame (i.e. `speaker_id is not None`). Muted-window chunks and unvoiced chunks do NOT emit. Causal chain: `caused_by=[raw_audio_chunk.event_id]`. Payload carries `speaker_id`, `confidence`, `is_new_speaker`, `model_revision`. Retention: `signal_default_30d` (already defined in `companion_harness/replay_privacy_policy.yaml:113`; no policy file change required).
 - `speaker_continuity_anchor` is emitted **once per wake-word confirmation**, with payload `{speaker_id: str, wake_word_event_id: str}` and `caused_by=[<wake-word AddressingSignal event id>]`. This event is the durable anchor consumed by the v0.1k tie-breaker; it is not emitted per chunk.
@@ -335,10 +339,10 @@ Add as needed: `test_diarization_adapter_off_path_bit_identical_to_v0_1j` (regre
 ## §Cross-references
 
 - Roadmap: `docs/roadmap-v0.2-draft.md` §Wave 2 (Tasks 7–11) + Anchor 1 (POLICY_VERSION cadence) + Anchor 3 (diarization defaults OFF).
-- Predecessor execution plan: `docs/plan-v0.1j-execution.md` (the v0.1j → v0.1k bump's prior step).
-- Sibling execution plans: `docs/plan-v0.2a-execution.md` (real BackgroundReasoner — separate), `docs/plan-v0.2c-execution.md` (real benchmark loaders — separate).
-- Design draft (background reading): `docs/plan-real-diarization-adapter-draft.md` (referenced in `roadmap-v0.2-draft.md` §Cross-references — read for design rationale).
-- Eval roadmap update: `docs/roadmap-eval-draft.md` §Phase C gating prerequisites (modified by T8).
+- Predecessor execution plan: `docs/plan-v0.1j-execution.md` (the v0.1j → v0.1k bump's prior step — **not confirmed on `main`; verify before cross-linking**).
+- Sibling execution plans: `docs/plan-v0.2a-execution.md` (real BackgroundReasoner — separate; **in-flight, may not be on `main` when v0.2b dispatches**), `docs/plan-v0.2c-execution.md` (real benchmark loaders — separate).
+- Design draft (background reading): `docs/plan-real-diarization-adapter-draft.md` was referenced in `roadmap-v0.2-draft.md` §Cross-references for design rationale — **this file does not exist on `main` (it was in closed PR #251 and was never merged); do not link to it**.
+- Eval roadmap update: `docs/roadmap-eval-draft.md` §Phase C gating prerequisites (modified by T8; **this file is not yet merged to `main` — it is an in-flight draft; T8 must verify the file exists on `main` before issuing the PR**).
 - Spec: `docs/architecture-v0.1.md` (FROZEN — never edit). Relevant sections: invariant #1 (no unlogged behavior), invariant #5 (deterministic Tier-B replay), invariant #6 (behavioral tolerance for end-to-end replay).
 - Event-schema registry pattern: `companion_harness/v0_1g_event_schema.py` (precedent for new event-type schema entries).
 - Retention policy: `companion_harness/replay_privacy_policy.yaml` `signal_default_30d` entry (line 113) — reused by both new event types; NO file change required.
