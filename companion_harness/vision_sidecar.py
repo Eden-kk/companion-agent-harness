@@ -68,7 +68,7 @@ class GroundingModel(Protocol):
 
 class _NullGroundingModel:
     def __call__(self, frame: bytes, query: str) -> tuple[str, float]:
-        return "", 0.0  # UNAVAILABLE: #161 — real grounding model pending model wiring
+        return "", 0.0  # UNAVAILABLE: #172 — real grounding model pending model wiring
 
 
 @dataclass

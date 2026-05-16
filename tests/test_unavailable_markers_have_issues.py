@@ -16,14 +16,16 @@ from pathlib import Path
 # Every issue number that appears in a # UNAVAILABLE: #N marker in the codebase.
 # To add a new marker: add N here AND add the marker in source in the same PR.
 KNOWN_UNAVAILABLE_ISSUES: frozenset[int] = frozenset({
+    139,  # live pipeline: derive user_addressed_agent from real signal
     157,  # libcudart blocker (MiniCPM native duplex / addressing / EOU)
-    161,  # real grounding model pending model wiring
     166,  # real CLIP cosine scorer pending model wiring
     168,  # real cross-modal conflict scorer pending spec decision
     169,  # real XLLM 2025 lightweight pending
     171,  # real safety-risk classifier pending model selection
+    172,  # real visual grounding model pending model wiring
     183,  # real embedding model pending selection
     188,  # LLM-driven confidence/salience scorer pending
+    213,  # EventStreamAttachmentRiskMonitor wiring into live builder
 })
 
 _MARKER_RE = re.compile(r"#\s*UNAVAILABLE:\s*#(\d+)")
