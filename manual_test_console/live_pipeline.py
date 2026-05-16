@@ -545,6 +545,29 @@ def build_live_pipeline(
         deictic_model = None
         embedder = None
     else:
+        # ConfigStore seam-gating: force each factory arg to None when the
+        # corresponding seam is disabled. Runs BEFORE the None-fallback block
+        # below so disabled seams cleanly use the existing neutral path (F2/F4).
+        # use_stubs=True above is a hard override; this block only runs when stubs
+        # are NOT active (precedence: use_stubs > ConfigStore seam state).
+        if config_store is not None:
+            if not config_store.get_seam("vad"):
+                vad_model = None
+            if not config_store.get_seam("smart_turn"):
+                smart_turn_model = None
+            if not config_store.get_seam("backchannel"):
+                backchannel_model = None
+            if not config_store.get_seam("asr"):
+                asr_model = None
+            if not config_store.get_seam("tts"):
+                tts_adapter = None
+            if not config_store.get_seam("av_conflict_scorer"):
+                av_conflict_scorer = None
+            if not config_store.get_seam("urgency_scorer"):
+                urgency_scorer = None
+            if not config_store.get_seam("embedder"):
+                embedder = None
+
         if vad_model is None:
             vad_model = EnergyVADModel()
         if smart_turn_model is None:
@@ -604,8 +627,14 @@ def build_live_pipeline(
 
     # Instantiate and subscribe the per-session attachment-risk monitor.
     # Must use late_subscribe() (PR #241) because logger.start() has already run.
-    arm = EventStreamAttachmentRiskMonitor()
-    shielded_logger.late_subscribe(arm.on_event)
+    # Gate on seam state: when disabled, arm stays None and late_subscribe is skipped.
+    _arm_enabled = config_store is None or config_store.get_seam("attachment_risk_monitor")
+    arm: EventStreamAttachmentRiskMonitor | None
+    if _arm_enabled:
+        arm = EventStreamAttachmentRiskMonitor()
+        shielded_logger.late_subscribe(arm.on_event)
+    else:
+        arm = None
 
     # Bind the audio_output.is_playing callback into the builder closure so
     # `PolicyInputs.assistant_speaking` reflects live playback state. The
