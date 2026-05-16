@@ -171,6 +171,14 @@ def decide(
             response_content_source="foreground_response_proposal",
         )
 
+    # 7b. Attachment-risk dampen — suppress all proactive speech when risk is elevated.
+    # Spec line 855: "do NOT increase proactivity during distress". Fires before
+    # short_reaction and aesthetic_reaction; does not block user-addressed full_response.
+    _ATTACHMENT_RISK_DAMPEN_THRESHOLD = 0.5
+    if inputs.attachment_risk_level >= _ATTACHMENT_RISK_DAMPEN_THRESHOLD:
+        if inputs.aesthetic_novelty_score > 0.5 or inputs.short_response_appropriate:
+            return _silence(ReasonCode.ATTACHMENT_RISK_DAMPEN, caused_by)
+
     # 8. Short reaction: brief proactive reply when the trigger is present and budget allows.
     if inputs.short_response_appropriate:
         if inputs.proactivity_budget_remaining.get("short_reaction", 0) > 0:
@@ -300,6 +308,11 @@ def _threshold_path_for(
     if inputs.deictic_reference and inputs.deictic_ambiguous:
         path.append("deictic_ambiguous:clarification")
         return path
+    _ATTACHMENT_RISK_DAMPEN_THRESHOLD = 0.5
+    if inputs.attachment_risk_level >= _ATTACHMENT_RISK_DAMPEN_THRESHOLD:
+        if inputs.aesthetic_novelty_score > 0.5 or inputs.short_response_appropriate:
+            path.append("attachment_risk:dampen_blocked")
+            return path
     if inputs.short_response_appropriate:
         if inputs.proactivity_budget_remaining.get("short_reaction", 0) > 0:
             path.append("short_reaction_budget:available")
