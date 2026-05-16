@@ -9,10 +9,10 @@ If you want *how to run a session and what to expect*: keep reading.
 > ## Status banner — 2026-05-16 (v0.2 released)
 >
 > - **v0.2 tag shipped.** POLICY_VERSION = `v0.2-final`. All 19/19 readiness gates MET.
-> - `/healthz` now reports per-adapter readiness, GPU memory, and event rate (see §2.9).
-> - `/metrics` Prometheus endpoint is live at the same port (see §2.9).
-> - `/eval.html` eval console available for benchmark runs (see §2.10).
-> - Hot-seam toggle panel: 12 adapters switchable live (real ↔ disabled) in the tuning drawer.
+> - `/healthz` now reports flat-key adapter readiness, GPU memory (`gpu_memory_allocated_mb` / `reserved_mb` / `total_mb`), and `events_per_second_last_60s` (see §9.1).
+> - `/metrics` Prometheus endpoint is live at the same port (see §9.2); available after N1 fix PR merges.
+> - `/eval` eval console available for benchmark runs; API: `POST /eval/runs`, `GET /eval/runs/{run_id}` (see §9.3).
+> - Hot-seam control: `GET /config/seams` (read) / `POST /config/model-swap` with `{"seam": str, "enabled": bool}` (see §9.4).
 > - `--enable-diarization` enables pyannote speaker labeling; `current_speaker_id` flows into policy.
 > - `--blob-retention-days N` controls blob/event-log retention window (default: 7 days).
 > - Real benchmark loaders available: see §6 for the `--mode real` command.
@@ -411,14 +411,17 @@ Deferred to v0.3: `AttachmentRiskMonitor` default-on posture (OQ-3), `PyannoteDi
 curl -s http://localhost:8800/healthz | python3 -m json.tool
 ```
 
-New fields in the response:
+New fields in the response (flat top-level keys — no `adapters` dict):
 
-| Field | Description |
+| Field | Unit / notes |
 |---|---|
-| `adapters` | Per-adapter readiness dict: `{"silero_vad": "ready", "pyannote_diarization": "ready", ...}` |
-| `gpu_memory_used_gb` | From `nvidia-smi`; `null` if not available |
-| `gpu_memory_total_gb` | From `nvidia-smi`; `null` if not available |
-| `event_rate_per_s` | Events/s over the last 10 s window |
+| `scene_scorer`, `grounding_model`, `deictic_model`, … | Flat string per adapter, e.g. `"real:CLIPSceneChangeScorer"` or `"stub:…"` |
+| `gpu_memory_allocated_mb` | MB currently allocated on the active GPU |
+| `gpu_memory_reserved_mb` | MB reserved (cached) by the CUDA allocator |
+| `gpu_memory_total_mb` | Total GPU VRAM in MB |
+| `gpu_device_name` | Human-readable GPU name, e.g. `"NVIDIA B200"` |
+| `events_per_second_last_60s` | Event rate averaged over the last 60 s window |
+| `events_total_since_start` | Cumulative event count since process start |
 
 ### 9.2 `/metrics` Prometheus endpoint
 
@@ -430,9 +433,9 @@ curl -s http://localhost:8800/metrics
 
 Exposes counters for event rate, TTS chunk count, active session count, and per-adapter readiness gauge.
 
-### 9.3 `/eval.html` eval console
+### 9.3 `/eval` eval console
 
-Browser → `http://localhost:8800/eval.html`. Select an adapter, click **Run**, poll for results. The console calls `POST /eval/run` and polls `GET /eval/status/<run_id>`.
+Browser → `http://localhost:8800/eval`. Select an adapter, click **Run**, poll for results. The console calls `POST /eval/runs` and polls `GET /eval/runs/{run_id}`.
 
 For CLI use:
 
@@ -447,7 +450,7 @@ HF_TOKEN=<token> python -m companion_harness.evals runners \
 
 ### 9.4 Hot-seam model toggle (tuning drawer)
 
-The tuning drawer (right column) now has a second section: **Hot seams**. Each row shows one adapter seam with a toggle (real ↔ disabled). Flipping a toggle calls `POST /config/seam` and takes effect on the next event cycle — no restart needed. Toggle state is recorded as `model_swap_requested` / `model_swap_completed` events in the audit log.
+The tuning drawer (right column) now has a second section: **Hot seams**. Each row shows one adapter seam with a toggle (real ↔ disabled). Flipping a toggle calls `POST /config/model-swap` with body `{"seam": "<name>", "enabled": true|false}` and takes effect on the next event cycle — no restart needed. Read current seam state with `GET /config/seams`. Toggle state is recorded as `model_swap_requested` / `model_swap_completed` events in the audit log.
 
 ### 9.5 Diarization flag
 
