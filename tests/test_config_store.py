@@ -210,6 +210,29 @@ def test_load_from_yaml_unknown_key_logs_warning_and_skips(
     assert store.get("policy.backchannel_threshold") == 0.55
 
 
+def test_load_from_yaml_rejects_out_of_range_value(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+):
+    yaml_path = tmp_path / "config.yaml"
+    # policy.backchannel_threshold has max=0.95; 1.5 is out of range.
+    yaml_path.write_text(
+        "policy:\n"
+        "  backchannel_threshold: 1.5\n",
+    )
+    store = ConfigStore(_make_allowlist())
+
+    with caplog.at_level(logging.WARNING, logger="manual_test_console.config_store"):
+        changes = store.load_from_yaml(yaml_path)
+
+    assert changes == []
+    assert store.get("policy.backchannel_threshold") == 0.7
+    assert any(
+        "policy.backchannel_threshold" in record.getMessage()
+        and record.levelno == logging.WARNING
+        for record in caplog.records
+    )
+
+
 def test_load_from_yaml_non_dict_root_logs_and_returns_empty(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ):

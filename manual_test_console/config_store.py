@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from manual_test_console.config_schema import HOT_SEAMS
+from manual_test_console.config_schema import HOT_SEAMS, validate_patch
 
 _log = logging.getLogger(__name__)
 
@@ -70,7 +70,7 @@ class ConfigStore:
         self._allowlist = allowlist
         self._state: dict[str, Any] = {k: v.default for k, v in allowlist.items()}
         self._seam_state: dict[str, bool] = {seam: True for seam in HOT_SEAMS}
-        if seam_defaults:
+        if seam_defaults is not None:
             for seam, enabled in seam_defaults.items():
                 if seam in self._seam_state:
                     self._seam_state[seam] = enabled
@@ -180,6 +180,12 @@ class ConfigStore:
                 _log.warning(
                     "config_store: yaml key %r not in allowlist; ignoring",
                     dotted_key,
+                )
+                continue
+            ok, msg = validate_patch(dotted_key, value)
+            if not ok:
+                _log.warning(
+                    "YAML load skipped invalid key %s=%r: %s", dotted_key, value, msg
                 )
                 continue
             c = self.set(dotted_key, value)

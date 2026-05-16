@@ -696,10 +696,10 @@ async def _handle_post_model_swap(request: web.Request) -> web.Response:
     seam = body["seam"]
     enabled = body["enabled"]
 
+    if seam not in HOT_SEAMS:
+        return web.json_response({"error": f"unknown seam: {seam!r}", "seam": seam}, status=403)
     ok, msg = validate_seam_patch(seam, enabled)
     if not ok:
-        if "unknown seam" in msg:
-            return web.json_response({"error": msg, "seam": seam}, status=403)
         return web.json_response({"error": msg, "seam": seam}, status=400)
 
     config_store.set_seam(seam, enabled)
