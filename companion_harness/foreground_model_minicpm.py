@@ -130,6 +130,8 @@ class MiniCPMStreamingModel:
             init_audio=True,
             init_tts=True,
         ).eval().cuda()
+        self._base = base
+        self._tokenizer = AutoTokenizer.from_pretrained(_MODEL_ID, trust_remote_code=True)
 
         self._duplex = base.as_duplex(generate_audio=False)
         # Tracks is_listen from the most recent streaming_generate call.
@@ -141,6 +143,22 @@ class MiniCPMStreamingModel:
         self._logger = logger
         self._session_id = session_id
         self._seq = 0
+
+    def chat(self, text: str, max_new_tokens: int = 8) -> str:
+        """Send a text question and return the model's text response.
+
+        Reuses the already-loaded base model for text-only inference (no audio
+        framing). Mirrors MiniCPMDuplexModel.chat() so MiniCPMDeicticDetector
+        can be wired against the streaming model (issue #169).
+        """
+        with torch.no_grad():
+            return self._base.chat(
+                msgs=[{"role": "user", "content": text}],
+                tokenizer=self._tokenizer,
+                max_new_tokens=max_new_tokens,
+                generate_audio=False,
+                enable_thinking=False,
+            )
 
     def infer(self, audio_frame: bytes, video_frame: bytes | None = None) -> ThinkerProposal | None:
         """DuplexModel Protocol stub — single-frame path not used for streaming."""
