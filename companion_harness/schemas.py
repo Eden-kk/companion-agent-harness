@@ -161,7 +161,7 @@ class PolicyInputs:
     assistant_speaking:          bool
     scene_change_score:          float
     deictic_reference:           bool
-    user_addressed_agent:        bool
+    user_addressed_agent:        bool | None
     urgency_score:               float
     proactivity_budget_remaining: dict[str, int]
     privacy_mode:                str
