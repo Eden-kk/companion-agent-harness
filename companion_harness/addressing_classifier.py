@@ -37,6 +37,8 @@ __all__ = [
     "AddressingConfidence",
     "AddressingSignal",
     "AddressingClassifier",
+    "MiniCPMAddressingClassifier",
+    "_NullMiniCPMAddressingClassifier",
     "WakeWordAddressingClassifier",
     "derive_user_addressed_agent",
 ]
@@ -77,6 +79,44 @@ class AddressingClassifier(Protocol):
     ) -> AddressingSignal: ...
 
 
+@runtime_checkable
+class MiniCPMAddressingClassifier(Protocol):
+    """MiniCPM-o derived addressing classifier — final-product primary producer.
+
+    Returns `AddressingSignal` when inference is available, or `None` when the
+    model is unavailable so the orchestrator falls back to the safety-net
+    (`WakeWordAddressingClassifier`).
+
+    # UNAVAILABLE: #157 — libcudart blocker, MiniCPM-derived addressing unavailable
+    """
+
+    def __call__(
+        self,
+        transcript: str,
+        speaker_count: int | None,
+        social_mode: str,
+    ) -> AddressingSignal | None: ...
+
+
+class _NullMiniCPMAddressingClassifier:
+    """Stub for `MiniCPMAddressingClassifier` when libcudart is unavailable.
+
+    Always returns `None` so the orchestrator falls back to
+    `WakeWordAddressingClassifier` (safety-net).
+
+    # UNAVAILABLE: #157 — libcudart blocker, MiniCPM-derived addressing unavailable
+    """
+
+    def __call__(
+        self,
+        transcript: str,
+        speaker_count: int | None,
+        social_mode: str,
+    ) -> AddressingSignal | None:
+        # UNAVAILABLE: #157 — libcudart blocker, MiniCPM-derived addressing unavailable
+        return None
+
+
 def _tokenize(transcript: str) -> list[str]:
     """Lowercase + strip common terminal punctuation; return whole-word tokens.
 
@@ -92,7 +132,10 @@ def _tokenize(transcript: str) -> list[str]:
 
 @dataclass(frozen=True)
 class WakeWordAddressingClassifier:
-    """Deterministic 3-tier classifier.
+    """Deterministic 3-tier safety-net classifier.
+
+    Acts as the safety-net when the MiniCPM-derived primary is unavailable
+    (see `_NullMiniCPMAddressingClassifier` and issue #157).
 
     Tier logic:
       - explicit:    any agent name appears as a whole word in the transcript
