@@ -265,9 +265,9 @@ du -sh tests/fixtures/phase_c/  # ≤ 60M
 2. Three concrete metric classes implementing the `Metric` Protocol (`companion_harness/evals/protocols.py:37-41`):
    - `class AddressingAccuracyPerSpeakerMetric:` — `name = "addressing_accuracy_per_speaker"`. `compute(replay_run)` reads the replay's event log for `addressing_classified` events, matches each event's `current_speaker_id` against the ground-truth label by utterance_id, returns a per-speaker dict + aggregate unweighted mean as a `MetricValue` with `breakdown` payload.
    - `class TurnGapMsDistributionPerSpeakerMetric:` — `name = "turn_gap_ms_distribution_per_speaker"`. Computes per-speaker inter-utterance gap histograms from the event log timing, returns histogram bins as `breakdown`.
-   - `class ReplayMatchRateVsGroundTruthMetric:` — `name = "replay_match_rate_vs_ground_truth"`. For each utterance, compare the harness's recorded `SpeakDecision.action_type` (field name per `companion_harness/schemas.py`; read from `payload_inline.action_type` in the event log, matching the pattern at `companion_harness/replay.py`) against the ground-truth `addressed_agent` expectation (addressed → `SPEAK`; not-addressed → `STAY_SILENT`). Returns fraction matched as the headline scalar.
+   - `class ReplayMatchRateVsGroundTruthMetric:` — `name = "replay_match_rate_vs_ground_truth"`. For each utterance, compare the harness's recorded `SpeakDecision.action_type` (field name per `companion_harness/schemas.py`; read from `payload_inline.action_type` in the event log, matching the pattern at `companion_harness/replay.py`) against the ground-truth `addressed_agent` expectation using the following grouping: `addressed_agent=True` → action_type in `{"full_response", "backchannel", "short_reaction", "clarification", "alert", "tool_call", "tool_status", "aesthetic_reaction"}` counts as a match; `addressed_agent=False` → action_type `"silence"` counts as a match. Returns fraction matched as the headline scalar.
 3. NO model SDK imports. Pure stdlib + `companion_harness.schemas` + `companion_harness.evals.schemas`.
-4. Metric input access pattern: the metrics receive the fixture path alongside the `ReplayRun` (e.g., as a `Path` passed from the test/adapter, or resolved from `EvaluationCase.fixture_ref` by the caller before invoking `compute()`); `ReplayRun` has no `case` field (see `companion_harness/schemas.py:300-326`). The concrete pattern: caller passes `fixture_path: Path` to `compute(replay_run, fixture_path)`, and the metric reads `fixture_path / "ground_truth_speakers.json"`. No new I/O abstraction.
+4. Metric input access pattern: the `Metric` Protocol signature is `compute(self, replay_run: ReplayRun) -> MetricValue` (see `companion_harness/evals/protocols.py:41`). `fixture_path: Path` is injected via `__init__` so the Protocol is not widened. Caller resolves `EvaluationCase.fixture_ref` to a `Path` before constructing the metric instance; the metric reads `fixture_path / "ground_truth_speakers.json"` at `compute()` time. `ReplayRun` has no `case` field (see `companion_harness/schemas.py:300-326`). No new I/O abstraction; no Protocol extension.
 5. Failure-slice integration: when `ReplayMatchRateVsGroundTruthMetric` returns < 1.0, the per-utterance mismatches are surfaced via the standard `FailureSliceExtractor` (Phase B2 surface). T3 does NOT reimplement slice extraction; it just emits structured per-utterance mismatch records that the extractor can consume.
 
 **Test plan**
@@ -325,7 +325,7 @@ pytest tests/test_phase_c_runs_end_to_end_on_real_diarized_session.py -q  # gree
 
 **Anchors locked** — v0.2 roadmap pinned-success-criterion #3 (Phase C runs end-to-end against the fixture pack).
 
-**Cross-references** — `companion_harness/evals/scenarios/fixture.py` (`FixtureScenarioDriver`); v0.2b's `DiarizationAdapter` surface; `companion_harness/replay.py` (currently an 8-line docstring stub; `run_tier_b_replay` is Phase A.5+1 — the test does NOT require it).
+**Cross-references** — `companion_harness/evals/scenarios/fixture.py` (`FixtureScenarioDriver`); v0.2b's `DiarizationAdapter` surface; `companion_harness/replay.py` (61 lines as of PR #244; `run_tier_b_replay()` and `assert_bit_identical()` are implemented — the test does NOT require the replay-match-rate metric extension but the underlying replay machinery is present).
 
 **Blocker dependencies** — T1, T2, T3 all merged; v0.2b Wave 2 Tasks 7-10 merged + `--enable-diarization` defaults documented; Phase A.5 Task 0c green.
 
@@ -363,7 +363,7 @@ grep -c "plan-v0.2d-execution" docs/roadmap-eval-draft.md  # ≥ 1
 
 **Cross-references** — `docs/roadmap-v0.2-draft.md` Wave 4; `docs/plan-v0.2d-execution.md` (self-link).
 
-**Blocker dependencies** — T1 merged (so the doc can reference the shipped `LiveExaminerCaseSource` by name).
+**Blocker dependencies** — T1 merged (so the doc can reference the shipped `LiveExaminerCaseSource` by name). Note: `docs/roadmap-eval-draft.md` is not yet merged at PR head (untracked draft); T5 must wait for that file to land on main before the surgical edit can be made. If it has not landed by T1 merge, open a follow-on doc-only PR targeting `docs/roadmap-eval-draft.md` once the draft merges.
 
 ---
 
@@ -407,7 +407,7 @@ These add to v0.2 roadmap's existing fixture-manifest line for `live_examiner_di
 ## §Coordination notes
 
 - **v0.2b merge gate.** v0.2d's dispatcher (whether human or `parallel-developing` skill) MUST verify `git log --oneline | grep -E 'diariz.*PolicyInputs|current_speaker_id'` shows v0.2b's Wave 2 merge before opening any T1/T2 PR. No partial v0.2d landing on a v0.2b stub.
-- **Phase A.5 dependency.** If Phase A.5's `FixtureScenarioDriver` isn't green (i.e., `test_eval_run_replay_safe` still xfailed), T4 cannot land. Coordinate with the Phase A.5 owner.
+- **Phase A.5 dependency.** If Phase A.5's `FixtureScenarioDriver` isn't green, T4 cannot land. Coordinate with the Phase A.5 owner. Additionally: `tests/test_eval_run_replay_safe.py` is currently marked `xfail` with reason "replay.py is a stub", but `companion_harness/replay.py` is implemented as of PR #244 (61 lines, `run_tier_b_replay()` + `assert_bit_identical()` present). Remove the `xfail` marker from `test_eval_run_replay_safe.py` in a Phase A.5 follow-up PR. `tests/test_eval_case_replay_bit_identical.py` already imports and exercises `run_tier_b_replay` / `assert_bit_identical` without an xfail marker — confirm it passes under the canonical venv before closing Phase A.5.
 - **Phase B2 dependency.** If Phase B2's `FailureSliceExtractor` isn't merged, T3 ships metrics-only with a TODO; a follow-on PR adds slice wiring. Document the deferral in T3's PR description.
 - **POLICY_VERSION.** v0.2d does NOT bump POLICY_VERSION. The v0.1k bump comes from v0.2b; the v0.2-final bump is v0.2 roadmap Wave 6 Task 20.
 - **Fixture curation labour.** Manual labelling of `ground_truth_speakers.json` is the labour-bottleneck of v0.2d. Budget: ≤ 2 hours per session at the ≤30 s clip length. Three sessions = ≤ 6 hours of labelling. If labelling exceeds budget, reduce per-session clip length further.
@@ -419,12 +419,12 @@ These add to v0.2 roadmap's existing fixture-manifest line for `live_examiner_di
 ## §Cross-references
 
 - Spec: `docs/architecture-v0.1.md` (FROZEN — never edit). Part 2 invariants #1 (no unlogged behavior), #5 (deterministic policy replay), #6 (Tier-A behavioral tolerance), #10 (EventLogger async/non-blocking) all hold under Phase C.
-- Eval subsystem spec: `docs/eval-subsystem-spec.md` (Anchor 1 import direction; Anchor 5 six small protocols; §Determinism + privacy).
+- Eval subsystem spec: `docs/eval-subsystem-spec.md` (Anchor 1 import direction; Anchor 5 six small protocols; §Determinism + privacy). **Not yet merged at PR head (untracked draft).** The stable protocol surface it describes is already live at `companion_harness/evals/protocols.py`.
 - v0.2 milestone roadmap: `docs/roadmap-v0.2-draft.md` (Wave 4 Tasks 15a/15b; pinned-success-criterion #3).
-- Eval-subsystem roadmap: `docs/roadmap-eval-draft.md` (Phase C — updated by T5).
+- Eval-subsystem roadmap: `docs/roadmap-eval-draft.md` (Phase C — updated by T5). **Not yet merged at PR head (untracked draft).** T5 is gated on this file landing on main.
 - Sibling v0.2 plans (in-flight): `docs/plan-v0.2a-execution.md` (BackgroundReasoner), `docs/plan-v0.2b-execution.md` (diarization — **dependency**), `docs/plan-v0.2c-execution.md` (benchmark loaders).
 - Phase A.5 plan-of-record: `docs/plan-eval-phase-a-execution.md` (untracked draft — not on main; Phase A.5 is `docs/roadmap-eval-draft.md` §Phase A.5; the stable protocol surface is `companion_harness/evals/protocols.py`).
-- Replay surface: `companion_harness/replay.py` (currently an 8-line module docstring stub; `run_tier_b_replay` and `assert_bit_identical` are Phase A.5+1 deliverables — v0.2d does NOT depend on their implementation). Protocol surface is at `companion_harness/evals/protocols.py`.
+- Replay surface: `companion_harness/replay.py` (61 lines as of PR #244; `run_tier_b_replay()` and `assert_bit_identical()` are implemented — v0.2d does NOT depend on the replay-match-rate metric extension, only on the existing replay machinery). Protocol surface is at `companion_harness/evals/protocols.py`.
 - Fixture pattern reference: `companion_harness/fixtures/policy_replay_001/case.json` (per-case dir shape).
 
 ---
@@ -446,7 +446,7 @@ These add to v0.2 roadmap's existing fixture-manifest line for `live_examiner_di
 - Full-Duplex-Bench v2 case-source and scoring.
 - Self-play (one harness as examiner of another).
 - Cross-session speaker recognition (single-session at v0.2).
-- Tier-B replay verification of Phase C runs (depends on `run_tier_b_replay` which is Phase A.5+1 deferred).
+- Tier-B replay verification of Phase C runs (the replay machinery in `companion_harness/replay.py` is implemented as of PR #244; wiring Phase C `ReplayRun`s through the replay-match-rate metric is a v0.2d NEW deliverable, not a dependency on a stub).
 - Automatic ground-truth labelling (every v0.2d fixture is hand-labelled).
 - Tighter `replay_match_rate_vs_ground_truth` gate (0.7 in v0.2; tightened to ≥ 0.85 in v0.3 alongside the live-partner mode).
 - Phase C dashboard surface (eval-specific dashboards are out of scope per `docs/eval-subsystem-spec.md` §Out of scope).
