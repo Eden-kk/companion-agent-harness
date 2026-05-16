@@ -13,11 +13,6 @@ Streaming path (Task 2 — as_duplex mode):
     available.  infer_stream() drives MiniCPMODuplex.streaming_prefill() +
     streaming_generate() per 1-second chunk without TTS (generate_audio=False).
 
-    Construction: model.as_duplex(generate_audio=False) is called after
-    temporarily patching model.init_tts to a no-op.  torchaudio 2.11 in this
-    venv requires libcudart.so.13 (unavailable; only .so.12 is present), so
-    stepaudio2 cannot be imported.  Since generate_audio=False means the TTS
-    path is never entered at inference time, skipping init_tts is safe.
 
 Usage:
     # text-only (v0.1a):
@@ -101,13 +96,6 @@ class MiniCPMStreamingModel:
     prefill.  TTS is disabled (generate_audio=False) — Task 3 will wire audio
     output via a TtsAdapter.
 
-    Construction uses model.as_duplex(generate_audio=False) after temporarily
-    replacing model.init_tts with a no-op.  The real init_tts requires
-    stepaudio2, which imports torchaudio 2.11; that version needs
-    libcudart.so.13 which is absent on this host (only .so.12).  Since
-    generate_audio=False means streaming_generate() short-circuits before any
-    TTS call, skipping init_tts is safe.
-
     Implements both DuplexModel (infer) and StreamingDuplexModel (infer_stream).
 
     `init_vision` (default False) gates the MiniCPM-o vision tower. When True
@@ -125,19 +113,10 @@ class MiniCPMStreamingModel:
             torch_dtype=torch.bfloat16,
             init_vision=init_vision,
             init_audio=True,
-            init_tts=False,
+            init_tts=True,
         ).eval().cuda()
 
-        # Patch init_tts to a no-op before calling as_duplex so that
-        # from_existing_model() does not try to import stepaudio2/torchaudio.
-        # generate_audio=False ensures the TTS path is never entered at runtime.
-        # UNAVAILABLE: #157 — remove patch + pass init_tts=True + generate_audio=True once libcudart resolves.
-        _orig_init_tts = base.init_tts
-        base.init_tts = lambda *a, **kw: None  # type: ignore[method-assign]
-        try:
-            self._duplex = base.as_duplex(generate_audio=False)
-        finally:
-            base.init_tts = _orig_init_tts  # type: ignore[method-assign]
+        self._duplex = base.as_duplex(generate_audio=False)
 
     def infer(self, audio_frame: bytes, video_frame: bytes | None = None) -> ThinkerProposal | None:
         """DuplexModel Protocol stub — single-frame path not used for streaming."""
