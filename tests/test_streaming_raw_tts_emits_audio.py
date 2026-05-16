@@ -27,7 +27,7 @@ from typing import Any
 
 import pytest
 
-from companion_harness.minicpm_raw_streaming_driver import MiniCPMRawStreamingDriver
+from companion_harness.minicpm_raw_streaming_driver import MiniCPMRawStreamingDriver, _DEBOUNCE_MS
 from companion_harness.schemas import ThinkerProposal
 
 
@@ -138,7 +138,8 @@ async def test_first_tts_task_emits_audio_chunks_to_broker() -> None:
 
     await driver.start()
     driver.push_audio(b"\x00" * 32, "evt-001")
-    await asyncio.sleep(0.05)
+    # Wait past DEBOUNCE_MS so debounce window fires and TTS completes.
+    await asyncio.sleep(_DEBOUNCE_MS / 1000 + 0.1)
     await driver.stop()
 
     # At least one non-empty chunk must reach the broker.
@@ -173,7 +174,8 @@ async def test_tts_exception_emits_error_event_not_silent() -> None:
 
     await driver.start()
     driver.push_audio(b"\x00" * 32, "evt-002")
-    await asyncio.sleep(0.05)
+    # Wait past DEBOUNCE_MS so debounce window fires and TTS raises.
+    await asyncio.sleep(_DEBOUNCE_MS / 1000 + 0.1)
     await driver.stop()
 
     error_events = [
@@ -209,7 +211,8 @@ async def test_empty_tts_chunk_not_published_to_broker() -> None:
 
     await driver.start()
     driver.push_audio(b"\x00" * 32, "evt-003")
-    await asyncio.sleep(0.05)
+    # Wait past DEBOUNCE_MS so debounce window fires and TTS runs (should yield b"").
+    await asyncio.sleep(_DEBOUNCE_MS / 1000 + 0.1)
     await driver.stop()
 
     assert broker.published == [], (
