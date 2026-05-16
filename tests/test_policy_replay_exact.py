@@ -18,11 +18,15 @@ Two checks, both required for a non-vacuous test:
      introduced into decide() (wall-clock reads, random(), dict-order dependence).
 """
 
-from dataclasses import astuple
+from dataclasses import astuple, asdict
 
+from companion_harness.attachment_risk_monitor import (
+    OVER_RELIANCE_COUNT_THRESHOLD,
+    EventStreamAttachmentRiskMonitor,
+)
 from companion_harness.fixtures.loader import load_fixture
 from companion_harness.reason_codes import ReasonCode
-from companion_harness.schemas import MemoryItem, PolicyInputs, SensitiveField, SpeakDecision
+from companion_harness.schemas import Event, MemoryItem, PolicyInputs, SensitiveField, SpeakDecision, ThinkerProposal
 from companion_harness import speak_policy
 
 
@@ -1009,3 +1013,179 @@ def test_policy_replay_behavioral_tolerance_stage5():
             f"{frame_id}: behavioral tuple {bt!r} != expected {expected_bt!r} "
             f"(action_type={d1.action_type!r})"
         )
+
+
+# ---------------------------------------------------------------------------
+# Stage 6 (v0.1g) trace: two new threshold_path strings
+# ---------------------------------------------------------------------------
+#
+# Covers:
+#   "aesthetic_reaction:rubric_blocked"  — proposal carries rubric_violations (PR #195)
+#   "attachment_risk:dampen_blocked"     — attachment_risk_level >= 0.5 (PR #212)
+
+def _proposal_with_violation() -> ThinkerProposal:
+    return ThinkerProposal(
+        proposal_type="aesthetic_reaction",
+        content="wow",
+        trigger="novelty",
+        confidence=0.9,
+        novelty=0.9,
+        interruption_cost=0.1,
+        max_utterance_ms=3000,
+        cooldown_consumed="aesthetic_reaction",
+        caused_by=["s6-frame-000"],
+        rubric_violations=["RUBRIC_TOO_LONG"],
+    )
+
+
+_STAGE6_TRACE = [
+    # aesthetic_reaction:rubric_blocked — novelty high, proposal has a violation
+    PolicyInputs(
+        user_speaking=False,
+        eou_probability=0.9,
+        assistant_speaking=False,
+        scene_change_score=0.0,
+        deictic_reference=False,
+        user_addressed_agent=False,
+        urgency_score=0.0,
+        proactivity_budget_remaining={},
+        privacy_mode="normal",
+        current_task_mode="normal",
+        social_mode="user_addressing_agent",
+        risk_mode="normal",
+        cooldown_state={},
+        attachment_risk_level=0.0,
+        aesthetic_novelty_score=0.8,
+        quiet_mode_active=False,
+    ),
+    # attachment_risk:dampen_blocked — novelty high, risk >= 0.5
+    PolicyInputs(
+        user_speaking=False,
+        eou_probability=0.9,
+        assistant_speaking=False,
+        scene_change_score=0.0,
+        deictic_reference=False,
+        user_addressed_agent=False,
+        urgency_score=0.0,
+        proactivity_budget_remaining={},
+        privacy_mode="normal",
+        current_task_mode="normal",
+        social_mode="user_addressing_agent",
+        risk_mode="normal",
+        cooldown_state={},
+        attachment_risk_level=0.5,
+        aesthetic_novelty_score=0.8,
+        quiet_mode_active=False,
+    ),
+]
+
+_STAGE6_PROPOSALS = [
+    _proposal_with_violation(),  # frame 0: rubric_blocked
+    None,                        # frame 1: attachment_risk dampen (no proposal needed)
+]
+
+_STAGE6_BASELINE = [
+    {"action_type": "silence", "primary_reason_code": "RUBRIC_VIOLATION",        "supporting_reason_codes": []},
+    {"action_type": "silence", "primary_reason_code": "ATTACHMENT_RISK_DAMPEN",  "supporting_reason_codes": []},
+]
+
+_STAGE6_EXPECTED_PATH_SUFFIXES = [
+    "aesthetic_reaction:rubric_blocked",
+    "attachment_risk:dampen_blocked",
+]
+
+
+def test_policy_replay_exact_stage6():
+    """Tier B: bit-identical replay for v0.1g threshold_path strings.
+
+    Covers "aesthetic_reaction:rubric_blocked" (PR #195) and
+    "attachment_risk:dampen_blocked" (PR #212).  Verifies POLICY_VERSION == "v0.1j"
+    and that both new path strings are emitted by _threshold_path_for().
+    """
+    assert speak_policy.POLICY_VERSION == "v0.1j"
+    assert len(_STAGE6_TRACE) == len(_STAGE6_BASELINE)
+    assert len(_STAGE6_TRACE) == len(_STAGE6_PROPOSALS)
+
+    run1 = [
+        speak_policy.decide(inputs, signal_event_ids=[f"s6-frame-{i:03d}"], proposal=prop)
+        for i, (inputs, prop) in enumerate(zip(_STAGE6_TRACE, _STAGE6_PROPOSALS))
+    ]
+    run2 = [
+        speak_policy.decide(inputs, signal_event_ids=[f"s6-frame-{i:03d}"], proposal=prop)
+        for i, (inputs, prop) in enumerate(zip(_STAGE6_TRACE, _STAGE6_PROPOSALS))
+    ]
+
+    for i, (inputs, prop, baseline, d1, d2) in enumerate(
+        zip(_STAGE6_TRACE, _STAGE6_PROPOSALS, _STAGE6_BASELINE, run1, run2)
+    ):
+        frame_id = f"s6-frame-{i:03d}"
+
+        assert d1.action_type == baseline["action_type"], (
+            f"{frame_id}: action_type {d1.action_type!r} != baseline {baseline['action_type']!r}"
+        )
+        assert d1.primary_reason_code == ReasonCode(baseline["primary_reason_code"]), (
+            f"{frame_id}: primary_reason_code {d1.primary_reason_code!r} "
+            f"!= baseline {baseline['primary_reason_code']!r}"
+        )
+        assert astuple(d1) == astuple(d2), (
+            f"{frame_id}: run1 {astuple(d1)!r} != run2 {astuple(d2)!r}"
+        )
+
+        # Verify the new v0.1g threshold_path string via _threshold_path_for directly
+        # (build_decision_trace does not forward proposal, so the path is checked here).
+        path1 = speak_policy._threshold_path_for(inputs, d1, 0.0, proposal=prop)
+        path2 = speak_policy._threshold_path_for(inputs, d2, 0.0, proposal=prop)
+        expected_suffix = _STAGE6_EXPECTED_PATH_SUFFIXES[i]
+        assert expected_suffix in path1, (
+            f"{frame_id}: expected '{expected_suffix}' in path {path1!r}"
+        )
+        assert path1 == path2, (
+            f"{frame_id}: threshold_path not bit-identical: {path1!r} != {path2!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# AttachmentRiskMonitor.assess() pure-function check (Task 19)
+# ---------------------------------------------------------------------------
+
+def _make_policy_event(event_id: str, ts: int) -> Event:
+    return Event(
+        event_id=event_id,
+        session_id="test",
+        schema_version="0.1",
+        seq_no=0,
+        event_type="policy_decision",
+        timestamp_mono_ms=ts,
+        timestamp_wall="2026-05-15T00:00:00+00:00",
+        source="test",
+        caused_by=[],
+        payload_hash="abc",
+        payload_ref=None,
+        payload_kind="signal",
+        subject_class="self",
+        sensitivity="safe",
+        retention_policy_id="default",
+        payload_inline={"action_type": "full_response"},
+    )
+
+
+def test_attachment_risk_monitor_assess_pure():
+    """Identical event stream → bit-identical AttachmentRiskSignal (invariant #5).
+
+    EventStreamAttachmentRiskMonitor.assess() is a pure function of its input.
+    Two calls with the same event list must return signals with identical field values.
+    """
+    monitor = EventStreamAttachmentRiskMonitor()
+    events = [
+        _make_policy_event(f"ev-{i}", i * 1000)
+        for i in range(OVER_RELIANCE_COUNT_THRESHOLD + 3)
+    ]
+
+    result1 = monitor.assess(iter(events))
+    result2 = monitor.assess(iter(events))
+
+    assert result1 is not None
+    assert result2 is not None
+    assert asdict(result1) == asdict(result2), (
+        f"assess() not bit-identical: run1={result1!r}, run2={result2!r}"
+    )
