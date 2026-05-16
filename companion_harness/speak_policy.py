@@ -10,7 +10,7 @@ free-text reasoning on the policy path (invariant #5 / Stage 0 Tier B replay).
 from __future__ import annotations
 
 from companion_harness.reason_codes import ReasonCode
-from companion_harness.schemas import DecisionTrace, PolicyInputs, ResponseContentSource, SpeakDecision
+from companion_harness.schemas import DecisionTrace, PolicyInputs, ResponseContentSource, SpeakDecision, ThinkerProposal
 from companion_harness.speak_policy_config import (
     SPEC_ALERT_THRESHOLD,
     _LEVEL_TO_FLOAT_THRESHOLD,
@@ -43,6 +43,7 @@ def decide(
     inputs: PolicyInputs,
     signal_event_ids: list[str],
     p_backchannel: float = 0.0,
+    proposal: ThinkerProposal | None = None,
     *,
     backchannel_threshold: float = _BACKCHANNEL_THRESHOLD,
     audio_visual_conflict_threshold: float = _AUDIO_VISUAL_CONFLICT_THRESHOLD,
@@ -192,6 +193,8 @@ def decide(
             return _silence(ReasonCode.QUIET_MODE_BLOCKED, caused_by)
         if inputs.cooldown_state.get("aesthetic_reaction", 0) > 0:
             return _silence(ReasonCode.COOLDOWN_BLOCKED, caused_by)
+        if proposal is not None and proposal.rubric_violations:
+            return _silence(ReasonCode.RUBRIC_VIOLATION, caused_by)
         return SpeakDecision(
             action_type="aesthetic_reaction",
             primary_reason_code=ReasonCode.PROACTIVITY_BUDGET_AVAILABLE,
@@ -227,6 +230,7 @@ def _threshold_path_for(
     inputs: PolicyInputs,
     decision: SpeakDecision,
     p_backchannel: float,
+    proposal: ThinkerProposal | None = None,
     *,
     backchannel_threshold: float = _BACKCHANNEL_THRESHOLD,
     audio_visual_conflict_threshold: float = _AUDIO_VISUAL_CONFLICT_THRESHOLD,
@@ -288,6 +292,8 @@ def _threshold_path_for(
             path.append("aesthetic_reaction:mode_blocked")
         elif inputs.cooldown_state.get("aesthetic_reaction", 0) > 0:
             path.append("aesthetic_reaction:cooldown_blocked")
+        elif proposal is not None and proposal.rubric_violations:
+            path.append("aesthetic_reaction:rubric_blocked")
         else:
             path.append("aesthetic_reaction:permitted")
         return path
