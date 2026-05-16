@@ -93,6 +93,12 @@ class MarkdownReporter:
                     lines.append(f"- ... and {remainder} more")
                 if fs.suspected_adapter:
                     lines.append(f"\nSuspected adapter: `{fs.suspected_adapter}`")
+                if fs.relevant_policy_inputs:
+                    lines.append("\nPolicy inputs at decision time:")
+                    for k, v in fs.relevant_policy_inputs.items():
+                        lines.append(f"- `{k}`: {v}")
+                if fs.suggested_fix:
+                    lines.append(f"\nSuggested fix: {fs.suggested_fix}")
                 lines.append("")
 
         # Aggregate
