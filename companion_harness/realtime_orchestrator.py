@@ -703,12 +703,24 @@ class StreamingRealtimeOrchestrator:
                     speaker_count=None,
                     social_mode=inputs.social_mode,
                 )
-                self._logger.log(self._make_event(
+                _spf_evt = self._make_event(
                     event_id=self._new_event_id(),
                     event_type="signal_producer_fallback",
                     caused_by=[signal_evt_id],
                     payload_kind="signal",
                     extra_hash="addressing:wake_word_safety_net",
+                )
+                self._logger.log(dataclasses.replace(
+                    _spf_evt,
+                    payload_inline={
+                        "primary_producer": (
+                            type(self._minicpm_addressing_classifier).__name__
+                            if self._minicpm_addressing_classifier is not None
+                            else "NullMiniCPMAddressingClassifier"
+                        ),
+                        "fallback_producer": type(self._addressing_classifier).__name__,
+                        "reason": "minicpm_addressing_unavailable",
+                    },
                 ))
                 _addr_evt = self._make_event(
                     event_id=self._new_event_id(),
@@ -1081,7 +1093,23 @@ class StreamingRealtimeOrchestrator:
                         timeout=self._proposal_batch_window_ms / 1000.0,
                     )
                 except asyncio.TimeoutError:
-                    self._emit("synthesis_skipped_no_proposal", [policy_evt_id], "signal")
+                    _close_ms = int(time.monotonic() * 1000)
+                    _skip_evt = self._make_event(
+                        event_id=self._new_event_id(),
+                        event_type="synthesis_skipped_no_proposal",
+                        caused_by=[policy_evt_id],
+                        payload_kind="signal",
+                    )
+                    self._logger.log(dataclasses.replace(
+                        _skip_evt,
+                        payload_inline={
+                            "dispatcher_state": "timeout_waiting_for_first_proposal",
+                            "batch_window_ms": self._proposal_batch_window_ms,
+                            "batch_open_at_ms": _close_ms - self._proposal_batch_window_ms,
+                            "batch_close_at_ms": _close_ms,
+                            "signal_evt_id": signal_evt_id,
+                        },
+                    ))
                     self.proposal_buffer.clear()
                     self._first_proposal_event.clear()
                     self._decision_in_flight = False
