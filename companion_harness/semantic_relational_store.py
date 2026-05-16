@@ -174,6 +174,9 @@ class SemanticRelationalStore:
     def hard_delete(self, item_id: str) -> None:
         self._path(item_id).unlink(missing_ok=True)
 
+    def retrieve_shared_moments(self, n: int = 5) -> list[MemoryItem]:
+        return []
+
     # ------------------------------------------------------------------
     # Semantic-relational-specific (NOT part of the Protocol)
     # ------------------------------------------------------------------

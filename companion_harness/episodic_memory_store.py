@@ -133,6 +133,18 @@ class EpisodicMemoryStore:
     def hard_delete(self, item_id: str) -> None:
         self._path(item_id).unlink(missing_ok=True)
 
+    def retrieve_shared_moments(self, n: int = 5) -> list[MemoryItem]:
+        """Return the N most-recent active items, sorted by created_at desc (Anchor 3)."""
+        items: list[MemoryItem] = []
+        for fname in os.listdir(self._dir):
+            if not fname.endswith(".json"):
+                continue
+            item = self._read(fname[:-5])
+            if _is_active(item):
+                items.append(item)
+        items.sort(key=lambda it: it.created_at, reverse=True)
+        return items[:n]
+
     # ------------------------------------------------------------------
     # Episodic-specific (NOT part of the Protocol)
     # ------------------------------------------------------------------

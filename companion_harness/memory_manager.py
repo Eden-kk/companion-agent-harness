@@ -43,6 +43,7 @@ class MemoryManager(Protocol):
     def retrieve(self, query: str, top_k: int = 5) -> list[MemoryItem]: ...
     def forget(self, item_id: str) -> None: ...
     def hard_delete(self, item_id: str) -> None: ...
+    def retrieve_shared_moments(self, n: int = 5) -> list[MemoryItem]: ...
 
 
 class MemoryManagerStub:
@@ -59,3 +60,6 @@ class MemoryManagerStub:
 
     def hard_delete(self, item_id: str) -> None:
         raise NotImplementedError("MemoryManager.hard_delete: wired at Stage 4")
+
+    def retrieve_shared_moments(self, n: int = 5) -> list[MemoryItem]:
+        raise NotImplementedError("MemoryManager.retrieve_shared_moments: wired at Stage 6")
