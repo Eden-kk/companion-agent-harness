@@ -1984,6 +1984,16 @@ def main(argv: list[str] | None = None) -> int:
         default=1024,
         help="Per-subscriber display WS queue depth (default 1024, range 64..16384).",
     )
+    parser.add_argument(
+        "--streaming-speculative",
+        dest="streaming_speculative",
+        action="store_true",
+        default=False,
+        help=(
+            "Enable continuous-proposer Path B with integrated barge-in (v0.3 experimental). "
+            "Default OFF — v0.2 behavior is bit-for-bit preserved when absent."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if args.minicpm_only and args.use_stubs:
@@ -2161,6 +2171,10 @@ def main(argv: list[str] | None = None) -> int:
         display_sampling_rate=args.display_sampling_rate,
         display_queue_depth=args.display_queue_depth,
     )
+    if args.streaming_speculative:
+        config_store: ConfigStore = app[KEY_CONFIG_STORE]  # type: ignore[assignment]
+        config_store.set("orchestrator.use_streaming_speculative", 1)
+
     # Stamp the deictic_model label as "pending-foreground-load" so
     # _on_startup_finalize_deictic knows the operator asked for it.
     if args.live_pipeline and not args.use_stubs and args.enable_deictic:

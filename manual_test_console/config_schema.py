@@ -202,6 +202,16 @@ ALLOWLIST: dict[str, TierBSchemaEntry] = {
             "invocation; exceed raises BackgroundReasonerBudgetExhausted."
         ),
     ),
+    "orchestrator.use_streaming_speculative": TierBSchemaEntry(
+        key="orchestrator.use_streaming_speculative",
+        code_location="companion_harness/realtime_orchestrator.py:263",
+        default=0,
+        min=0,
+        max=1,
+        step=1,
+        value_type=int,
+        description="Enable continuous-proposer Path B with integrated barge-in. v0.3 experimental. 0=off, 1=on.",
+    ),
 }
 
 
