@@ -13,11 +13,14 @@ Output format: PCM16 little-endian at 24 kHz mono — same as KokoroTtsAdapter.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import tempfile
 from collections.abc import AsyncIterator
 
 import numpy as np
+
+_log = logging.getLogger(__name__)
 
 __all__ = ["MiniCPMNativeTtsAdapter"]
 
@@ -113,6 +116,16 @@ class MiniCPMNativeTtsAdapter:
                 enable_thinking=False,
             )
             try:
+                wav_size = os.path.getsize(tmp_path) if os.path.exists(tmp_path) else 0
+                if wav_size == 0:
+                    # model.chat() swallows TTS errors internally; an empty (or
+                    # missing) WAV file means synthesis failed silently.
+                    _log.error(
+                        "MiniCPMNativeTtsAdapter: chat() returned but WAV file is "
+                        "empty — TTS synthesis failed internally (check stderr for "
+                        "traceback from model.chat). text=%r", text[:80]
+                    )
+                    return b""
                 samples, _sr = sf.read(tmp_path, dtype="float32")
             finally:
                 if os.path.exists(tmp_path):
