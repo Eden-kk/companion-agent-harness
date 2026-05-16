@@ -265,6 +265,10 @@ class StreamingRealtimeOrchestrator:
         self._barge_in_in_flight: bool = False
         self._barge_in_tasks: list[asyncio.Task[None]] = []
 
+        # In-flight tool call tracking (Task 7): set by T4 when dispatch starts,
+        # cleared on completion or cancellation.
+        self._inflight_tool_call_id: str | None = None
+
         # decision_trace_dir defaults to a subdir of the process cwd when not provided.
         # Callers that care about the location should pass it explicitly.
         _trace_dir = decision_trace_dir if decision_trace_dir is not None else Path("decision_traces")
@@ -863,7 +867,21 @@ class StreamingRealtimeOrchestrator:
                     caused_by=[policy_evt_id],
                     routing_hint="fast",
                 )
-                result = await self._tool_router.dispatch(request)
+                dispatch_task = asyncio.get_running_loop().create_task(
+                    self._tool_router.dispatch(request)
+                )
+                # Yield once so the router can register its cancel flag and
+                # expose the tool_call_id before barge-in might fire (Task 7).
+                await asyncio.sleep(0)
+                if (
+                    hasattr(self._tool_router, "_cancel_flags")
+                    and self._tool_router._cancel_flags
+                ):
+                    self._inflight_tool_call_id = next(iter(self._tool_router._cancel_flags))
+                try:
+                    result = await dispatch_task
+                finally:
+                    self._inflight_tool_call_id = None
                 for evt in result.events:
                     self._logger.log(evt)
                 if self._tool_progress_emitter is not None:
@@ -1006,6 +1024,9 @@ class StreamingRealtimeOrchestrator:
             return
         try:
             stop_requested_evt_id = self._audio_output.request_stop(caused_by=[onset_evt_id])
+            # Cancel any in-flight tool dispatch (Task 7).
+            if self._tool_router is not None and self._inflight_tool_call_id is not None:
+                await self._tool_router.cancel(self._inflight_tool_call_id)
             try:
                 await asyncio.wait_for(
                     asyncio.shield(play_task),
