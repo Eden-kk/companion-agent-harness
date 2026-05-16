@@ -32,7 +32,7 @@ def test_script_emits_json_with_required_sentinels(tmp_path, monkeypatch):
     assert stdout, f"No stdout; stderr: {result.stderr[:500]}"
     report = json.loads(stdout)
     assert report["case_id"] == "v0.2_milestone"
-    assert report["policy_version"] == "v0.1k"
+    assert report["policy_version"] == "v0.2-final"
     assert report["run_id"].startswith("v0.2-")
 
 
@@ -65,13 +65,14 @@ def test_gate_table_carries_wave2_gates():
     assert not missing, f"Missing Wave 2 gates: {missing}"
 
 
-def test_b200_required_gates_marked(monkeypatch, tmp_path):
+def test_b200_gates_all_met(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     from scripts.v0_2_replay_report import _GATES
-    b200_gates = [g for g in _GATES if g.get("b200_required")]
-    assert len(b200_gates) >= 1, "At least one gate should be b200_required"
-    for g in b200_gates:
-        assert "b200-required" in g["notes"].lower() or "b200" in g["notes"].lower()
+    # All b200 gates recorded as MET after T7 closeout (2026-05-16 verification)
+    b200_pending = [g for g in _GATES if g.get("b200_required")]
+    assert len(b200_pending) == 0, f"Expected no pending b200 gates; found: {[g['gate'] for g in b200_pending]}"
+    b200_met = [g for g in _GATES if "b200" in g["notes"].lower() and g["status"] == "MET"]
+    assert len(b200_met) >= 3, "Expected remote_smoke + p50 + p95 recorded as MET"
 
 
 def test_readiness_banner_present_in_summary_output(monkeypatch):
@@ -80,7 +81,7 @@ def test_readiness_banner_present_in_summary_output(monkeypatch):
     report = _build_report(
         pytest_result={"passed": 10, "failed": 0, "skipped": 0, "output": ""},
         policy_version_status="MET",
-        policy_version_value='POLICY_VERSION="v0.1k"',
+        policy_version_value='POLICY_VERSION="v0.2-final"',
     )
     summary = _gate_summary(report)
     assert "READY FOR git tag v0.2" in summary and report["all_local_gates_pass"]
