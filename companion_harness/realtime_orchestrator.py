@@ -69,6 +69,11 @@ from companion_harness.speak_policy import build_decision_trace as _build_decisi
 from companion_harness.speak_policy import decide as _default_speak_policy_decide
 from companion_harness.tool_router import ToolDispatchRequest
 from companion_harness.tts_adapter import TtsAdapter
+from companion_harness.user_reduction_commands import (
+    apply_user_reduction_command,
+    detect_user_reduction_command,
+    make_user_reduction_payload,
+)
 from companion_harness.turn_detector_smart import SmartTurnDetector
 from companion_harness.turn_detector_vad import VADDetector
 
@@ -733,6 +738,40 @@ class StreamingRealtimeOrchestrator:
                     payload_ref=f"orchestrator://{cand_event_id}",
                 )
                 self._logger.log(cand_event)
+
+            # --- User reduction command detection (v0.1g Task 9 / Wave 5) ---
+            # Fires unconditionally on transcript; caused_by closes through
+            # transcript_evt_id when available (invariant #1).
+            cmd_type = detect_user_reduction_command(transcript)
+            if cmd_type is not None:
+                new_budget = apply_user_reduction_command(
+                    cmd_type, inputs.proactivity_budget_remaining
+                )
+                inputs.proactivity_budget_remaining = new_budget
+                if cmd_type == "quiet_mode":
+                    inputs.quiet_mode_active = True
+                cmd_payload = make_user_reduction_payload(cmd_type)
+                cmd_evt_id = self._new_event_id()
+                cmd_caused_by = [signal_evt_id]
+                if transcript_evt_id is not None:
+                    cmd_caused_by.append(transcript_evt_id)
+                cmd_evt = dataclasses.replace(
+                    self._make_event(
+                        event_id=cmd_evt_id,
+                        event_type="user_reduction_command_applied",
+                        caused_by=cmd_caused_by,
+                        payload_kind="signal",
+                        extra_hash=cmd_type,
+                    ),
+                    subject_class="self",
+                    sensitivity="safe",
+                    retention_policy_id="commit_audit_30d",
+                    payload_inline={
+                        "command_type": cmd_payload.command_type,
+                        "applied_at_ms": cmd_payload.applied_at_ms,
+                    },
+                )
+                self._logger.log(cmd_evt)
 
             # Open a new batch window for T3.
             self._batch_close_event.clear()
