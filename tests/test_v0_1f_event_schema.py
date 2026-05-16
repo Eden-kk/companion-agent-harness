@@ -53,7 +53,13 @@ NON_TOOL_EVENT_TYPES = {
     "asr_transcript_emitted",
 }
 
-EXPECTED_EVENT_TYPES = TOOL_EVENT_TYPES | CONFIG_EVENT_TYPES | NON_TOOL_EVENT_TYPES
+# v0.2a: formalise existing signal_producer_fallback + new reasoner_budget_exhausted.
+V0_2A_EVENT_TYPES = {
+    "signal_producer_fallback",
+    "reasoner_budget_exhausted",
+}
+
+EXPECTED_EVENT_TYPES = TOOL_EVENT_TYPES | CONFIG_EVENT_TYPES | NON_TOOL_EVENT_TYPES | V0_2A_EVENT_TYPES
 
 
 def test_registry_has_expected_event_types():

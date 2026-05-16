@@ -1105,22 +1105,69 @@ class StreamingRealtimeOrchestrator:
 
     async def _smart_path_task(self) -> None:
         """T5: Drain smart_path_queue; drive BackgroundReasoner; inject context (OQ-12)."""
-        from companion_harness.background_reasoner import ToolReasonerResult
+        from companion_harness.background_reasoner import (
+            BackgroundReasonerBudgetExhausted,
+            ToolReasonerResult,
+        )
         while True:
             request = await self._smart_path_queue.get()
             event_iter = self._background_reasoner.select_and_call(request)
             last_event_id = request.caused_by[0] if request.caused_by else ""
-            async for evt in event_iter:
-                self._logger.log(evt)
-                last_event_id = evt.event_id
+            budget_exc: BackgroundReasonerBudgetExhausted | None = None
+            try:
+                async for evt in event_iter:
+                    self._logger.log(evt)
+                    last_event_id = evt.event_id
+            except BackgroundReasonerBudgetExhausted as exc:
+                budget_exc = exc
+                self._logger.log(self._make_budget_exhausted_event(
+                    exc, caused_by=[last_event_id] if last_event_id else list(request.caused_by)
+                ))
             result = ToolReasonerResult(
                 tool_call_id=request.tool_name,
                 tool_name=request.tool_name,
-                summary_text=f"completed:{request.tool_name}",
+                summary_text=(
+                    f"truncated:{request.tool_name}:{budget_exc.budget_kind}"
+                    if budget_exc is not None
+                    else f"completed:{request.tool_name}"
+                ),
                 caused_by=[last_event_id] if last_event_id else list(request.caused_by),
             )
             memory_items = self._background_reasoner.summarize(result)
             self._foreground_model.set_context(memory_items)
+
+    def _make_budget_exhausted_event(
+        self,
+        exc: "BackgroundReasonerBudgetExhausted",
+        caused_by: list[str],
+    ) -> "Event":
+        now_ms = int(time.monotonic() * 1000)
+        event_id = f"{self._session_id}-orch-budgetex-{now_ms}"
+        payload_hash = hashlib.sha256(
+            f"reasoner_budget_exhausted:{event_id}:{exc.budget_kind}".encode()
+        ).hexdigest()[:16]
+        return Event(
+            event_id=event_id,
+            session_id=self._session_id,
+            schema_version="0.1",
+            seq_no=self._next_seq(),
+            event_type="reasoner_budget_exhausted",
+            timestamp_mono_ms=now_ms,
+            timestamp_wall=datetime.now(timezone.utc).isoformat(),
+            source="realtime_orchestrator",
+            caused_by=caused_by,
+            payload_hash=payload_hash,
+            payload_ref=None,
+            payload_kind="signal",
+            subject_class="self",
+            sensitivity="safe",
+            retention_policy_id="tool_call_audit_30d",
+            payload_inline={
+                "budget_kind": exc.budget_kind,
+                "limit": exc.limit,
+                "observed": exc.observed,
+            },
+        )
 
     def _speak_policy_decide(
         self,
@@ -1171,6 +1218,15 @@ class StreamingRealtimeOrchestrator:
         self._backchannel_classifier.update_threshold(
             emit_threshold=cfg.get("detectors.backchannel.emit_threshold"),
         )
+
+        # Reasoner budget keys (v0.2a T3): always read; apply when a reasoner is wired.
+        wcs = cfg.get("reasoner.budget_wall_clock_s")
+        sc = cfg.get("reasoner.budget_step_count")
+        if self._background_reasoner is not None:
+            if wcs is not None and hasattr(self._background_reasoner, "_budget_wall_clock_s"):
+                self._background_reasoner._budget_wall_clock_s = float(wcs)
+            if sc is not None and hasattr(self._background_reasoner, "_budget_step_count"):
+                self._background_reasoner._budget_step_count = int(sc)
 
     # ------------------------------------------------------------------
     # Barge-in helpers (Task 6)

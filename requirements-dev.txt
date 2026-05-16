@@ -4,3 +4,4 @@ pytest-timeout>=2.3  # per-test timeout so a hanging subprocess can't consume th
 websockets>=12.0  # lazy-imported by run_ws_server / _handle_ws_client
 aiohttp>=3.9  # manual_test_console.server (HTTP + WebSocket on one port)
 pyyaml>=6.0  # replay_privacy_policy.yaml loaded by several test modules
+mcp>=1.6.0   # MCPBackgroundReasoner (v0.2a Task 2); needed for local contract tests

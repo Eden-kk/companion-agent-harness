@@ -496,6 +496,7 @@ def build_live_pipeline(
     urgency_scorer: UrgencyScorer | None = None,
     deictic_model: DeicticModel | None = None,
     embedder: EmbeddingAdapter | None = None,
+    background_reasoner: Any = None,
 ) -> LivePipeline:
     """Construct a LivePipeline for one ingest session.
 
@@ -688,6 +689,7 @@ def build_live_pipeline(
         semantic_store=semantic_store,
         tool_router=None,
         tool_progress_emitter=None,
+        background_reasoner=background_reasoner,
     )
 
     sleep_agent: SleepTimeAgent | None = None
