@@ -66,6 +66,15 @@ Stage 6 — **Companion texture.** `ThinkerProposalGen` emits proposals only (in
 
 ---
 
+## CURRENT MILESTONE: Eval Phase A.5 + v0.2 proposal
+
+- **Eval Phase A.5** is the active in-flight track. Status and quickstart: `docs/eval-quickstart.md`.
+- **v0.2 production-quality milestone** is proposed in `docs/roadmap-v0.2-draft.md` (open PR #254). v0.2 supersedes the prior v0.1c-stage scoping that lived in this section.
+
+(The v0.1c milestone referenced here historically has long shipped — see SHIPPED MILESTONES above.)
+
+---
+
 ## CURRENT ACTIVE WORK
 
 ### Eval Phase A.5 — offline fixture ingestion (next ramp)
