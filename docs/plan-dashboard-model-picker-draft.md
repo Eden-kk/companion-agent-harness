@@ -62,20 +62,20 @@ streaming foreground.
 
 ### Hot seams (Phase 1 target — 12 seams)
 
-| # | Seam | Production adapter | Stub (`_Null*`) | Per-seam swap cost | Live-swappable | Why |
-|---|------|---------------------|-----------------|--------------------|----------------|-----|
+| # | Seam | Production adapter | Disabled-mode fallback (`_Null*`, not a separate toggle) | Per-seam swap cost | Live-swappable | Why |
+|---|------|---------------------|----------------------------------------------------------|--------------------|----------------|-----|
 | 1 | VAD | `SileroVADModel` | `EnergyVADModel` | <50 ms | Y | Pure CPU model, ~1.5 MB weights, reload trivial. |
 | 2 | Smart-turn | `PipecatSmartTurnModel` | `SilenceSmartTurnModel` | <100 ms | Y | Pipecat v3 model, CPU. |
 | 3 | Backchannel classifier | `ASRLexiconBackchannelModel` | `ZeroBackchannelModel` | <50 ms | Y | Lexicon table, no weights. |
-| 4 | ASR | `FasterWhisperASRModel` | (stub: silent) | ~2 s (model warm) | Y | faster-whisper supports `del model; gc.collect()`; rebind one factory. |
+| 4 | ASR | `FasterWhisperASRModel` | (None — orchestrator produces silence) | ~2 s (model warm) | Y | faster-whisper supports `del model; gc.collect()`; rebind one factory. |
 | 5 | TTS | `KokoroTtsAdapter` | `NoopTtsAdapter` | ~3 s | Y | Kokoro model load is bounded; orchestrator already accepts swap (PR #181 added `--tts-adapter` selector). |
-| 6 | Scene-change scorer | `CLIPSceneChangeScorer` | (heuristic / `0.0`) | ~1 s | Y | CLIP image-only branch, ~150 MB, isolated. |
+| 6 | Scene-change scorer | `CLIPSceneChangeScorer` | (None — orchestrator returns `0.0`) | ~1 s | Y | CLIP image-only branch, ~150 MB, isolated. |
 | 7 | Visual grounding | `GroundingDINOAdapter` | `_NullGroundingDINOAdapter` | ~2 s | Y | Loaded behind `--enable-vision` (PR #160), already opt-in. |
 | 8 | AV-conflict scorer | `HeuristicAVConflictScorer` | `_NullAudioVisualConflictScorer` | <10 ms | Y | Pure heuristic (PR #173). |
 | 9 | Urgency scorer | `ProsodyLexiconUrgencyScorer` | `_NullUrgencyScorer` | <10 ms | Y | Pure heuristic (PR #180). |
 | 10 | Embedder | `SentenceTransformerEmbedder` | `_NullEmbeddingAdapter` | ~1 s | Y | sentence-transformers MiniLM, ~80 MB (PR #179). |
 | 11 | Attachment-risk monitor | `EventStreamAttachmentRiskMonitor` | `_NullAttachmentRiskMonitor` | <10 ms | Y | Event-stream reducer (PR #177). |
-| 12 | Fast tool dispatcher (optional) | `FastToolDispatcher` | (disabled) | <50 ms | Y | Pure routing table. |
+| 12 | Fast tool dispatcher (optional) | `FastToolDispatcher` | (None — routing table absent) | <50 ms | Y | Pure routing table. |
 
 ### Cold seams (Phase 3 target — 5 seams, all MiniCPM-bound)
 
@@ -115,20 +115,14 @@ The split is *UI-only*. At the API layer, both produce the same event family
 `model_restart_applied`). This keeps the audit shape uniform; the dashboard
 just renders two affordances.
 
-### Anchor 2 — Per-seam 3-state toggle for Phase 1: `real / stub / disabled`
+### Anchor 2 — Per-seam 2-state toggle for Phase 1: `real / disabled`
 
-Each hot-seam row exposes a tri-state radio:
+- `real`: the production adapter (e.g., `CLIPSceneChangeScorer`).
+- `disabled`: factory returns None; the orchestrator's existing None-handling produces neutral behavior (per the live-pipeline opt-in pattern shipped in PR #255).
 
-- `real`: the production adapter (e.g. `CLIPSceneChangeScorer`).
-- `stub`: the existing `_Null*` / `Energy*` / `Silence*` / `Zero*` adapter
-  (already imported by `live_pipeline.py`; see PRs #173/#177/#179/#180 and
-  `live_pipeline.py:35`).
-- `disabled`: factory returns `None`; orchestrator handles `None` via the
-  existing opt-in pattern (e.g. vision sidecar PR #160).
+**Removed:** the `stub` middle state. Rationale: `_Null*` stubs exist for adapter-protocol fallback when a real impl is unavailable; they are not a useful operator toggle. If the operator wants neutral behavior, `disabled` already achieves it via the orchestrator's None-handling. The third state added UI complexity without operator value.
 
-Three states, not N. Anchor 2 is deliberately small to keep Phase 1 shippable.
-Multi-implementation pickers (`real_v1` vs `real_v2`) are deferred to Phase 2
-(see OQ-4).
+**Implication:** simpler API (`POST /config/model-swap` body becomes `{seam, enabled: bool}`), simpler UI (toggle, not 3-way selector), fewer state transitions to test.
 
 ### Anchor 3 — New event types
 
@@ -138,8 +132,8 @@ the existing pattern (issue #151, currently realized by
 
 - `model_swap_requested` — operator clicked the radio. `payload =
   {seam, from_adapter, to_adapter, requested_at_ms}`.
-- `model_swap_completed` — hot swap succeeded. `payload = {seam, from_adapter,
-  to_adapter, applied_at_ms, latency_ms}`. This is the canonical event the
+- `model_swap_completed` — hot swap succeeded. `payload = {seam, from_state: "real"|"disabled",
+  to_state: "real"|"disabled", applied_at_ms, latency_ms}`. This is the canonical event the
   replay layer consumes (see Anchor 4).
 - `model_swap_rejected` — failed (e.g. dependency missing, GPU OOM, factory
   raised). `payload = {seam, attempted, reason, error_class}`.
@@ -275,9 +269,9 @@ because we cite the previous process's `model_restart_queued.event_id`.
 Three phases. Each phase ships as its own `plan-*-execution.md` and its own
 PR. No phase depends on a phase later than itself.
 
-### Phase 1 — Hot swap, 3-state toggle (small PR, ~6–8 tasks)
+### Phase 1 — Hot swap, 2-state toggle (small PR, ~6–8 tasks)
 
-**Scope:** the 12 hot seams. Real / stub / disabled toggle. New
+**Scope:** the 12 hot seams. Real / disabled toggle. New
 `/config/model-swap` route. Four new event types (`model_swap_requested`,
 `model_swap_completed`, `model_swap_rejected`, plus the operator_action root
 already produced by `_handle_post_config_patch` at
@@ -292,7 +286,7 @@ drawer.
 2. `GET /config/seams` returning current per-seam state.
 3. `POST /config/model-swap` happy-path (hot seam only).
 4. New event types + retention wiring (reuse `config_change_30d`).
-5. UI: extend the tuning drawer with the hot panel; per-seam radio.
+5. UI: extend the tuning drawer with the hot panel; per-seam toggle (real/disabled).
 6. Contract test: every dashboard swap emits exactly one
    `model_swap_completed` (audit-completeness gate = 1.0).
 7. Contract test: replay determinism within a span between two
@@ -345,7 +339,7 @@ All new routes under `/config/*` to keep the existing route family intact
 | Route | Method | Body / params | Returns | Phase |
 |-------|--------|---------------|---------|-------|
 | `/config/seams` | GET | — | `{seams: [{seam, status, current_adapter, available_adapters}]}` | 1 |
-| `/config/model-swap` | POST | `{seam, to: "real"\|"stub"\|"disabled", adapter_id?}` | `{accepted, model_swap_event_id, restart_required: bool}` | 1 |
+| `/config/model-swap` | POST | `{seam, enabled: bool, adapter_id?}` | `{accepted, model_swap_event_id, restart_required: bool}` | 1 |
 | `/config/dependencies` | GET | — | `{nodes: [...], edges: [{from, to, kind}]}` | 3 |
 | `/config/restart` | POST | `{confirm: true}` | `{accepted, model_restart_queued_event_id}` then process exit | 3 |
 
@@ -364,18 +358,18 @@ the existing three:
 ```
 ┌─ Tuning ──────────────────────────────────┐
 │ ▼ Hot seams (12)                          │
-│   VAD              [● real ○ stub ○ off]  │
-│   Smart-turn       [● real ○ stub ○ off]  │
-│   Backchannel      [○ real ● stub ○ off]  │
-│   ASR              [● real ○ stub ○ off]  │
+│   VAD              [● on  ○ off]          │
+│   Smart-turn       [● on  ○ off]          │
+│   Backchannel      [● on  ○ off]          │
+│   ASR              [● on  ○ off]          │
 │   TTS              [Kokoro      ▾]        │  ← Phase 2 dropdown
-│   Scene change     [● real ○ stub ○ off]  │
-│   Grounding        [○ real ○ stub ● off]  │
-│   AV conflict      [● real ○ stub ○ off]  │
-│   Urgency          [● real ○ stub ○ off]  │
-│   Embedder         [● real ○ stub ○ off]  │
-│   Attachment risk  [● real ○ stub ○ off]  │
-│   Fast tool disp.  [○ real ○ stub ● off]  │
+│   Scene change     [● on  ○ off]          │
+│   Grounding        [○ on  ● off]          │
+│   AV conflict      [● on  ○ off]          │
+│   Urgency          [● on  ○ off]          │
+│   Embedder         [● on  ○ off]          │
+│   Attachment risk  [● on  ○ off]          │
+│   Fast tool disp.  [○ on  ● off]          │
 │                                           │
 │ ▼ Cold seams (5)  — restart required      │
 │   Foreground       [● MiniCPM-o (cur) ▾]  │
