@@ -397,6 +397,132 @@ async def test_addressing_classified_fired_for_both_primary_and_fallback(tmp_pat
     )
 
 
+class _CapturingSilencePolicy:
+    """Silence policy that records the PolicyInputs it was called with."""
+
+    def __init__(self) -> None:
+        self.captured_inputs: list[PolicyInputs] = []
+
+    def __call__(
+        self,
+        inputs: PolicyInputs,
+        signal_event_ids: list[str],
+        p_backchannel: float = 0.0,
+    ) -> SpeakDecision:
+        self.captured_inputs.append(inputs)
+        return SpeakDecision(
+            action_type="silence",
+            primary_reason_code=ReasonCode.NOT_ADDRESSED_TO_AGENT,
+            supporting_reason_codes=[],
+            redacted_explanation=None,
+            caused_by=list(signal_event_ids),
+            budget_bucket=None,
+            allowed_prosody_tags=[],
+            max_duration_ms=None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_addressing_classified_payload_addressed_matches_policy_input_on_implicit_tier(
+    tmp_path: Path,
+) -> None:
+    """Regression for PR #263 gatekeeper finding: audit event 'addressed' field
+    must match the PolicyInputs.user_addressed_agent that actually flows to
+    SpeakPolicy. Invariant #1 — recorded value == used value.
+
+    MiniCPM stub returns confidence='implicit' with a substantive transcript;
+    assert payload['addressed'] == inputs.user_addressed_agent == True.
+    Before the fix, audit emitted False (no transcript arg) while policy got True.
+    """
+    implicit_signal = AddressingSignal(confidence="implicit", evidence="minicpm_implicit")
+    capturing_policy = _CapturingSilencePolicy()
+
+    # Run with capturing policy via a hand-built orchestrator.
+    logger, received = _make_logger()
+    await logger.start()
+    from companion_harness.input_ingest import InputIngest
+
+    ingest = InputIngest(logger=logger, blob_dir=tmp_path)
+    session = ingest.open_session("test-client")
+    audio_in: asyncio.Queue[tuple[bytes, str]] = asyncio.Queue(maxsize=64)
+    session_id = "test-ac-implicit-alignment"
+    vad = VADDetector(
+        model=_FakeVADModel([0.9, 0.9, 0.9, 0.9, 0.1, 0.1, 0.1]),
+        session_id=session_id,
+        logger=logger,
+        speech_threshold=0.5,
+        silence_onset_ms=64,
+        frame_duration_ms=32,
+    )
+    smart_turn = SmartTurnDetector(
+        model=_FakeSmartTurnModel(),
+        session_id=session_id,
+        logger=logger,
+    )
+    bc = BackchannelClassifier(
+        model=_FakeBackchannelModel(),
+        session_id=session_id,
+        logger=logger,
+    )
+    fg = ForegroundModel(
+        model=_FakeStreamingModel(),
+        session_id=session_id,
+        logger=logger,
+    )
+    controller = AudioOutputController(
+        session_id=session_id,
+        logger=logger,
+        sink=_noop_sink,
+    )
+    orch = StreamingRealtimeOrchestrator(
+        session_id=session_id,
+        logger=logger,
+        ingest_session=session,
+        audio_in=audio_in,
+        vad_detector=vad,
+        smart_turn_detector=smart_turn,
+        backchannel_classifier=bc,
+        policy_inputs_builder=_build_policy_inputs,
+        speak_policy=capturing_policy,
+        foreground_model=fg,
+        audio_output=controller,
+        tts_adapter=SilentTtsAdapter(chunk_count=1),
+        proposal_batch_window_ms=200,
+        asr_model=_ScriptedASRModel("what time is it"),  # substantive, >=3 tokens, not in denylist
+        addressing_classifier=None,
+        minicpm_addressing_classifier=_FixedMiniCPMAddressingClassifier(implicit_signal),
+        decision_trace_dir=tmp_path / "decision_traces",
+    )
+    await orch.start()
+    for i in range(7):
+        evt = ingest.ingest_chunk(session, _pcm_chunk(), _meta(i))
+        await audio_in.put((_pcm_chunk(), evt.event_id))
+    await asyncio.sleep(0.3)
+    await orch.stop()
+
+    ac_evts = [e for e in received if e.event_type == "addressing_classified"]
+    assert len(ac_evts) == 1, (
+        f"Expected 1 addressing_classified event, got {len(ac_evts)}"
+    )
+    audit_addressed = ac_evts[0].payload_inline["addressed"]
+
+    assert capturing_policy.captured_inputs, "SpeakPolicy was never invoked"
+    policy_addressed = capturing_policy.captured_inputs[0].user_addressed_agent
+
+    # The fix: both must be True on implicit + substantive transcript.
+    assert policy_addressed is True, (
+        f"PolicyInputs.user_addressed_agent expected True (implicit + substantive "
+        f"transcript), got {policy_addressed!r}"
+    )
+    assert audit_addressed == policy_addressed, (
+        f"Invariant #1 violation: addressing_classified.payload['addressed']="
+        f"{audit_addressed!r} does not match PolicyInputs.user_addressed_agent="
+        f"{policy_addressed!r}. Before fix, audit emitted False while policy got True "
+        f"because the MiniCPM-path derive_user_addressed_agent() call site omitted "
+        f"the transcript argument."
+    )
+
+
 @pytest.mark.asyncio
 async def test_causal_graph_completeness_with_addressing_classified(tmp_path: Path) -> None:
     """Invariant #1 regression guard: zero orphan events after addressing_classified is emitted."""

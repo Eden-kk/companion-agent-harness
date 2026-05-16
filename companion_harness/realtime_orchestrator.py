@@ -653,7 +653,7 @@ class StreamingRealtimeOrchestrator:
                         retention_policy_id="signal_default_30d",
                         payload_inline={
                             "classifier_name": type(self._minicpm_addressing_classifier).__name__,
-                            "addressed": derive_user_addressed_agent(addressing_signal, inputs.social_mode),
+                            "addressed": derive_user_addressed_agent(addressing_signal, inputs.social_mode, transcript),
                             "confidence": _confidence_float.get(addressing_signal.confidence, 0.5),
                             "evidence": addressing_signal.evidence,
                         },
@@ -682,7 +682,7 @@ class StreamingRealtimeOrchestrator:
                     retention_policy_id="signal_default_30d",
                     payload_inline={
                         "classifier_name": type(self._addressing_classifier).__name__,
-                        "addressed": derive_user_addressed_agent(addressing_signal, inputs.social_mode),
+                        "addressed": derive_user_addressed_agent(addressing_signal, inputs.social_mode, transcript),
                         "confidence": _confidence_float.get(addressing_signal.confidence, 0.5),
                         "evidence": addressing_signal.evidence,
                     },
