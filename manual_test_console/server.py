@@ -454,7 +454,8 @@ async def _handle_ingest_ws(request: web.Request) -> web.WebSocketResponse:
                 await pipeline.stop()
             except Exception:
                 pass
-            active_pipelines.pop(session.session_id, None)
+            finally:
+                active_pipelines.pop(session.session_id, None)
         await ws.close()
     return ws
 
