@@ -135,26 +135,49 @@ class _VadOnsetFrame:
     p_speech: float
     frame_event_id: str
 
+_AUDIO_TEE_DEPTH = 256  # raised from 64; 2.56 s headroom at 100 frames/s
 _AUDIO_QUEUE_BOUND = 64
 _TURN_SIGNAL_QUEUE_BOUND = 32
 _POLICY_DECISIONS_QUEUE_BOUND = 8
+_AUDIO_TEE_DEPTH_MIN = 32
+_AUDIO_TEE_DEPTH_MAX = 1024
 
 
-def _drop_oldest_put(q: asyncio.Queue[Any], item: Any, logger: EventLogger, caused_by: list[str]) -> None:
-    """Put item onto a bounded audio queue; drop oldest on overflow + log."""
+def _drop_oldest_put(
+    q: asyncio.Queue[Any],
+    item: Any,
+    logger: EventLogger,
+    source_event_id: str,
+    tee_name: str,
+) -> bool:
+    """Put item onto a bounded audio queue; drop oldest on overflow + log.
+
+    Returns True when a drop occurred so callers can tally per-tee drop counts.
+    The ``source_event_id`` is the upstream chunk's real event_id; it replaces
+    the sentinel string ``"_dropped_before_enqueue"`` so the causal DAG closes.
+    """
     try:
         q.put_nowait(item)
+        return False
     except asyncio.QueueFull:
         try:
             q.get_nowait()
         except asyncio.QueueEmpty:
             pass
         q.put_nowait(item)
-        logger.log(_make_degrade_event(caused_by))
+        logger.log(_make_degrade_event([source_event_id], tee_name, q.qsize()))
+        return True
 
 
-def _make_degrade_event(caused_by: list[str]) -> Event:
+def _make_degrade_event(
+    caused_by: list[str],
+    tee_name: str = "",
+    current_queue_depth: int = 0,
+) -> Event:
     now_ms = int(time.monotonic() * 1000)
+    inline: dict | None = None
+    if tee_name:
+        inline = {"tee_name": tee_name, "current_queue_depth": current_queue_depth}
     return Event(
         event_id=f"degrade-{now_ms}-{uuid.uuid4().hex[:8]}",
         session_id="",
@@ -171,6 +194,7 @@ def _make_degrade_event(caused_by: list[str]) -> Event:
         subject_class="unknown",
         sensitivity="safe",
         retention_policy_id="default",
+        payload_inline=inline,
     )
 
 
@@ -235,6 +259,7 @@ class StreamingRealtimeOrchestrator:
         tool_router: "Any | None" = None,
         tool_progress_emitter: "Any | None" = None,
         background_reasoner: "Any | None" = None,
+        audio_tee_depth: int = _AUDIO_TEE_DEPTH,
     ) -> None:
         self._session_id = session_id
         self._logger = logger
@@ -256,8 +281,15 @@ class StreamingRealtimeOrchestrator:
         self._p_backchannel_thresh = p_backchannel_thresh
 
         # Internal queues
-        self._tee_to_detectors: asyncio.Queue[tuple[bytes, str]] = asyncio.Queue(maxsize=_AUDIO_QUEUE_BOUND)
-        self._tee_to_foreground: asyncio.Queue[tuple[bytes, str]] = asyncio.Queue(maxsize=_AUDIO_QUEUE_BOUND)
+        _tee_depth = max(_AUDIO_TEE_DEPTH_MIN, min(_AUDIO_TEE_DEPTH_MAX, audio_tee_depth))
+        self._tee_depth = _tee_depth
+        self._tee_to_detectors: asyncio.Queue[tuple[bytes, str]] = asyncio.Queue(maxsize=_tee_depth)
+        self._tee_to_foreground: asyncio.Queue[tuple[bytes, str]] = asyncio.Queue(maxsize=_tee_depth)
+        # Per-tee drop counters for the 60s summary event.
+        self._tee_detectors_drop_count: int = 0
+        self._tee_foreground_drop_count: int = 0
+        self._tee_summary_last_ms: float = time.monotonic() * 1000
+
         # T2 inbox: union of _VadOnsetFrame (for onset detection) and TurnSignal tuples (for EOU decisions)
         self._t2_inbox: asyncio.Queue[_VadOnsetFrame | tuple[TurnSignal, str]] = asyncio.Queue(
             maxsize=_AUDIO_QUEUE_BOUND + _TURN_SIGNAL_QUEUE_BOUND
@@ -414,15 +446,58 @@ class StreamingRealtimeOrchestrator:
 
     async def _audio_tee_task(self) -> None:
         """Read audio_in; fan to tee_to_detectors and tee_to_foreground (drop-oldest)."""
+        _SUMMARY_INTERVAL_MS = 60_000
         while True:
             frame_bytes, chunk_event_id = await self._audio_in.get()
             item = (frame_bytes, chunk_event_id)
-            _drop_oldest_put(self._tee_to_detectors, item, self._logger, ["_dropped_before_enqueue"])
-            _drop_oldest_put(self._tee_to_foreground, item, self._logger, ["_dropped_before_enqueue"])
+            if _drop_oldest_put(
+                self._tee_to_detectors, item, self._logger, chunk_event_id, "detectors"
+            ):
+                self._tee_detectors_drop_count += 1
+            if _drop_oldest_put(
+                self._tee_to_foreground, item, self._logger, chunk_event_id, "foreground"
+            ):
+                self._tee_foreground_drop_count += 1
             # Accumulate per-turn audio for ASR (consumed + cleared in T2 on EOU).
             # Skip when no ASR is wired so the buffer never grows unbounded.
             if self._asr_model is not None:
                 self._turn_audio_buffer.extend(frame_bytes)
+            # Periodic 60s drop summary for operator observability.
+            now_ms = time.monotonic() * 1000
+            if now_ms - self._tee_summary_last_ms >= _SUMMARY_INTERVAL_MS:
+                self._tee_summary_last_ms = now_ms
+                for tee_name, drop_count, q in (
+                    ("detectors", self._tee_detectors_drop_count, self._tee_to_detectors),
+                    ("foreground", self._tee_foreground_drop_count, self._tee_to_foreground),
+                ):
+                    self._logger.log(self._emit_tee_summary(tee_name, drop_count, q.qsize()))
+                self._tee_detectors_drop_count = 0
+                self._tee_foreground_drop_count = 0
+
+    def _emit_tee_summary(self, tee_name: str, drop_count_60s: int, current_queue_depth: int) -> Event:
+        now_ms = int(time.monotonic() * 1000)
+        return Event(
+            event_id=f"tee-summary-{now_ms}-{uuid.uuid4().hex[:8]}",
+            session_id=self._session_id,
+            schema_version=_SCHEMA_VERSION,
+            seq_no=0,
+            event_type="audio_tee_drop_summary",
+            timestamp_mono_ms=now_ms,
+            timestamp_wall=datetime.now(timezone.utc).isoformat(),
+            source=_SOURCE,
+            caused_by=[self._started_event_id] if self._started_event_id else [],
+            payload_hash="",
+            payload_ref=None,
+            payload_kind="signal",
+            subject_class="unknown",
+            sensitivity="safe",
+            retention_policy_id="default",
+            payload_inline={
+                "drop_count_60s": drop_count_60s,
+                "tee_name": tee_name,
+                "current_queue_depth": current_queue_depth,
+            },
+        )
 
     async def _detector_fanout_task(self) -> None:
         """T1: Fan audio frames to all detectors; forward TurnSignals and VAD onset frames to T2.
