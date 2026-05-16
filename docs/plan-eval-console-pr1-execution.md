@@ -13,7 +13,7 @@ Ship the operator-facing `/eval` page on the existing manual-test console (port 
 ## Cross-link
 
 - Design source: [`docs/plan-eval-console-pr1-draft.md`](plan-eval-console-pr1-draft.md) — anchors, OQs, rejected alternatives, meta convergence notes.
-- Eval spec: [`docs/eval-subsystem-spec.md`](eval-subsystem-spec.md).
+- Eval protocols: [`companion_harness/evals/protocols.py`](../companion_harness/evals/protocols.py).
 - Eval quickstart: [`docs/eval-quickstart.md`](eval-quickstart.md).
 - Manual-test handbook: [`docs/manual-test-handbook.md`](manual-test-handbook.md).
 - Live console implementation: `manual_test_console/server.py`, `manual_test_console/index.html`.
@@ -104,7 +104,9 @@ class AdapterInfo:
 
 def _build_harness_native() -> BenchmarkAdapter:
     from companion_harness.evals.adapters import harness_native
-    return harness_native.build()
+    import pathlib
+    repo_root = pathlib.Path(__file__).parent.parent.parent
+    return harness_native.build(repo_root=repo_root)
 
 
 def _build_vocalbench() -> BenchmarkAdapter:
@@ -137,8 +139,8 @@ ADAPTERS: dict[str, AdapterInfo] = {
     "vocalbench":            AdapterInfo("vocalbench", "synthetic-v1", "synthetic_only", None, False, True,  _build_vocalbench,            notes="real ingestion requires datasets extra"),
     "voicebench":            AdapterInfo("voicebench", "synthetic-v1", "synthetic_only", None, False, True,  _build_voicebench,            notes="real ingestion deferred"),
     "humdial_fdbench":       AdapterInfo("humdial_fdbench", "synthetic-v1", "synthetic_only", None, False, True,  _build_humdial_fdbench, notes="real ingestion deferred"),
-    "candor_stats":          AdapterInfo("candor_stats", "synthetic-v1", "synthetic_only", None, False, True,  _build_candor,                notes="real CANDOR data deferred"),
-    "full_duplex_bench_v1":  AdapterInfo("full_duplex_bench_v1", "v1", "synthetic_only", None, False, True,  _build_full_duplex_bench_v1, notes="real FDB data deferred"),
+    "candor":                AdapterInfo("candor", "synthetic-v1", "synthetic_only", None, False, True,  _build_candor,                notes="real CANDOR data deferred"),
+    "full_duplex_bench":     AdapterInfo("full_duplex_bench", "v1", "synthetic_only", None, False, True,  _build_full_duplex_bench_v1, notes="real FDB data deferred"),
 }
 ```
 
@@ -147,7 +149,7 @@ ADAPTERS: dict[str, AdapterInfo] = {
 - `case_count` left `None`; later PRs may populate via a lazy probe.
 - No CLI invocation here — registry is data only.
 
-**Success criterion (E1)**: `from companion_harness.evals.registry import ADAPTERS; assert set(ADAPTERS) == {6 names}` passes; every builder is invocable and returns a `BenchmarkAdapter`.
+**Success criterion (E1)**: `from companion_harness.evals.registry import ADAPTERS; assert set(ADAPTERS) == {"harness_native", "vocalbench", "voicebench", "humdial_fdbench", "candor", "full_duplex_bench"}` passes; every builder is invocable and returns a `BenchmarkAdapter`.
 
 ---
 
@@ -183,7 +185,7 @@ def main(argv: list[str] | None = None) -> int:
 
 **Discipline notes**:
 - Do NOT change CLI surface beyond the dispatch error message. `--adapter`, `--timing-mode`, `--output`, `--split` all stay.
-- Synthetic adapters using `build_*(synthetic=True)` produce ReplayRuns the same way `harness_native` does (per their `scenario_driver._run_sync` contract). If a synthetic adapter's driver lacks `_run_sync`, E2 stops at that adapter with a clear error rather than silently degrading. Document in PR body.
+- Synthetic adapters expose async `run(...)` per the `ScenarioDriver` Protocol. `_run_adapter` must call `await scenario_driver.run(...)` for all adapters except `harness_native`, which retains its `_run_sync` path. If a synthetic adapter's driver lacks `run`, E2 stops at that adapter with a clear error rather than silently degrading. Document in PR body.
 
 **Success criterion (E2)**: `python -m companion_harness.evals run --adapter vocalbench --output /tmp/r` exits 0 and writes a `run.json`; `--adapter does_not_exist` exits 2 with the `gh issue` hint.
 
@@ -196,6 +198,7 @@ def main(argv: list[str] | None = None) -> int:
 **Handlers** (all aiohttp `web.Request → web.Response`):
 
 - `GET /eval` — serve `manual_test_console/eval.html` (static file).
+- `GET /eval/static/{name}` — serve static assets from `manual_test_console/` by filename (e.g. `eval_app.js`, `eval_style.css`). Use aiohttp `web.static` or a minimal handler that resolves to the same directory as `eval.html`. Asset paths: `/eval/static/eval_app.js`, `/eval/static/eval_style.css`.
 - `GET /eval/adapters` — JSON: `[{name, version, status, case_count, supports_real_mode, supports_synthetic_mode, notes}, ...]` from `ADAPTERS`.
 - `GET /eval/runs` — list `<blob_dir>/eval_reports/*/run.json`. Return `[{run_id, adapter, started_at, finished_at, status, case_count, pass_count}]`.
 - `POST /eval/runs` — body `{adapter, split?}`. Launch run in background task (asyncio.create_task wrapping a `loop.run_in_executor(...)` of `runners._run_adapter`). Return `{run_id, status: "started"}` immediately. Store handle in `app[KEY_EVAL_RUNS]` for cancellation.
@@ -217,9 +220,9 @@ KEY_EVAL_RUNS: web.AppKey[dict[str, "EvalRunHandle"]] = web.AppKey("eval_runs", 
 **Discipline notes**:
 - All handlers use `app[KEY_LOGGER]` for any side-effect events if needed (e.g. `eval_run_started`). Optional in PR1; the core requirement is just artifact serving.
 - `GET /eval/runs/{run_id}/event_logs/{case_id}` uses `web.FileResponse` if the file exists, else 404 with a structured JSON error.
-- WebSocket for live progress: include a stub `/eval/ws/runs/{run_id}` handler returning `{type: "status", status: "polling-only-in-pr1"}` if WS implementation slips; document the lean in PR body.
+- WebSocket for live progress: **omitted in PR1** (sync polling via `GET /eval/runs/{run_id}` is sufficient). No WS stub is registered. The polling approach is the settled choice for PR1; WS is deferred to PR2 alongside the failure inspector.
 
-**Success criterion (E3)**: `eval_routes.py` imports without side effects; `register_eval_routes` adds 7 routes; aiohttp test client can hit each route against a stub blob_dir.
+**Success criterion (E3)**: `eval_routes.py` imports without side effects; `register_eval_routes` adds 7 routes (6 REST handlers + 1 static-asset route, no WebSocket); aiohttp test client can hit each route against a stub blob_dir.
 
 ---
 
@@ -283,7 +286,7 @@ Also add `eval_reports_dir: Path | None = None` to `build_app` kwargs (defaultin
 
 **`eval_app.js`** — vanilla JS, no build step. Mirrors `index.html`'s pattern (inline `<script>` or referenced module). Uses `fetch` for REST + optional `WebSocket` for live run progress.
 
-**`eval_style.css`** — extracts the operator-style design tokens (vars from `index.html`) into a small stylesheet so eval and live share them. Add `.badge.synthetic` class.
+**`eval_style.css`** — eval-only stylesheet. Does NOT extract or modify inline CSS from `index.html` (Live view keeps its inline styles as-is). Defines eval-specific layout and the `.badge.synthetic` class. If shared design tokens (e.g. `--bg`, `--fg`, `--accent`) are needed, they are duplicated here rather than refactored out of `index.html` — scope is narrower that way.
 
 **Discipline notes**:
 - No new JS framework. Match `index.html`'s style.
@@ -317,14 +320,20 @@ Also add `eval_reports_dir: Path | None = None` to `build_app` kwargs (defaultin
 - `test_eval_html_serves_at_eval_route` — `GET /eval` returns 200, content-type `text/html`, body contains `id="adapter-panel"` and `Failure inspector — coming in PR2`.
 - `test_index_html_contains_eval_switcher` — `GET /` body contains `href="/eval"`.
 
-**Total ≥ 12 tests** (per numeric gate).
+#### Additional tests covering gaps (add to `tests/test_eval_routes.py` or a new file)
+- `test_get_eval_static_js` — `GET /eval/static/eval_app.js` returns 200 with `Content-Type: application/javascript`.
+- `test_get_eval_static_css` — `GET /eval/static/eval_style.css` returns 200 with `Content-Type: text/css`.
+- `test_post_eval_runs_all_six_adapters_dispatch` — POST `/eval/runs` for each of the 6 registry keys; assert each returns `{run_id, status: "started"}` (no 400/500). Uses mocked `_run_adapter` so no real execution occurs.
+- `test_eval_reports_dir_cli_flag` — invoke `build_app` with a custom `eval_reports_dir`; assert `app[KEY_EVAL_REPORTS_DIR]` matches the passed path (validates the `--eval-reports-dir` wiring).
+
+**Total ≥ 16 tests** (per numeric gate).
 
 **Discipline notes**:
 - Tests use the existing `aiohttp.test_utils.TestClient` pattern (already used by other manual_test_console tests; copy the conftest).
 - No real adapter execution in tests — POST `/eval/runs` uses `harness_native` (which is the fastest synthetic case set already shipped) and the test awaits completion or cancellation.
 - All tests run under the canonical venv `/raid/yid042/venvs/companion-harness` (per project memory).
 
-**Success criterion (E6)**: `pytest -k "eval_registry or eval_routes or eval_console_html"` reports ≥ 12 passing, 0 failing.
+**Success criterion (E6)**: `pytest -k "eval_registry or eval_routes or eval_console_html"` reports ≥ 16 passing, 0 failing.
 
 ---
 
@@ -335,13 +344,13 @@ Also add `eval_reports_dir: Path | None = None` to `build_app` kwargs (defaultin
 | `eval_adapter_dispatch_coverage` | == 1.0 (all 6 dispatchable from web) | E6 `test_get_eval_adapters_returns_six_entries` + manual POST per adapter |
 | `eval_route_request_latency_ms_p95` | < 100 ms (excluding run wall time) | E6 manual timing or simple route latency test |
 | `eval_html_renders_without_js_errors` | true | Manual smoke (handbook entry) + `test_eval_html_serves_at_eval_route` |
-| Targeted new test count | ≥ 12 | E6 file count |
+| Targeted new test count | ≥ 16 | E6 file count |
 
 ## Risks (carried from draft + execution-specific)
 
 1. **Registry-runner coupling regression** — E2 alone could break `harness_native`-only callers. Mitigation: keep `_run_harness_native` as internal alias for one cycle.
 2. **`reports/` disk growth** — defer retention to v0.2 Wave 6. Document manual cleanup in PR body.
-3. **WebSocket complexity** — if WS slips in E3, ship polling-only and document. Synchronous `GET /eval/runs/{run_id}` is enough for PR1.
+3. **WebSocket complexity** — WebSocket is explicitly out of PR1 scope (settled in WARN 6 lean). Synchronous polling via `GET /eval/runs/{run_id}` is the only status mechanism in PR1. WS deferred to PR2.
 4. **Sub-PR review-order skew** — if E2 lands before E1 by accident (e.g., reviewer haste), the runner breaks on import. Mitigation: branch name prefix `Ek-` makes the order obvious; CI on the integration branch runs E6 last.
 5. **`build_v1` vs `build_v1_5` for full_duplex_bench** — PR1 registers `full_duplex_bench_v1` only. v1_5 deferred.
 
