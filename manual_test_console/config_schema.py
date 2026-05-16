@@ -215,6 +215,23 @@ def tier_a_keys() -> frozenset[str]:
     return _TIER_A_KEYS
 
 
+HOT_SEAMS: tuple[str, ...] = (
+    "vad", "smart_turn", "backchannel", "asr", "tts",
+    "scene_scorer", "grounding_model", "av_conflict_scorer",
+    "urgency_scorer", "embedder", "attachment_risk_monitor",
+    "fast_tool_dispatcher",
+)
+
+
+def validate_seam_patch(seam: str, enabled: object) -> tuple[bool, str]:
+    """Mirror of validate_patch() for seam toggles."""
+    if seam not in HOT_SEAMS:
+        return False, f"unknown seam: {seam!r}"
+    if not isinstance(enabled, bool):
+        return False, f"enabled must be bool, got {type(enabled).__name__}"
+    return True, ""
+
+
 def validate_patch(key: str, value: object) -> tuple[bool, str]:
     """Validate a proposed Tier-B patch.
 
