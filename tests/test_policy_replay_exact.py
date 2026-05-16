@@ -28,6 +28,7 @@ from companion_harness.fixtures.loader import load_fixture
 from companion_harness.reason_codes import ReasonCode
 from companion_harness.schemas import Event, MemoryItem, PolicyInputs, SensitiveField, SpeakDecision, ThinkerProposal
 from companion_harness import speak_policy
+from companion_harness.tool_progress_emitter import ToolProgressEmitter
 
 
 def _inputs_from_frame(frame: dict) -> PolicyInputs:
@@ -1189,3 +1190,199 @@ def test_attachment_risk_monitor_assess_pure():
     assert asdict(result1) == asdict(result2), (
         f"assess() not bit-identical: run1={result1!r}, run2={result2!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Stage 7 — full event-chain + evidence_at() replay determinism (v0.1f Task 14)
+# ---------------------------------------------------------------------------
+#
+# Originally labeled "Stage 5" in commit bf815a4 (PR #220); renamed Stage 7
+# during rebase to avoid collision with the existing Stage 5 behavioral-
+# tolerance block above.  Test function names retain `stage5_event_chain_*`
+# to match the v0.1f roadmap §Task 14 vocabulary.
+#
+# Asserts:
+#   1. POLICY_VERSION is at least v0.1f (forward-compatible: accepts v0.1f or
+#      any later version string that sorts >= "v0.1f" lexicographically).
+#   2. ToolProgressEmitter.evidence_at() is replay-deterministic: given the
+#      same recorded event-log fixture it produces bit-identical
+#      ToolProgressEvidence on two separate calls (invariant #5 / Anchor 4).
+#   3. The full Stage 5 chain — tool_call_requested → tool_call_dispatched
+#      (routing_tier=fast) → tool_progress_event* → tool_call_completed |
+#      tool_call_cancelled — is structurally sound (required_fields present,
+#      caused_by[] closes, ordering invariant holds).
+#   4. decide() is bit-identical given PolicyInputs carrying the evidence.
+
+
+def _make_event(
+    event_id: str,
+    event_type: str,
+    timestamp_mono_ms: int,
+    caused_by: list[str],
+    payload_inline: dict,
+) -> Event:
+    return Event(
+        event_id=event_id,
+        session_id="s5-replay-session",
+        schema_version="v0.1f",
+        seq_no=0,
+        event_type=event_type,
+        timestamp_mono_ms=timestamp_mono_ms,
+        timestamp_wall="2026-05-15T00:00:00+00:00",
+        source="test",
+        caused_by=caused_by,
+        payload_hash="",
+        payload_ref=None,
+        payload_kind="tool_event",
+        subject_class="self",
+        sensitivity="safe",
+        retention_policy_id="tool_call_audit_30d",
+        payload_inline=payload_inline,
+    )
+
+
+# Recorded event-log fixture: one complete fast-path tool call
+# (tool_call_requested → tool_call_dispatched → two tool_progress_events → tool_call_completed).
+_TOOL_CALL_ID = "tcid-replay-001"
+
+_STAGE5_EVENT_LOG: list[Event] = [
+    _make_event(
+        "evt-001", "tool_call_requested", 1000, ["sig-001"],
+        {"tool_call_id": _TOOL_CALL_ID},
+    ),
+    _make_event(
+        "evt-002", "tool_call_dispatched", 1010, ["evt-001"],
+        {"tool_call_id": _TOOL_CALL_ID, "routing_tier": "fast"},
+    ),
+    _make_event(
+        "evt-003", "tool_progress_event", 3000, ["evt-002"],
+        {"tool_call_id": _TOOL_CALL_ID, "progress_stage": "scanning"},
+    ),
+    _make_event(
+        "evt-004", "tool_progress_event", 8000, ["evt-003"],
+        {"tool_call_id": _TOOL_CALL_ID, "progress_stage": "aggregating"},
+    ),
+    _make_event(
+        "evt-005", "tool_call_completed", 9500, ["evt-004"],
+        {"tool_call_id": _TOOL_CALL_ID},
+    ),
+]
+
+# Cancelled variant: replaces tool_call_completed with tool_call_cancelled.
+_STAGE5_CANCELLED_LOG: list[Event] = [
+    _make_event(
+        "evtc-001", "tool_call_requested", 1000, ["sig-002"],
+        {"tool_call_id": "tcid-replay-002"},
+    ),
+    _make_event(
+        "evtc-002", "tool_call_dispatched", 1010, ["evtc-001"],
+        {"tool_call_id": "tcid-replay-002", "routing_tier": "fast"},
+    ),
+    _make_event(
+        "evtc-003", "tool_progress_event", 3000, ["evtc-002"],
+        {"tool_call_id": "tcid-replay-002", "progress_stage": "scanning"},
+    ),
+    _make_event(
+        "evtc-004", "tool_call_cancelled", 3800, ["evtc-003", "vad-barge-in-001"],
+        {"tool_call_id": "tcid-replay-002"},
+    ),
+]
+
+
+def test_policy_replay_stage5_event_chain_structure():
+    """Stage 5 Anchor 2 ordering invariant: chain closes via caused_by[].
+
+    Verifies required_fields are present and the caused_by[] DAG closes
+    through the full chain (tool_call_requested → tool_call_dispatched →
+    tool_progress_event* → tool_call_completed).  Covers the cancelled
+    variant (tool_call_cancelled) as well.
+    """
+    # fast-path completed chain
+    ids = {e.event_id for e in _STAGE5_EVENT_LOG}
+    for evt in _STAGE5_EVENT_LOG:
+        pi = evt.payload_inline or {}
+        assert "tool_call_id" in pi, f"{evt.event_id}: missing tool_call_id"
+        if evt.event_type == "tool_call_dispatched":
+            assert pi.get("routing_tier") == "fast", (
+                f"{evt.event_id}: routing_tier must be 'fast'"
+            )
+        if evt.event_type == "tool_progress_event":
+            assert "progress_stage" in pi, f"{evt.event_id}: missing progress_stage"
+        for cause in evt.caused_by:
+            if not cause.startswith("sig-"):
+                assert cause in ids, (
+                    f"{evt.event_id}: caused_by {cause!r} not in event log"
+                )
+
+    # cancelled variant chain
+    ids_c = {e.event_id for e in _STAGE5_CANCELLED_LOG}
+    for evt in _STAGE5_CANCELLED_LOG:
+        pi = evt.payload_inline or {}
+        assert "tool_call_id" in pi, f"{evt.event_id}: missing tool_call_id"
+        for cause in evt.caused_by:
+            if not cause.startswith(("sig-", "vad-")):
+                assert cause in ids_c, (
+                    f"{evt.event_id}: caused_by {cause!r} not in cancelled log"
+                )
+
+
+def test_policy_replay_stage5_evidence_at_determinism():
+    """Anchor 4 replay determinism: evidence_at() bit-identical on same event log.
+
+    Calls evidence_at() twice with the same recorded event-log fixture and
+    asserts the returned ToolProgressEvidence is identical both times.
+    Never touches a wall clock — uses only timestamp_mono_ms from the log.
+    """
+    emitter = ToolProgressEmitter()
+    now_mono_ms = 10_000
+
+    ev1 = emitter.evidence_at(_TOOL_CALL_ID, now_mono_ms, _STAGE5_EVENT_LOG)
+    ev2 = emitter.evidence_at(_TOOL_CALL_ID, now_mono_ms, _STAGE5_EVENT_LOG)
+
+    assert ev1 == ev2, f"evidence_at not deterministic: {ev1!r} != {ev2!r}"
+    # The last tool_progress_event is at ts=8000; now=10000 → ms_since=2000.
+    assert ev1.ms_since_last_filler == 2000
+    assert ev1.progress_stage == "aggregating"
+
+
+def test_policy_replay_stage5_decide_determinism():
+    """Tier B: decide() bit-identical for PolicyInputs with tool_progress_evidence.
+
+    Feeds evidence derived from the recorded event log into PolicyInputs and
+    calls decide() twice; asserts the SpeakDecision is bit-identical.
+    POLICY_VERSION is at least "v0.1f" (forward-compatible assertion).
+    """
+    assert speak_policy.POLICY_VERSION >= "v0.1f", (
+        f"POLICY_VERSION {speak_policy.POLICY_VERSION!r} < 'v0.1f'"
+    )
+
+    emitter = ToolProgressEmitter()
+    evidence = emitter.evidence_at(_TOOL_CALL_ID, 10_000, _STAGE5_EVENT_LOG)
+
+    inputs = PolicyInputs(
+        user_speaking=False,
+        eou_probability=0.9,
+        assistant_speaking=False,
+        scene_change_score=0.0,
+        deictic_reference=False,
+        user_addressed_agent=True,
+        urgency_score=0.0,
+        proactivity_budget_remaining={},
+        privacy_mode="normal",
+        current_task_mode="normal",
+        social_mode="user_addressing_agent",
+        risk_mode="normal",
+        cooldown_state={},
+        attachment_risk_level=0.0,
+        tool_status="in_progress",
+        tool_progress_evidence=evidence,
+    )
+
+    d1 = speak_policy.decide(inputs, signal_event_ids=["evt-004"])
+    d2 = speak_policy.decide(inputs, signal_event_ids=["evt-004"])
+
+    assert astuple(d1) == astuple(d2), (
+        f"Tier B violated for tool_status inputs: {astuple(d1)!r} != {astuple(d2)!r}"
+    )
+    assert d1.action_type == "tool_status"
+    assert d1.primary_reason_code == ReasonCode.PROACTIVITY_BUDGET_AVAILABLE
