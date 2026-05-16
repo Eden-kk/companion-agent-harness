@@ -84,13 +84,13 @@ class CoreUserProfileStore:
         self._save(data)
         return CommitResult.COMMITTED
 
-    def retrieve(self, query: str, top_k: int = 5) -> list[MemoryItem]:
+    def retrieve(self, query: str, top_k: int = 5, include_history: bool = False) -> list[MemoryItem]:
         data = self._load()
         tokens = query.lower().split()
         results: list[MemoryItem] = []
         for raw in data.values():
             item = _item_from_dict(dict(raw))
-            if not _is_active(item):
+            if not include_history and not _is_active(item):
                 continue
             text = json.dumps(item.content).lower()
             if any(t in text for t in tokens):

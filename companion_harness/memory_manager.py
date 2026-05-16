@@ -52,8 +52,20 @@ class _NullEmbeddingAdapter:
 
 @runtime_checkable
 class MemoryManager(Protocol):
+    """Bi-temporal retrieve contract (issue #104):
+
+    An item is "active" iff:
+      - valid_to is None (no expiry), OR valid_to > now_utc() (future expiry); AND
+      - superseded_by is None (not replaced by a correction record).
+
+    Default retrieve() MUST exclude items that fail either condition.
+    retrieve(..., include_history=True) MUST include all items (active + invalidated).
+    Forget = set valid_to = now_utc(), leave superseded_by = None.
+    Correction = set valid_to = now_utc() AND superseded_by = new_item.item_id on the old item.
+    Hard delete = remove from store entirely (item not returned even with include_history=True).
+    """
     def commit(self, item: MemoryItem, privacy_mode: str = "normal") -> CommitResult: ...
-    def retrieve(self, query: str, top_k: int = 5) -> list[MemoryItem]: ...
+    def retrieve(self, query: str, top_k: int = 5, include_history: bool = False) -> list[MemoryItem]: ...
     def forget(self, item_id: str) -> None: ...
     def hard_delete(self, item_id: str) -> None: ...
     def retrieve_shared_moments(self, n: int = 5) -> list[MemoryItem]: ...
@@ -65,7 +77,7 @@ class MemoryManagerStub:
     def commit(self, item: MemoryItem, privacy_mode: str = "normal") -> CommitResult:
         raise NotImplementedError("MemoryManager.commit: wired at Stage 4")
 
-    def retrieve(self, query: str, top_k: int = 5) -> list[MemoryItem]:
+    def retrieve(self, query: str, top_k: int = 5, include_history: bool = False) -> list[MemoryItem]:
         raise NotImplementedError("MemoryManager.retrieve: wired at Stage 4")
 
     def forget(self, item_id: str) -> None:
