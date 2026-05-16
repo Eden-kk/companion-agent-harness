@@ -94,6 +94,23 @@
   .seam-row .seam-toggle { background: #1f2530; color: var(--fg); border: 1px solid #2c3340; padding: 2px 7px; cursor: pointer; border-radius: 3px; font: inherit; font-size: 10.5px; white-space: nowrap; }
   .seam-row .seam-toggle:hover { border-color: var(--accent); color: var(--accent); }
   .seam-row .seam-toggle:disabled { opacity: 0.45; cursor: not-allowed; }
+  /* ---- Audit filter bar (F2) ---- */
+  .filter-bar { background: #11151c; border-bottom: 1px solid #1f2530; padding: 5px 10px; display: flex; flex-direction: column; gap: 4px; flex-shrink: 0; }
+  .filter-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .filter-row .filter-label { font-size: 10px; color: var(--muted); white-space: nowrap; }
+  .filter-search { background: #161a22; color: var(--fg); border: 1px solid #2c3340; padding: 2px 6px; border-radius: 3px; font: inherit; font-size: 10.5px; flex: 1; min-width: 80px; }
+  .filter-search:focus { outline: none; border-color: var(--accent); }
+  .filter-chip { background: #161a22; color: var(--fg); border: 1px solid #2c3340; padding: 1px 5px; border-radius: 3px; font: inherit; font-size: 10px; cursor: pointer; white-space: nowrap; }
+  .filter-chip.active { border-color: var(--accent); color: var(--accent); background: rgba(95,179,255,0.08); }
+  .filter-counter { font-size: 10px; color: var(--muted); white-space: nowrap; margin-left: auto; }
+  .type-checklist { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+  .type-check-label { display: flex; align-items: center; gap: 2px; font-size: 10px; color: var(--fg); cursor: pointer; white-space: nowrap; padding: 1px 4px; border-radius: 2px; border: 1px solid transparent; }
+  .type-check-label:hover { border-color: #2c3340; }
+  .type-check-label input[type=checkbox] { accent-color: var(--accent); margin: 0; }
+  .type-check-label.off { opacity: 0.45; }
+  .row.pinned { background: rgba(95, 179, 255, 0.08); border-left: 2px solid var(--accent); }
+  .row .pin-btn { background: none; border: none; cursor: pointer; color: var(--muted); font-size: 11px; padding: 0 2px; margin-left: 2px; }
+  .row .pin-btn.pinned { color: var(--accent); }
   .audit-tail { border-top: 1px solid #1f2530; background: #11151c; padding: 8px 12px; font-size: 10.5px; flex-shrink: 0; }
   .audit-tail .audit-head { display: flex; align-items: center; gap: 6px; color: var(--accent); text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; font-size: 10.5px; margin-bottom: 4px; }
   .audit-tail .audit-head .label { flex: 1; }
@@ -148,6 +165,18 @@
   </section>
   <section class="panel">
     <h2>TurnSignals / SpeakDecisions / causal chain</h2>
+    <div class="filter-bar" id="audit-filter-bar">
+      <div class="filter-row">
+        <span class="filter-label">search:</span>
+        <input id="filter-search" class="filter-search" type="text" placeholder="event type, payload, caused_by…" autocomplete="off" />
+        <button id="filter-rc-btn" class="filter-chip" title="Filter by reason code">reason code: all</button>
+        <span id="filter-counter" class="filter-counter">Showing 0 of 0</span>
+      </div>
+      <div class="filter-row">
+        <span class="filter-label">types:</span>
+        <div class="type-checklist" id="type-checklist"></div>
+      </div>
+    </div>
     <div class="rows" id="signal-rows"></div>
     <div class="log" id="log"></div>
   </section>
@@ -1272,6 +1301,234 @@
 
   loadSeams();
   loadConfig();
+
+  // ---------------- Audit panel filter (F2) ----------------
+  // Filter is purely render-time: the event stream is always fully ingested;
+  // only display is affected. State persisted to localStorage under "auditFilter".
+
+  const LS_KEY = "auditFilter";
+
+  // High-signal types ON by default; high-volume types OFF.
+  const DEFAULT_ON = new Set([
+    "policy_decision", "speak_decision", "rubric_violation",
+    "model_swap_completed", "model_swap_rejected",
+    "reasoner_budget_exhausted", "signal_producer_fallback",
+    "asr_transcript_emitted", "addressing_classified", "eou",
+    "vad_turn_signal", "decision_trace_emitted",
+    "harness_init", "session_open",
+    "log_drop_or_degrade", "orchestrator_started", "orchestrator_stopped",
+    "config_change", "operator_action",
+  ]);
+  const DEFAULT_OFF = new Set(["vad_frame", "raw_audio_chunk", "audio_frame"]);
+
+  // All event types seen so far (for dynamic checklist).
+  const seenTypes = new Set();
+
+  // Filter state
+  let filterSearch = "";
+  let filterReasonCode = "";  // "" = all
+  let filterTypes = new Map(); // type → bool
+  const pinnedIds = new Set();
+
+  // All signal-panel events (rendered or not), for re-render on filter change.
+  const allSignalEvents = [];
+
+  function loadFilterState() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(LS_KEY) || "{}");
+      if (saved.search) filterSearch = saved.search;
+      if (saved.reasonCode) filterReasonCode = saved.reasonCode;
+      if (saved.types && typeof saved.types === "object") {
+        for (const [k, v] of Object.entries(saved.types)) filterTypes.set(k, !!v);
+      }
+      if (Array.isArray(saved.pinned)) saved.pinned.forEach((id) => pinnedIds.add(id));
+    } catch (e) { /* ignore corrupted storage */ }
+  }
+
+  function saveFilterState() {
+    try {
+      const types = {};
+      for (const [k, v] of filterTypes) types[k] = v;
+      localStorage.setItem(LS_KEY, JSON.stringify({
+        search: filterSearch,
+        reasonCode: filterReasonCode,
+        types,
+        pinned: Array.from(pinnedIds),
+      }));
+    } catch (e) {}
+  }
+
+  function defaultForType(t) {
+    if (DEFAULT_OFF.has(t)) return false;
+    return true; // default ON for anything not explicitly off
+  }
+
+  function isTypeEnabled(t) {
+    if (filterTypes.has(t)) return filterTypes.get(t);
+    return defaultForType(t);
+  }
+
+  function eventMatchesFilter(evt) {
+    const t = evt.event_type || "";
+    if (!isTypeEnabled(t)) return false;
+    if (filterReasonCode) {
+      const rc = (evt.payload_inline || {}).primary_reason_code || "";
+      if (rc !== filterReasonCode) return false;
+    }
+    if (filterSearch) {
+      const needle = filterSearch.toLowerCase();
+      const haystack = [
+        t,
+        JSON.stringify(evt.payload_inline || ""),
+        (evt.caused_by || []).join(" "),
+      ].join(" ").toLowerCase();
+      if (!haystack.includes(needle)) return false;
+    }
+    return true;
+  }
+
+  const filterSearchEl = document.getElementById("filter-search");
+  const filterCounterEl = document.getElementById("filter-counter");
+  const filterRcBtn = document.getElementById("filter-rc-btn");
+  const typeChecklist = document.getElementById("type-checklist");
+
+  // Reason-code chip filter: cycle through seen reason codes.
+  const seenReasonCodes = new Set();
+  filterRcBtn.addEventListener("click", () => {
+    const codes = ["", ...Array.from(seenReasonCodes).sort()];
+    const idx = codes.indexOf(filterReasonCode);
+    filterReasonCode = codes[(idx + 1) % codes.length] || "";
+    filterRcBtn.textContent = filterReasonCode ? `rc: ${filterReasonCode}` : "reason code: all";
+    filterRcBtn.classList.toggle("active", !!filterReasonCode);
+    saveFilterState();
+    applyFilter();
+  });
+
+  filterSearchEl.addEventListener("input", () => {
+    filterSearch = filterSearchEl.value;
+    saveFilterState();
+    applyFilter();
+  });
+
+  function ensureTypeCheckbox(t) {
+    if (seenTypes.has(t)) return;
+    seenTypes.add(t);
+
+    const label = document.createElement("label");
+    label.className = "type-check-label";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = isTypeEnabled(t);
+    cb.dataset.evtType = t;
+    label.appendChild(cb);
+    label.appendChild(document.createTextNode(t));
+    label.classList.toggle("off", !cb.checked);
+    cb.addEventListener("change", () => {
+      filterTypes.set(t, cb.checked);
+      label.classList.toggle("off", !cb.checked);
+      saveFilterState();
+      applyFilter();
+    });
+    typeChecklist.appendChild(label);
+  }
+
+  function applyFilter() {
+    let shown = 0;
+    const total = allSignalEvents.length;
+
+    // Pinned events always at top; normal events filtered.
+    const pinned = allSignalEvents.filter((e) => pinnedIds.has(e.event_id));
+    const normal = allSignalEvents.filter((e) => !pinnedIds.has(e.event_id) && eventMatchesFilter(e));
+    shown = pinned.length + normal.length;
+
+    // Re-render signal-rows in order: pinned first, then matching.
+    signalRows.innerHTML = "";
+    for (const evt of [...pinned, ...normal]) {
+      const row = buildSignalRow(evt);
+      signalRows.appendChild(row);
+    }
+    filterCounterEl.textContent = `Showing ${shown} of ${total}`;
+    signalRows.scrollTop = signalRows.scrollHeight;
+  }
+
+  function buildSignalRow(evt) {
+    const row = document.createElement("div");
+    const isPinned = pinnedIds.has(evt.event_id);
+    const isOrphan = evt._orphan;
+    row.className = "row " + (isOrphan ? "orphan " : "") + (evt.event_type || "") + (isPinned ? " pinned" : "");
+
+    const kind = document.createElement("div");
+    kind.className = "kind";
+    let kindLabel = evt.event_type || "?";
+    if (evt.event_type === "policy_decision" && evt.payload_inline) {
+      const at = evt.payload_inline.action_type;
+      const rc = evt.payload_inline.primary_reason_code;
+      if (at || rc) kindLabel += ` → ${at || "?"} / ${rc || "?"}`;
+    }
+    kind.textContent = kindLabel;
+
+    const body = document.createElement("div");
+    body.className = "body";
+    const cb = (evt.caused_by || []).map((s) => s.slice(0, 12)).join(",") || "-";
+    body.innerHTML = `<small>${fmtTs(evt.timestamp_mono_ms)} src=${evt.source} seq=${evt.seq_no} caused_by=[${cb}] hash=${(evt.payload_hash || "").slice(0,12)}</small>`;
+
+    const pinBtn = document.createElement("button");
+    pinBtn.className = "pin-btn" + (isPinned ? " pinned" : "");
+    pinBtn.title = isPinned ? "Unpin" : "Pin to top";
+    pinBtn.textContent = isPinned ? "📌" : "📍";
+    pinBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (pinnedIds.has(evt.event_id)) pinnedIds.delete(evt.event_id);
+      else pinnedIds.add(evt.event_id);
+      saveFilterState();
+      applyFilter();
+    });
+
+    row.appendChild(kind);
+    row.appendChild(body);
+    row.appendChild(pinBtn);
+    row.dataset.eventId = evt.event_id || "";
+    eventRowsById.set(evt.event_id, row);
+    return row;
+  }
+
+  // Intercept signal-panel events before they hit the original renderEvent.
+  // We store them in allSignalEvents and re-render via applyFilter instead.
+  const _origRenderEvent = renderEvent;
+
+  // Override the signal-rows portion of renderEvent: track all signal events.
+  subscribeEvents((evt) => {
+    const t = evt.event_type || "";
+    // Only track events that would go to signalRows.
+    const isIngest = evt.payload_kind === "raw_audio" || evt.payload_kind === "raw_video";
+    if (isIngest) return;
+    const goesSignal = SIGNAL_TYPES.has(t) || evt.payload_kind === "signal";
+    if (!goesSignal) return;
+
+    // Track seen reason codes
+    const rc = (evt.payload_inline || {}).primary_reason_code;
+    if (rc) seenReasonCodes.add(rc);
+
+    ensureTypeCheckbox(t);
+    allSignalEvents.push(evt);
+    while (allSignalEvents.length > 500) allSignalEvents.shift();
+    applyFilter();
+  });
+
+  // Also intercept ingest-side events to add type checkboxes for them.
+  subscribeEvents((evt) => {
+    const t = evt.event_type || "";
+    if (t && !seenTypes.has(t)) ensureTypeCheckbox(t);
+  });
+
+  // Initialize filter UI from saved state.
+  loadFilterState();
+  filterSearchEl.value = filterSearch;
+  if (filterReasonCode) {
+    filterRcBtn.textContent = `rc: ${filterReasonCode}`;
+    filterRcBtn.classList.add("active");
+  }
+  filterCounterEl.textContent = "Showing 0 of 0";
 })();
 </script>
 </body>
