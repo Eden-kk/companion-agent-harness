@@ -99,8 +99,8 @@ If any of the three gates slip, v0.2d stays in plan-only state. **No partial fra
 tests/fixtures/phase_c/<session_id>/
   event_log.jsonl          # replay-safe event log (per spec invariant #10 + privacy policy)
   audio.wav                # mono, 16 kHz, source audio
-  ground_truth_speakers.json   # per-utterance: {utterance_id, t_start_ms, t_end_ms, speaker_id, addressed_agent: bool}
-  manifest.json            # session_id, recording_date, speaker_count, duration_ms, license, redaction_notes
+  ground_truth_speakers.json   # per-utterance: {utterance_id, t_start_ms, t_end_ms, speaker_id, addressed_agent: bool}; top-level field: schema_version (string, e.g. "1.0") for forward-compatibility (v0.3+)
+  manifest.json            # session_id, recording_date, speaker_count, duration_ms, license, redaction_notes, schema_version (string, e.g. "1.0")
 ```
 
 The event log is the canonical timing/causality artifact. `audio.wav` is the playback artifact for the live diarization adapter under FixtureScenarioDriver's `DirectAudioInputFeeder`. `ground_truth_speakers.json` is the labelling-team output that the speaker-attributed metric compares against.
@@ -133,7 +133,7 @@ The event log is the canonical timing/causality artifact. `audio.wav` is the pla
 ### OQ-4 — Recording-consent posture for the fixture pack
 
 **Lean:** Three options, in preference order:
-1. Synthesized multi-speaker audio (combine single-speaker public-domain TTS samples with deterministic timing). Pro: zero consent risk. Con: not "real" diarization input.
+1. Synthesized multi-speaker audio (combine single-speaker public-domain TTS samples with deterministic timing using **Kokoro TTS** — the same TTS engine used elsewhere in the harness; see `companion_harness/tts_minicpm_native.py` for the existing adapter pattern). Pro: zero consent risk. Con: not "real" diarization input.
 2. Public-domain or CC-BY multi-speaker recordings (LibriVox dialogues, Mozilla Common Voice paired clips). Pro: real audio; license-clean. Con: not conversational.
 3. Operator-recorded sessions with documented consent + redaction. Pro: realistic. Con: requires consent process.
 
@@ -181,15 +181,15 @@ The event log is the canonical timing/causality artifact. `audio.wav` is the pla
    - For each utterance in the ground-truth file, yield one `EvaluationCase` with:
      - `case_id = f"{session_id}_{utterance_id}"`
      - `fixture_ref = str(session_subdir)`
-     - `expected_outcomes = {"addressed_agent": utterance["addressed_agent"], "speaker_id": utterance["speaker_id"]}`
-     - `policy_version` sourced from the v0.2b-introduced `POLICY_VERSION` constant (do NOT hardcode a string literal — coding rule 3).
+     - `expected_metrics = {"addressed_agent": utterance["addressed_agent"], "speaker_id": utterance["speaker_id"]}` (these per-utterance expectations are stored in the `expected_metrics` dict — `EvaluationCase` has no `expected_outcomes` or top-level `policy_version` fields; see `companion_harness/schemas.py:289`).
+     - `benchmark_version` sourced from the v0.2b-introduced `POLICY_VERSION` constant (do NOT hardcode a string literal — coding rule 3); stored in `EvaluationCase.benchmark_version`.
    - `split` parameter respected if the manifest declares a split partition; otherwise treat as a no-op and yield all utterances (synthetic-mode fixture packs are small enough to not need splits).
 4. Surface area is minimal: no examiner instantiation, no LLM call, no live audio synthesis. The recorded fixture IS the case data.
 5. NO model SDK imports (eval-subsystem-spec.md Anchor 1 — import direction). Pure stdlib + `companion_harness.schemas`.
 
 **Test plan**
 - New unit test `tests/test_live_examiner_case_source.py`:
-  - Instantiate with `mode="synthetic"` against a temp dir containing 1 synthetic session subdir; assert `iter_cases("test")` yields the expected number of `EvaluationCase` instances with correct `expected_outcomes`.
+  - Instantiate with `mode="synthetic"` against a temp dir containing 1 synthetic session subdir; assert `iter_cases("test")` yields the expected number of `EvaluationCase` instances with correct `expected_metrics` contents.
   - Instantiate with `mode="real"`; assert `NotImplementedError` raised.
   - Run under canonical venv: `/raid/yid042/venvs/companion-harness/bin/python3 -m pytest tests/test_live_examiner_case_source.py -q`.
 - Import-direction contract: `tests/test_runtime_does_not_import_evals` already enforces Anchor 1; running the full suite after T1 lands must keep it green.
@@ -221,8 +221,8 @@ The event log is the canonical timing/causality artifact. `audio.wav` is the pla
 
 **Implementation sketch**
 1. Per OQ-4 lean, curate ≥3 sessions across the option-1/option-2/option-3 mix. Minimum acceptable set:
-   - `phase_c_synthetic_two_speaker_001` — option-1 (synthesized; TTS-stitched).
-   - `phase_c_synthetic_three_speaker_001` — option-1 (synthesized; 3 speakers).
+   - `phase_c_synthetic_two_speaker_001` — option-1 (synthesized; Kokoro TTS-stitched, deterministic seed).
+   - `phase_c_synthetic_three_speaker_001` — option-1 (synthesized; Kokoro TTS-stitched, deterministic seed; 3 speakers).
    - `phase_c_libripaired_two_speaker_001` — option-2 (public-domain CC-BY).
    (Option-3 deferred unless an operator-recorded session is ready.)
 2. For each session:
@@ -237,7 +237,7 @@ The event log is the canonical timing/causality artifact. `audio.wav` is the pla
 
 **Test plan**
 - The fixture-pack PR's own success criterion is structural (files exist, schemas validate). End-to-end testing is T4.
-- Add `tests/test_phase_c_fixture_manifest_valid.py`: iterate `tests/fixtures/phase_c/*/manifest.json`, assert required keys present (`session_id`, `recording_date`, `speaker_count`, `duration_ms`, `license`, `redaction_notes`).
+- Add `tests/test_phase_c_fixture_manifest_valid.py`: iterate `tests/fixtures/phase_c/*/manifest.json`, assert required keys present (`session_id`, `recording_date`, `speaker_count`, `duration_ms`, `license`, `redaction_notes`, `schema_version`); also assert `ground_truth_speakers.json` top-level `schema_version` key is present.
 
 **Success criterion**
 ```
@@ -261,13 +261,13 @@ du -sh tests/fixtures/phase_c/  # ≤ 60M
 - `companion_harness/evals/metrics/__init__.py` — surgical export addition; do not rewrite.
 
 **Implementation sketch**
-1. Module docstring: state the three metrics this module implements (OQ-3 lean), their input shape (a `ReplayRun` whose event log contains diarization output + a paired `ground_truth_speakers.json` accessible via `case.fixture_ref`), and their output shape (`MetricValue` per `companion_harness/evals/schemas.py`).
+1. Module docstring: state the three metrics this module implements (OQ-3 lean), their input shape (a `ReplayRun` whose event log contains diarization output + a paired `ground_truth_speakers.json` passed as a `Path` by the caller — `ReplayRun` has no `case` field; the fixture path comes from `EvaluationCase.fixture_ref` at the call site), and their output shape (`MetricValue` per `companion_harness/evals/schemas.py`).
 2. Three concrete metric classes implementing the `Metric` Protocol (`companion_harness/evals/protocols.py:37-41`):
    - `class AddressingAccuracyPerSpeakerMetric:` — `name = "addressing_accuracy_per_speaker"`. `compute(replay_run)` reads the replay's event log for `addressing_classified` events, matches each event's `current_speaker_id` against the ground-truth label by utterance_id, returns a per-speaker dict + aggregate unweighted mean as a `MetricValue` with `breakdown` payload.
    - `class TurnGapMsDistributionPerSpeakerMetric:` — `name = "turn_gap_ms_distribution_per_speaker"`. Computes per-speaker inter-utterance gap histograms from the event log timing, returns histogram bins as `breakdown`.
-   - `class ReplayMatchRateVsGroundTruthMetric:` — `name = "replay_match_rate_vs_ground_truth"`. For each utterance, compare the harness's recorded `SpeakDecision.action_class` against the ground-truth `addressed_agent` expectation (addressed → `SPEAK`; not-addressed → `STAY_SILENT`). Returns fraction matched as the headline scalar.
+   - `class ReplayMatchRateVsGroundTruthMetric:` — `name = "replay_match_rate_vs_ground_truth"`. For each utterance, compare the harness's recorded `SpeakDecision.action_type` (field name per `companion_harness/schemas.py`; read from `payload_inline.action_type` in the event log, matching the pattern at `companion_harness/replay.py`) against the ground-truth `addressed_agent` expectation (addressed → `SPEAK`; not-addressed → `STAY_SILENT`). Returns fraction matched as the headline scalar.
 3. NO model SDK imports. Pure stdlib + `companion_harness.schemas` + `companion_harness.evals.schemas`.
-4. Metric input access pattern: the metrics read `ground_truth_speakers.json` via `replay_run.case.fixture_ref / "ground_truth_speakers.json"`. This is the same pattern Phase A.5's `FixtureScenarioDriver` uses for fixture-asset access — no new I/O abstraction.
+4. Metric input access pattern: the metrics receive the fixture path alongside the `ReplayRun` (e.g., as a `Path` passed from the test/adapter, or resolved from `EvaluationCase.fixture_ref` by the caller before invoking `compute()`); `ReplayRun` has no `case` field (see `companion_harness/schemas.py:300-326`). The concrete pattern: caller passes `fixture_path: Path` to `compute(replay_run, fixture_path)`, and the metric reads `fixture_path / "ground_truth_speakers.json"`. No new I/O abstraction.
 5. Failure-slice integration: when `ReplayMatchRateVsGroundTruthMetric` returns < 1.0, the per-utterance mismatches are surfaced via the standard `FailureSliceExtractor` (Phase B2 surface). T3 does NOT reimplement slice extraction; it just emits structured per-utterance mismatch records that the extractor can consume.
 
 **Test plan**
@@ -325,7 +325,7 @@ pytest tests/test_phase_c_runs_end_to_end_on_real_diarized_session.py -q  # gree
 
 **Anchors locked** — v0.2 roadmap pinned-success-criterion #3 (Phase C runs end-to-end against the fixture pack).
 
-**Cross-references** — `companion_harness/evals/scenarios/fixture.py` (`FixtureScenarioDriver`); v0.2b's `DiarizationAdapter` surface; `companion_harness/replay.py` (when `run_tier_b_replay` becomes available — currently Phase A.5+1; the test does NOT require it).
+**Cross-references** — `companion_harness/evals/scenarios/fixture.py` (`FixtureScenarioDriver`); v0.2b's `DiarizationAdapter` surface; `companion_harness/replay.py` (currently an 8-line docstring stub; `run_tier_b_replay` is Phase A.5+1 — the test does NOT require it).
 
 **Blocker dependencies** — T1, T2, T3 all merged; v0.2b Wave 2 Tasks 7-10 merged + `--enable-diarization` defaults documented; Phase A.5 Task 0c green.
 
@@ -394,8 +394,8 @@ grep -c "plan-v0.2d-execution" docs/roadmap-eval-draft.md  # ≥ 1
 
 ## §Fixture manifest (additive to v0.2 roadmap)
 
-- `phase_c_synthetic_two_speaker_001` — option-1 (synthesized TTS-stitched), 2 speakers, ≤30 s.
-- `phase_c_synthetic_three_speaker_001` — option-1, 3 speakers, ≤30 s.
+- `phase_c_synthetic_two_speaker_001` — option-1 (synthesized; Kokoro TTS-stitched, deterministic seed), 2 speakers, ≤30 s.
+- `phase_c_synthetic_three_speaker_001` — option-1 (synthesized; Kokoro TTS-stitched, deterministic seed), 3 speakers, ≤30 s.
 - `phase_c_libripaired_two_speaker_001` — option-2 (public-domain CC-BY pairing), 2 speakers, ≤30 s. **This is the canonical fixture for T4's headline metric.**
 
 (Operator-recorded session — option-3 — is deferred unless an operator records and consent-doc-s a session during v0.2d execution.)
@@ -423,8 +423,8 @@ These add to v0.2 roadmap's existing fixture-manifest line for `live_examiner_di
 - v0.2 milestone roadmap: `docs/roadmap-v0.2-draft.md` (Wave 4 Tasks 15a/15b; pinned-success-criterion #3).
 - Eval-subsystem roadmap: `docs/roadmap-eval-draft.md` (Phase C — updated by T5).
 - Sibling v0.2 plans (in-flight): `docs/plan-v0.2a-execution.md` (BackgroundReasoner), `docs/plan-v0.2b-execution.md` (diarization — **dependency**), `docs/plan-v0.2c-execution.md` (benchmark loaders).
-- Phase A.5 plan-of-record: `docs/plan-eval-phase-a-execution.md` (precedes Phase A.5; Phase A.5 is roadmap-eval-draft.md §Phase A.5).
-- Replay surface: `companion_harness/replay.py` (currently 7 lines of docstring; `run_tier_b_replay` is Phase A.5+1 — v0.2d does NOT depend on its implementation).
+- Phase A.5 plan-of-record: `docs/plan-eval-phase-a-execution.md` (untracked draft — not on main; Phase A.5 is `docs/roadmap-eval-draft.md` §Phase A.5; the stable protocol surface is `companion_harness/evals/protocols.py`).
+- Replay surface: `companion_harness/replay.py` (currently an 8-line module docstring stub; `run_tier_b_replay` and `assert_bit_identical` are Phase A.5+1 deliverables — v0.2d does NOT depend on their implementation). Protocol surface is at `companion_harness/evals/protocols.py`.
 - Fixture pattern reference: `companion_harness/fixtures/policy_replay_001/case.json` (per-case dir shape).
 
 ---
