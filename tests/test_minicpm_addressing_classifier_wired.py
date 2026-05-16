@@ -25,7 +25,7 @@ from manual_test_console.live_pipeline import build_live_pipeline
 
 
 class _FakeStreamingModel:
-    """Minimal StreamingDuplexModel + chat() stub (doubles as minicpm_text_model)."""
+    """Minimal StreamingDuplexModel + classify_yes_no() stub (doubles as minicpm_text_model)."""
 
     def infer(self, audio_frame: bytes, video_frame: bytes | None = None) -> ThinkerProposal | None:
         return None
@@ -35,6 +35,9 @@ class _FakeStreamingModel:
 
     def chat(self, prompt: str, max_new_tokens: int = 4) -> str:
         return "yes"
+
+    def classify_yes_no(self, prompt: str) -> tuple[bool, float]:
+        return True, 0.9
 
 
 async def _drain(_event: Event) -> None:

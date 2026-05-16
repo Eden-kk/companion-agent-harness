@@ -197,6 +197,22 @@ EVENT_TYPE_SCHEMAS: dict[str, StageSixEventSchema] = {
         ),
     ),
 
+    # logprob classifier: ambivalent result (prob_yes in [0.45, 0.55]).
+    # Payload: confidence (float), transcript_preview (str, 80-char truncation),
+    # classifier (str).  Sensitivity is sensitive (contains user speech preview).
+    "addressing_classifier_low_confidence": StageSixEventSchema(
+        payload_kind="signal",
+        subject_class="self",
+        sensitivity="sensitive",
+        retention_policy_id="signal_default_30d",
+        required_fields=("confidence", "transcript_preview", "classifier"),
+        notes=(
+            "Emitted when classify_yes_no() returns prob_yes in [0.45, 0.55] — "
+            "model is ambivalent.  Lets operators spot prompt-design problems. "
+            "transcript_preview is the first 80 chars of user speech (SensitiveField)."
+        ),
+    ),
+
     # Task 9 (Wave 5): receipt for user reduction command compliance
     # (spec line 678-680).  Reuses commit_audit_30d retention.
     "user_reduction_command_applied": StageSixEventSchema(
