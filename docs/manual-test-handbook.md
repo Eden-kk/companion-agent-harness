@@ -139,7 +139,7 @@ Each scenario is meant to take 1–3 minutes. Watch the event panel and decision
 
 **D. Talk past the agent.** Say "ugh, this code is broken" (not addressed). Expected: `addressing_classified` returns `user_addressed_agent=False` → `policy_decision` shows `action_type=silence` with `NOT_ADDRESSED_TO_AGENT`.
 
-**E. Thinking pause.** Say "I was thinking... [1.5 s silence] ...maybe we should." Expected: SmartTurn v3 observably suppresses mid-pause EOU — watch for a `smart_turn_signal` with `p_done < 0.5` during the pause. Final EOU on the continuation fires `full_response` if addressed.
+**E. Thinking pause.** Say "I was thinking... [1.5 s silence] ...maybe we should." Expected: SmartTurn v3 observably suppresses mid-pause EOU — watch for a `vad_signal_suppressed_by_smart_turn` event during the pause window and no `policy_decision` until the continuation. Final EOU on the continuation fires `full_response` if addressed. (Finding 13 closed: fix in `_detector_fanout_task` vetoes VAD signal when SmartTurn p_continue > p_done.)
 
 **F. Backchannel.** Say "mm-hmm" or "yeah". Expected: `backchannel_classification` with a non-zero `p_backchannel`. The `emit_threshold=0.3` gate keeps noise out. Policy treats it as non-interrupting acknowledgement.
 

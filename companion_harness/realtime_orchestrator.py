@@ -425,14 +425,48 @@ class StreamingRealtimeOrchestrator:
                 self._turn_audio_buffer.extend(frame_bytes)
 
     async def _detector_fanout_task(self) -> None:
-        """T1: Fan audio frames to all detectors; forward TurnSignals and VAD onset frames to T2."""
+        """T1: Fan audio frames to all detectors; forward TurnSignals and VAD onset frames to T2.
+
+        SmartTurn veto (Finding 13): when SmartTurn fires with p_continue > p_done
+        (thinking-pause window), its signal is authoritative and any VAD signal from
+        the same frame is suppressed.  Both detectors are still called every frame so
+        their internal buffers advance correctly; the veto only affects what is placed
+        on _t2_inbox.
+        """
         while True:
             frame_bytes, chunk_event_id = await self._tee_to_detectors.get()
             caused_by = [chunk_event_id]
 
-            for detector in (self._vad_detector, self._smart_turn_detector, self._backchannel_classifier):
-                sig: TurnSignal | None = detector.process_frame(frame_bytes, caused_by)
-                if sig is not None:
+            vad_sig: TurnSignal | None = self._vad_detector.process_frame(frame_bytes, caused_by)
+            smart_sig: TurnSignal | None = self._smart_turn_detector.process_frame(frame_bytes, caused_by)
+            bc_sig: TurnSignal | None = self._backchannel_classifier.process_frame(frame_bytes, caused_by)
+
+            # SmartTurn veto: when SmartTurn fires p_continue > p_done (thinking pause),
+            # suppress both the VAD signal and the SmartTurn signal from reaching the EOU
+            # gate.  The SmartTurn signal itself carries p_done < p_continue, which would
+            # still trigger a premature policy decision if forwarded.  Log the suppression
+            # for audit (invariant #1) and wait for the next silence candidate — at which
+            # point SmartTurn may return p_done > p_continue (real end-of-turn).
+            smart_turn_vetoes_eou = (
+                smart_sig is not None and smart_sig.p_continue > smart_sig.p_done
+            )
+
+            if smart_turn_vetoes_eou:
+                # Log suppression events for both signals that are being held back.
+                suppressed_evt_id = (
+                    smart_sig.evidence_event_ids[0]
+                    if smart_sig.evidence_event_ids
+                    else chunk_event_id
+                )
+                self._emit(
+                    "vad_signal_suppressed_by_smart_turn",
+                    [suppressed_evt_id],
+                    "signal",
+                )
+            else:
+                for sig in (vad_sig, smart_sig, bc_sig):
+                    if sig is None:
+                        continue
                     signal_evt_id = sig.evidence_event_ids[0] if sig.evidence_event_ids else chunk_event_id
                     await self._t2_inbox.put((sig, signal_evt_id))
 
