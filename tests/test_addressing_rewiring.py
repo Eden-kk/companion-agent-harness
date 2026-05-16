@@ -389,10 +389,8 @@ async def test_signal_producer_fallback_event_for_addressing(tmp_path: Path) -> 
     assert evt.caused_by, "signal_producer_fallback must have caused_by[] (invariant #1)"
 
 
-def test_null_minicpm_classifier_marker() -> None:
-    """UNAVAILABLE: #157 marker present in addressing_classifier source (Stage-0 contract)."""
-    source = inspect.getsource(_acmod)
-    assert "# UNAVAILABLE: #157" in source, (
-        "addressing_classifier.py must contain '# UNAVAILABLE: #157' marker "
-        "for libcudart blocker (Stage-0 contract test)"
-    )
+def test_null_minicpm_classifier_returns_none() -> None:
+    """_NullMiniCPMAddressingClassifier always returns None (safety-net fallback contract)."""
+    clf = _NullMiniCPMAddressingClassifier()
+    result = clf("hey companion", speaker_count=None, social_mode="user_addressing_agent")
+    assert result is None

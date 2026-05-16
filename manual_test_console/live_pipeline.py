@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from companion_harness.addressing_classifier import (
+    MiniCPMAddressingClassifierImpl,
     WakeWordAddressingClassifier,
     _NullMiniCPMAddressingClassifier,
 )
@@ -463,6 +464,7 @@ def build_live_pipeline(
     config_store: ConfigStore | None = None,
     blob_dir: Path | None = None,
     wire_sleep_time_agent: bool = False,
+    minicpm_text_model: Any = None,
 ) -> LivePipeline:
     """Construct a LivePipeline for one ingest session.
 
@@ -552,8 +554,10 @@ def build_live_pipeline(
 
     # MiniCPM-derived classifier is the final-product primary (issue #139).
     # WakeWordAddressingClassifier is the safety-net, active when MiniCPM returns None.
-    # UNAVAILABLE: #157 — libcudart blocker, MiniCPM-derived addressing unavailable.
-    minicpm_addressing = _NullMiniCPMAddressingClassifier()
+    if minicpm_text_model is not None:
+        minicpm_addressing = MiniCPMAddressingClassifierImpl(minicpm_text_model)
+    else:
+        minicpm_addressing = _NullMiniCPMAddressingClassifier()
     safety_net_addressing = WakeWordAddressingClassifier()
     deictic_detector = DeicticDetector(
         model=_NullDeicticModel(),
