@@ -57,7 +57,7 @@ def _run_adapter(info: object, output: str, split: str, run_id: str | None = Non
                 "case_id": replay_run.case_id,
                 "final_status": replay_run.final_status,
                 "results": replay_run.results,
-                "event_log_path": str(replay_run.event_log_path),
+                "event_log_path": str(replay_run.event_log_path) if replay_run.event_log_path is not None else None,
             })
             status_str = "OK" if passed else "ERROR"
             print(f"  [{status_str}] {case.case_id}: {replay_run.final_status}")
@@ -80,7 +80,7 @@ def _run_adapter(info: object, output: str, split: str, run_id: str | None = Non
                     "case_id": replay_run.case_id,
                     "final_status": replay_run.final_status,
                     "results": replay_run.results,
-                    "event_log_path": str(replay_run.event_log_path),
+                    "event_log_path": str(replay_run.event_log_path) if replay_run.event_log_path is not None else None,
                 })
                 status_str = "OK" if passed else "ERROR"
                 print(f"  [{status_str}] {case.case_id}: {replay_run.final_status}")
@@ -149,7 +149,7 @@ def _run_candor(
                 "case_id": replay_run.case_id,
                 "final_status": replay_run.final_status,
                 "results": replay_run.results,
-                "event_log_path": str(replay_run.event_log_path),
+                "event_log_path": str(replay_run.event_log_path) if replay_run.event_log_path is not None else None,
             })
             status_str = "OK" if passed else "ERROR"
             print(f"  [{status_str}] {case.case_id}: {replay_run.final_status}")
@@ -237,7 +237,7 @@ def _run_fdb(
                 "case_id": replay_run.case_id,
                 "final_status": replay_run.final_status,
                 "results": replay_run.results,
-                "event_log_path": str(replay_run.event_log_path),
+                "event_log_path": str(replay_run.event_log_path) if replay_run.event_log_path is not None else None,
             })
             status_str = "OK" if passed else "ERROR"
             print(f"  [{status_str}] {case.case_id}: {replay_run.final_status}")
