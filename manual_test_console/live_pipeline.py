@@ -59,6 +59,8 @@ from manual_test_console.config_store import ConfigStore
 __all__ = [
     "LivePipeline",
     "build_live_pipeline",
+    "build_streaming_raw_pipeline",
+    "StreamingRawPipeline",
     "build_config_store",
     "EnergyVADModel",
     "SilenceSmartTurnModel",
@@ -690,3 +692,67 @@ def build_live_pipeline(
         deictic_model=deictic_model,
         embedder=embedder,
     )
+
+
+# ---------------------------------------------------------------------------
+# DEMO MODE: --minicpm-streaming-raw pipeline (bypasses SpeakPolicy + audit gates)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class StreamingRawPipeline:
+    """DEMO MODE: bypasses SpeakPolicy + audit gates per spec invariants #2/#4.
+
+    Per-session state for --minicpm-streaming-raw mode. Owns the
+    MiniCPMRawStreamingDriver; has no orchestrator, no VAD/ASR/addressing.
+    """
+
+    session_id: str
+    driver: Any  # MiniCPMRawStreamingDriver
+    vision_sidecar: Any = None  # always None in raw mode
+
+    async def start(self) -> None:
+        await self.driver.start()
+
+    async def stop(self) -> None:
+        await self.driver.stop()
+
+    def push_audio(self, frame_bytes: bytes, raw_audio_event_id: str) -> None:
+        self.driver.push_audio(frame_bytes, raw_audio_event_id)
+
+
+def build_streaming_raw_pipeline(
+    *,
+    session_id: str,
+    logger: EventLogger,
+    foreground_duplex_model: Any,
+    tts_adapter: Any,
+    audio_out_broker: AudioOutSinkTarget | None = None,
+) -> StreamingRawPipeline:
+    """DEMO MODE: bypasses SpeakPolicy + audit gates per spec invariants #2/#4.
+
+    Constructs a minimal pipeline: InputIngest audio -> MiniCPMRawStreamingDriver
+    -> tts_adapter -> audio_out_broker.  No orchestrator, no VAD, no ASR, no
+    addressing classifier, no SpeakPolicy.
+
+    API CONSTRAINT: MiniCPMStreamingModel does not support continuous
+    audio-in/audio-out via streaming_generate(). This driver uses infer_stream()
+    (the real available API), which yields ThinkerProposal (text). Proposals
+    bypass SpeakPolicy and are synthesized directly via tts_adapter.
+    """
+    from companion_harness.minicpm_raw_streaming_driver import MiniCPMRawStreamingDriver  # noqa: WPS433
+
+    shielded_logger = SharedLoggerProxy(logger)
+    if audio_out_broker is not None:
+        sink: Any = WebSocketAudioSink(session_id=session_id, broker=audio_out_broker)
+    else:
+        sink = None
+
+    driver = MiniCPMRawStreamingDriver(
+        session_id=session_id,
+        foreground_model=foreground_duplex_model,
+        tts_adapter=tts_adapter if tts_adapter is not None else NoopTtsAdapter(),
+        audio_out_broker=audio_out_broker,
+        logger=shielded_logger,
+    )
+    return StreamingRawPipeline(session_id=session_id, driver=driver)
