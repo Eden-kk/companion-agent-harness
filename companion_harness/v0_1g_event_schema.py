@@ -140,6 +140,41 @@ EVENT_TYPE_SCHEMAS: dict[str, StageSixEventSchema] = {
         ),
     ),
 
+    # v0.2b T1: per-chunk diarization result (non-trivial, non-muted frames).
+    # Causal chain: caused_by=[raw_audio_chunk.event_id].
+    # Payload: speaker_id, confidence, is_new_speaker, model_revision.
+    "diarization_frame_produced": StageSixEventSchema(
+        payload_kind="signal",
+        subject_class="self",
+        sensitivity="safe",
+        retention_policy_id="signal_default_30d",
+        required_fields=("speaker_id", "confidence", "is_new_speaker", "model_revision"),
+        notes=(
+            "Emitted once per audio chunk that produces a non-trivial diarization "
+            "frame (speaker_id is not None, muted=False).  Muted-window chunks and "
+            "unvoiced chunks do NOT emit.  caused_by[] closes through the "
+            "raw_audio_chunk event_id (invariant #1)."
+        ),
+    ),
+
+    # v0.2b T1: once per wake-word confirmation when diarization is active.
+    # Payload: speaker_id, wake_word_event_id.
+    # caused_by=[<wake-word AddressingSignal event id>].
+    "speaker_continuity_anchor": StageSixEventSchema(
+        payload_kind="signal",
+        subject_class="self",
+        sensitivity="safe",
+        retention_policy_id="signal_default_30d",
+        required_fields=("speaker_id", "wake_word_event_id"),
+        notes=(
+            "Emitted once per wake-word confirmation when the diarization adapter "
+            "has a non-null speaker_id for the same chunk.  Provides the durable "
+            "anchor consumed by the v0.1k speaker-continuity tie-breaker in "
+            "derive_user_addressed_agent (Anchor 7).  Idempotent within a "
+            "wake-word episode."
+        ),
+    ),
+
     # Task 9 (Wave 5): receipt for user reduction command compliance
     # (spec line 678-680).  Reuses commit_audit_30d retention.
     "user_reduction_command_applied": StageSixEventSchema(

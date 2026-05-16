@@ -53,6 +53,9 @@ EXPECTED_EVENT_TYPES = {
     "user_reduction_command_applied",
     "native_duplex_invocation",
     "addressing_classified",
+    # v0.2b T1: diarization event types
+    "diarization_frame_produced",
+    "speaker_continuity_anchor",
 }
 
 

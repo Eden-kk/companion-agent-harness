@@ -41,6 +41,7 @@ from companion_harness.audio_output_controller import AudioOutputController
 from companion_harness.av_conflict_scorer import AudioVisualConflictScorer, _NullAudioVisualConflictScorer
 from companion_harness.backchannel_classifier import BackchannelClassifier
 from companion_harness.deictic_detector import DeicticDetector, DeicticModel, _NullDeicticModel
+from companion_harness.diarization_adapter import DiarizationAdapter, _NullDiarizationAdapter
 from companion_harness.event_logger import EventLogger
 from companion_harness.foreground_model import ForegroundModel
 from companion_harness.input_ingest import IngestSession
@@ -266,6 +267,7 @@ def _make_live_policy_inputs_builder(
     av_scorer: AudioVisualConflictScorer | None = None,
     urgency_scorer: UrgencyScorer | None = None,
     attachment_risk_monitor: EventStreamAttachmentRiskMonitor | None = None,
+    current_speaker_id_fn: Callable[[], str | None] | None = None,
 ) -> Callable[[TurnSignal, list[TurnSignal]], PolicyInputs]:
     """Factory: return a builder closure with `assistant_speaking` bound to
     `is_playing_fn` (typically `AudioOutputController.is_playing`).
@@ -295,6 +297,7 @@ def _make_live_policy_inputs_builder(
     _av: AudioVisualConflictScorer = av_scorer if av_scorer is not None else _NullAudioVisualConflictScorer()
     _urgency: UrgencyScorer = urgency_scorer if urgency_scorer is not None else _NullUrgencyScorer()
     _arm: EventStreamAttachmentRiskMonitor | None = attachment_risk_monitor
+    _speaker_id_fn: Callable[[], str | None] | None = current_speaker_id_fn
 
     def _builder(signal: TurnSignal, signal_history: list[TurnSignal]) -> PolicyInputs:
         """Build PolicyInputs from a TurnSignal + sorted history.
@@ -369,6 +372,7 @@ def _make_live_policy_inputs_builder(
                 else 0.0  # UNAVAILABLE: #172 — real grounding model pending model wiring
             ),
             deictic_ambiguous=False,  # UNAVAILABLE: #169 — XLLM 2025 deictic ambiguity pending model wiring
+            current_speaker_id=_speaker_id_fn() if _speaker_id_fn is not None else None,
         )
 
     return _builder
@@ -497,6 +501,7 @@ def build_live_pipeline(
     deictic_model: DeicticModel | None = None,
     embedder: EmbeddingAdapter | None = None,
     background_reasoner: Any = None,
+    diarization_adapter_factory: Any = None,
 ) -> LivePipeline:
     """Construct a LivePipeline for one ingest session.
 
@@ -637,6 +642,27 @@ def build_live_pipeline(
     else:
         arm = None
 
+    # Per-session diarization adapter.  Factory is None when --enable-diarization
+    # is absent (default OFF per roadmap Anchor 3).  Mute state is read from
+    # audio_output.is_synthesizing at chunk-dispatch time (Anchor 3).
+    _diarization_adapter: DiarizationAdapter
+    if diarization_adapter_factory is not None:
+        _diarization_adapter = diarization_adapter_factory(
+            session_id=session_id,
+            logger=shielded_logger,
+        )
+    else:
+        _diarization_adapter = _NullDiarizationAdapter()
+
+    # Track the latest non-null speaker_id for PolicyInputs.current_speaker_id.
+    _latest_speaker_id: list[str | None] = [None]
+
+    def _process_audio_chunk_for_diarization(audio_bytes: bytes, ts_mono_ms: int) -> None:
+        muted = audio_output.is_synthesizing
+        frame = _diarization_adapter.process_chunk(audio_bytes, ts_mono_ms, muted=muted)
+        if frame.speaker_id is not None:
+            _latest_speaker_id[0] = frame.speaker_id
+
     # Bind the audio_output.is_playing callback into the builder closure so
     # `PolicyInputs.assistant_speaking` reflects live playback state. The
     # orchestrator-side signature is unchanged (closure approach).
@@ -649,6 +675,7 @@ def build_live_pipeline(
         av_scorer=av_conflict_scorer,
         urgency_scorer=urgency_scorer if urgency_scorer is not None else _NullUrgencyScorer(),
         attachment_risk_monitor=arm,
+        current_speaker_id_fn=lambda: _latest_speaker_id[0],
     )
 
     session_state_store: Any = EmptyMemoryStore()
