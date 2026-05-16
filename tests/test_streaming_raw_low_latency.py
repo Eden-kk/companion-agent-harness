@@ -3,8 +3,9 @@
 Root cause addressed: the original _run() awaited TTS synthesis inline,
 blocking frame_iter from draining audio_in. The audio_in queue (maxsize=64)
 saturated in ~1.3 s at 50 fps, causing frames to be dropped and infer_stream
-to stall indefinitely. Fix: each proposal dispatches synthesis as a background
-task so frame_iter keeps draining audio_in concurrently.
+to stall indefinitely. Fix: debounce-then-synthesize (Option C) — proposals
+are debounced for DEBOUNCE_MS; the final accumulated content is synthesized
+as a background task, keeping frame_iter draining concurrently.
 
 Tests here exercise the timing invariants that the fix preserves:
   - first audio chunk arrives before a short deadline even when synthesis is slow
@@ -20,7 +21,7 @@ from typing import Any
 
 import pytest
 
-from companion_harness.minicpm_raw_streaming_driver import MiniCPMRawStreamingDriver
+from companion_harness.minicpm_raw_streaming_driver import MiniCPMRawStreamingDriver, _DEBOUNCE_MS
 from companion_harness.schemas import ThinkerProposal
 
 
@@ -127,13 +128,12 @@ async def test_audio_in_not_starved_during_slow_tts() -> None:
     await driver.start()
 
     # Push 10 frames quickly to simulate real-time audio at ~50 fps.
-    push_start = time.monotonic()
     for _ in range(10):
         driver.push_audio(b"\x00" * 320, "evt-frame")
         await asyncio.sleep(0)  # yield to event loop
 
-    # Wait long enough for proposal to arrive + TTS to finish.
-    await asyncio.sleep(0.2)
+    # Wait long enough for proposal to arrive + DEBOUNCE_MS + TTS to finish.
+    await asyncio.sleep(_DEBOUNCE_MS / 1000 + 0.15)
     await driver.stop()
 
     # The audio_in queue should not have hit maxsize while TTS ran.
@@ -168,12 +168,13 @@ async def test_no_indefinite_buffering_across_two_utterances() -> None:
         driver.push_audio(b"\x00" * 320, "evt-frame")
         await asyncio.sleep(0)
 
-    await asyncio.sleep(0.3)
+    # Wait for proposals to settle, then debounce + TTS to complete.
+    await asyncio.sleep(_DEBOUNCE_MS / 1000 + 0.15)
     await driver.stop()
 
-    # The latest proposal must produce audio output (cancel-previous ensures the
-    # second proposal is never silently dropped).
+    # At least one proposal must produce audio output (debounce coalesces to
+    # the last proposal's content — never silently dropped).
     assert len(broker.published) >= 1, (
-        f"Expected at least 1 published chunk (latest proposal), got {len(broker.published)}. "
-        "Second proposal may have been blocked or dropped."
+        f"Expected at least 1 published chunk (debounced proposal), got {len(broker.published)}. "
+        "Proposal may have been blocked or dropped."
     )

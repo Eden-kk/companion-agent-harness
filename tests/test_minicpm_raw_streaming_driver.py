@@ -18,7 +18,7 @@ from typing import Any
 
 import pytest
 
-from companion_harness.minicpm_raw_streaming_driver import MiniCPMRawStreamingDriver
+from companion_harness.minicpm_raw_streaming_driver import MiniCPMRawStreamingDriver, _DEBOUNCE_MS
 from companion_harness.schemas import ThinkerProposal
 
 
@@ -129,8 +129,8 @@ async def test_minicpm_raw_streaming_driver_pumps_audio_to_foreground() -> None:
 
     await driver.start()
     driver.push_audio(b"\x00" * 32, "evt-001")
-    # Let the event loop tick so the driver processes audio.
-    await asyncio.sleep(0.01)
+    # Wait past DEBOUNCE_MS so the debounce window fires and TTS completes.
+    await asyncio.sleep(_DEBOUNCE_MS / 1000 + 0.1)
     await driver.stop()
 
     # foreground.infer_stream was called

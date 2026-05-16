@@ -13,6 +13,16 @@ API CONSTRAINT NOTE (discovered during implementation):
   The "raw" in --minicpm-streaming-raw refers to bypassing the policy/ASR/
   addressing gates, not to raw audio-to-audio generation, which is not
   currently supported by the MiniCPMStreamingModel API surface.
+
+DEDUP STRATEGY (Option C — debounce-then-synthesize):
+  MiniCPM emits proposal bursts every ~100ms while generating. Option A
+  (cancel-previous) caused indefinite delay: each new proposal cancelled the
+  in-flight TTS so audio never started until proposals stopped. Option C
+  waits DEBOUNCE_MS after the last proposal before synthesizing. While
+  waiting, earlier debounce tasks are silently cancelled; only the final
+  (most complete) proposal content is synthesized. No audit event is emitted
+  for pure debounce-overruns — the superseded event is reserved for cases
+  where synthesis had already started on substantially different content.
 """
 
 from __future__ import annotations
@@ -35,6 +45,7 @@ __all__ = ["MiniCPMRawStreamingDriver"]
 
 _SCHEMA_VERSION = "v0.1g"
 _SOURCE = "minicpm_raw_streaming_driver"
+_DEBOUNCE_MS = 300
 
 
 def _make_session_started_event(
@@ -104,6 +115,7 @@ class MiniCPMRawStreamingDriver:
         self._session_event_emitted = False
         self._task: asyncio.Task[None] | None = None
         self._tts_in_flight: bool = False
+        self._debounce_task: asyncio.Task[None] | None = None
 
     @property
     def audio_in(self) -> asyncio.Queue[tuple[bytes, str]]:
@@ -205,6 +217,14 @@ class MiniCPMRawStreamingDriver:
             payload_inline=payload,
         )
 
+    async def _debounce_then_synthesize(self, text: str) -> None:
+        """Wait DEBOUNCE_MS, then synthesize.  Silently exits if cancelled (newer proposal arrived)."""
+        try:
+            await asyncio.sleep(_DEBOUNCE_MS / 1000)
+        except asyncio.CancelledError:
+            return  # newer proposal arrived — abandon silently, no audit event
+        await self._synthesize_and_publish(text)
+
     async def _synthesize_and_publish(self, text: str) -> None:
         """Synthesize TTS for one proposal and publish chunks.
 
@@ -229,46 +249,37 @@ class MiniCPMRawStreamingDriver:
     async def _run(self) -> None:
         # DEMO MODE: bypasses SpeakPolicy + audit gates per spec invariants #2/#4.
         #
-        # TTS synthesis is dispatched as a background task per proposal so that
-        # frame_iter continues draining audio_in while synthesis is running.
+        # TTS synthesis is dispatched via a debounce task (Option C) so that
+        # frame_iter continues draining audio_in while the debounce timer runs.
         # Without this, the audio_in queue (maxsize=64) saturates within ~1.3 s
         # at 50 fps, audio frames are dropped, and infer_stream never sees
         # silence/EOU — causing indefinite response delay.
         #
-        # Cancel-previous (Option A): when a new proposal arrives while synthesis
-        # is in-flight, the old task is cancelled and the new one takes over.
-        # MiniCPM proposals represent "latest thought" — older partials are obsolete.
-        # The cancelled task emits a raw_proposal_superseded_by_newer audit event
-        # (invariant #1). _tts_in_flight is set synchronously before create_task so
-        # the finally-block in _synthesize_and_publish always clears it on completion
-        # or cancel.
-        tts_task: asyncio.Task[None] | None = None
-        superseded_content: str | None = None
+        # Debounce-then-synthesize (Option C): every new proposal updates the
+        # accumulated content and resets the debounce timer. When no new proposal
+        # has arrived for DEBOUNCE_MS, the latest content is synthesized once.
+        # This ensures audio starts promptly after the proposal burst settles
+        # rather than chasing every mid-thought partial (Option A bug).
         try:
             gen = await self._foreground.infer_stream(
                 frame_iter=self._frame_iter(),
                 caused_by=[],
             )
             async for proposal in gen:
-                if tts_task is not None and not tts_task.done():
-                    # Cancel-previous: newest proposal wins, emit audit event.
-                    superseded_content = proposal.content
-                    tts_task.cancel()
-                    await asyncio.gather(tts_task, return_exceptions=True)
-                    self._logger.log(self._make_superseded_event(superseded_content))
-                # Bypass SpeakPolicy — dispatch synthesis without blocking the loop.
-                # Set the flag synchronously before create_task so the finally-block
-                # in _synthesize_and_publish sees _tts_in_flight=True immediately.
-                self._tts_in_flight = True
-                tts_task = asyncio.create_task(
-                    self._synthesize_and_publish(proposal.content)
+                # Cancel any pending debounce for the prior proposal.
+                if self._debounce_task is not None and not self._debounce_task.done():
+                    self._debounce_task.cancel()
+                    # No audit event — debounce-overrun is by design, not an audit-worthy drop.
+                # Start a fresh debounce timer for the latest proposal content.
+                self._debounce_task = asyncio.create_task(
+                    self._debounce_then_synthesize(proposal.content)
                 )
         except asyncio.CancelledError:
-            if tts_task is not None:
-                tts_task.cancel()
+            if self._debounce_task is not None:
+                self._debounce_task.cancel()
             raise
         except Exception:
             pass
-        # Drain any in-flight TTS task before returning.
-        if tts_task is not None:
-            await asyncio.gather(tts_task, return_exceptions=True)
+        # Drain any pending debounce/TTS task before returning.
+        if self._debounce_task is not None:
+            await asyncio.gather(self._debounce_task, return_exceptions=True)
