@@ -1246,7 +1246,27 @@ def main(argv: list[str] | None = None) -> int:
         default=False,
         help="Wire SentenceTransformerEmbedder in place of _NullEmbeddingAdapter (issue #183).",
     )
+    parser.add_argument(
+        "--minicpm-only",
+        dest="minicpm_only",
+        action="store_true",
+        default=False,
+        help=(
+            "Run with MiniCPM-o foreground + native_minicpm TTS only. "
+            "Stubs VAD, SmartTurn, and Backchannel; keeps ASR real so the "
+            "addressing classifier has transcripts. "
+            "Mutually exclusive with --use-stubs (--use-stubs wins)."
+        ),
+    )
     args = parser.parse_args(argv)
+
+    if args.minicpm_only and args.use_stubs:
+        print(
+            "WARNING: --use-stubs overrides --minicpm-only; TTS will be NoOp.",
+            flush=True,
+        )
+    elif args.minicpm_only:
+        args.tts_adapter = "native_minicpm"
 
     blob_dir: Path = args.blob_dir
     blob_dir.mkdir(parents=True, exist_ok=True)
@@ -1260,15 +1280,22 @@ def main(argv: list[str] | None = None) -> int:
     else:
         factory = None
     if args.live_pipeline and not args.use_stubs:
-        vad_factory: Optional[Callable[[], Any]] = _load_silero_vad_model
-        smart_turn_factory: Optional[Callable[[], Any]] = _load_pipecat_smart_turn_model
-        backchannel_factory: Optional[Callable[[], Any]] = _load_asr_lexicon_backchannel_model
-        tts_factory: Optional[Callable[[], Any]] = (
-            _load_native_minicpm_tts_adapter
-            if args.tts_adapter == "native_minicpm"
-            else _load_kokoro_tts_adapter
-        )
-        asr_factory: Optional[Callable[[], Any]] = _load_asr_model
+        if args.minicpm_only:
+            vad_factory: Optional[Callable[[], Any]] = None
+            smart_turn_factory: Optional[Callable[[], Any]] = None
+            backchannel_factory: Optional[Callable[[], Any]] = None
+            tts_factory: Optional[Callable[[], Any]] = _load_native_minicpm_tts_adapter
+            asr_factory: Optional[Callable[[], Any]] = _load_asr_model
+        else:
+            vad_factory = _load_silero_vad_model
+            smart_turn_factory = _load_pipecat_smart_turn_model
+            backchannel_factory = _load_asr_lexicon_backchannel_model
+            tts_factory = (
+                _load_native_minicpm_tts_adapter
+                if args.tts_adapter == "native_minicpm"
+                else _load_kokoro_tts_adapter
+            )
+            asr_factory = _load_asr_model
     else:
         vad_factory = smart_turn_factory = backchannel_factory = tts_factory = asr_factory = None
 
@@ -1343,6 +1370,8 @@ def main(argv: list[str] | None = None) -> int:
         pipeline_label = "disabled"
     elif args.use_stubs:
         pipeline_label = "ENABLED (loading MiniCPM-o + CPU-stub detectors)"
+    elif args.minicpm_only:
+        pipeline_label = "MINICPM-ONLY (MiniCPM-o + native TTS + ASR; VAD/SmartTurn/Backchannel stubbed)"
     else:
         pipeline_label = "ENABLED (loading MiniCPM-o + real detectors at startup)"
     lanes_label = (
