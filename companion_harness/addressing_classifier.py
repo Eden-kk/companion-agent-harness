@@ -12,7 +12,12 @@ classifier driven by observable signals:
     user_addressed_agent =
         True            if explicit
         False           if background
-        mode_default    if implicit  (mechanical fallback to social_mode)
+        False           if implicit AND (transcript too short OR denylist hit)
+        True            if implicit AND transcript substantive (≥3 tokens, not denylist)
+
+Invariant #8 (silence wins ties): when signal is ambiguous (implicit tier),
+the default is False. A transcript must have ≥ IMPLICIT_MIN_TOKENS tokens
+AND must not match any phrase in WHISPER_HALLUCINATION_DENYLIST to flip True.
 
 "No invented heuristics" discipline (project-lead direction):
   - explicit: deterministic string match on the configured wake-word(s).
@@ -20,8 +25,7 @@ classifier driven by observable signals:
   - background: speaker-count signal. Speaker diarization is not wired in
     v0.1f, so callers pass speaker_count=None; this tier currently never
     fires "background". Forward-compatible for when diarization arrives.
-  - implicit: falls through to the mechanical social_mode-based default
-    (the pre-PR-#143 behavior).
+  - implicit: defaults False; requires substantive transcript evidence.
 
 No regex on transcript content beyond the wake-word string match. No
 question/imperative/interjection lexicons. Those would be invented
@@ -44,8 +48,37 @@ __all__ = [
     "MiniCPMAddressingClassifierImpl",
     "_NullMiniCPMAddressingClassifier",
     "WakeWordAddressingClassifier",
+    "WHISPER_HALLUCINATION_DENYLIST",
+    "IMPLICIT_MIN_TOKENS",
     "derive_user_addressed_agent",
 ]
+
+# Minimum token count for an implicit-tier transcript to be considered
+# substantive (invariant #8: silence wins ties).
+IMPLICIT_MIN_TOKENS: int = 3
+
+# Whisper-tiny hallucination phrases commonly produced from silence or noise.
+# Normalised to lowercase; punctuation stripped to match _tokenize() output.
+# When the full joined transcript matches one of these exactly, implicit tier
+# returns False regardless of social_mode.
+WHISPER_HALLUCINATION_DENYLIST: frozenset[str] = frozenset({
+    "you",
+    "the",
+    ".",
+    "bye",
+    "bye bye",
+    "thank you",
+    "thanks",
+    "thanks for watching",
+    "thank you for watching",
+    "please subscribe",
+    "subscribe",
+    "like and subscribe",
+    "hmm",
+    "uh",
+    "um",
+    "uh huh",
+})
 
 
 AddressingConfidence = Literal["explicit", "background", "implicit"]
@@ -220,15 +253,29 @@ class WakeWordAddressingClassifier:
 def derive_user_addressed_agent(
     signal: AddressingSignal,
     social_mode: str,
+    transcript: str = "",
 ) -> bool:
     """Convert `AddressingSignal` + `social_mode` into the `PolicyInputs` bool.
 
     explicit   -> True   (wake-word fired; user clearly addressing agent)
     background -> False  (multi-speaker detected; defer)
-    implicit   -> mode-based mechanical fallback (pre-classifier behavior).
+    implicit   -> False  UNLESS transcript is substantive:
+                         ≥ IMPLICIT_MIN_TOKENS tokens AND not in
+                         WHISPER_HALLUCINATION_DENYLIST.
+                         Invariant #8: silence wins ties.
+
+    `transcript` is optional for log-only call sites that don't need the
+    implicit-tier gate; omitting it conservatively returns False for implicit.
     """
     if signal.confidence == "explicit":
         return True
     if signal.confidence == "background":
         return False
-    return social_mode == "user_addressing_agent"
+    # Implicit tier: require positive evidence from the transcript.
+    tokens = _tokenize(transcript)
+    if len(tokens) < IMPLICIT_MIN_TOKENS:
+        return False
+    normalised = " ".join(tokens)
+    if normalised in WHISPER_HALLUCINATION_DENYLIST:
+        return False
+    return True

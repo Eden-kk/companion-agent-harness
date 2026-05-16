@@ -86,21 +86,27 @@ def test_mode_field_defaults_are_spec_enumerated() -> None:
     assert inputs.risk_mode in _SPEC_RISK_MODES
 
 
-def test_classifier_overrides_placeholder_to_true_on_addressing_mode() -> None:
-    """End-to-end mechanical fallback: empty transcript + speaker_count=None
-    + social_mode=user_addressing_agent ⇒ classifier returns True. This is
-    the single-user manual-test default behavior (pre-PR-#142 parity)."""
+def test_classifier_returns_false_on_empty_transcript() -> None:
+    """Empty transcript ⇒ implicit tier ⇒ False (invariant #8: silence wins ties).
+    Replaces the pre-Finding-12 test that incorrectly asserted True for empty
+    transcripts when social_mode=user_addressing_agent (solo-operator default)."""
     sig = _make_signal()
     inputs = _live_policy_inputs_builder(sig, [sig])
     clf = WakeWordAddressingClassifier()
     signal = clf(transcript="", speaker_count=None, social_mode=inputs.social_mode)
-    assert derive_user_addressed_agent(signal, inputs.social_mode) is True
+    assert derive_user_addressed_agent(signal, inputs.social_mode, transcript="") is False
 
 
-def test_classifier_overrides_placeholder_to_false_on_blocking_mode() -> None:
-    """Empty transcript + speaker_count=None + a blocking social_mode ⇒
-    classifier returns False (mechanical fallback path)."""
+def test_classifier_returns_false_on_short_transcript() -> None:
+    """Short transcript (< IMPLICIT_MIN_TOKENS) ⇒ implicit False regardless of social_mode."""
     clf = WakeWordAddressingClassifier()
-    for blocking in ("user_addressing_other", "group_conversation", "background_presence"):
-        signal = clf(transcript="", speaker_count=None, social_mode=blocking)
-        assert derive_user_addressed_agent(signal, blocking) is False
+    for mode in ("user_addressing_agent", "user_addressing_other", "background_presence"):
+        signal = clf(transcript="you", speaker_count=None, social_mode=mode)
+        assert derive_user_addressed_agent(signal, mode, transcript="you") is False
+
+
+def test_classifier_returns_true_on_substantive_transcript() -> None:
+    """Substantive transcript (≥3 tokens, not denylist) ⇒ implicit True."""
+    clf = WakeWordAddressingClassifier()
+    signal = clf(transcript="what is the time", speaker_count=None, social_mode="user_addressing_agent")
+    assert derive_user_addressed_agent(signal, "user_addressing_agent", transcript="what is the time") is True

@@ -689,7 +689,7 @@ class StreamingRealtimeOrchestrator:
                 ))
             if addressing_signal is not None:
                 inputs.user_addressed_agent = derive_user_addressed_agent(
-                    addressing_signal, inputs.social_mode
+                    addressing_signal, inputs.social_mode, transcript
                 )
 
             # --- Deictic detector: sets deictic_reference + deictic_ambiguous on inputs ---
