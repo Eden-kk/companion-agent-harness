@@ -628,7 +628,9 @@ def build_live_pipeline(
     if minicpm_text_model is not None:
         minicpm_addressing = MiniCPMAddressingClassifierImpl(minicpm_text_model)
     else:
-        minicpm_addressing = _NullMiniCPMAddressingClassifier()
+        minicpm_addressing = _NullMiniCPMAddressingClassifier(
+            logger=shielded_logger, session_id=session_id
+        )
     safety_net_addressing = WakeWordAddressingClassifier()
     deictic_detector = DeicticDetector(
         model=deictic_model if deictic_model is not None else _NullDeicticModel(),
