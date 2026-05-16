@@ -37,7 +37,9 @@ from companion_harness.schemas import EvaluationCase, ReplayRun
 
 _FDB_HF_SLUG = "Ssshangfu/Full-Duplex-Bench-Data"
 
-# Pinned commit hashes — from list_repo_commits() on 2026-01-06.
+# Both V1 and V1.5 live in the same HF repo (different data_dir prefix).
+# Pinned to the same repo commit because both dirs share a single history.
+# Verified via list_repo_commits() on 2026-01-06.
 _FDB_V1_REVISION = "a3579cb9ebbe164204b196e33d4d0e91860eb90e"
 _FDB_V15_REVISION = "a3579cb9ebbe164204b196e33d4d0e91860eb90e"
 
@@ -108,6 +110,18 @@ def _make_synthetic_cases(
 
 def _fdb_stable_key(row: dict) -> tuple:
     return (str(row.get("scenario", "")), str(row.get("case_id", "")))
+
+
+def _fdb_ordered(iterable: Iterable[dict], sort_head: int = 100) -> Iterable[dict]:
+    """Yield FDB rows with deterministic ordering over the first `sort_head`."""
+    head: list[dict] = []
+    it = iter(iterable)
+    for row in it:
+        head.append(row)
+        if len(head) >= sort_head:
+            break
+    yield from sorted(head, key=_fdb_stable_key)
+    yield from it
 
 
 def _fdb_v1_row_to_evaluation_case(row: dict, index: int) -> EvaluationCase:
@@ -219,6 +233,14 @@ class FullDuplexBenchV1CaseSource:
                     "HF_TOKEN missing; set HF_TOKEN or run `huggingface-cli login`. "
                     "The FDB dataset is at https://huggingface.co/datasets/Ssshangfu/Full-Duplex-Bench-Data."
                 )
+            from huggingface_hub import dataset_info  # type: ignore[import-not-found]
+            info = dataset_info(_FDB_HF_SLUG, token=os.environ.get("HF_TOKEN"))
+            actual_license = (info.card_data.get("license") or "") if info.card_data else ""
+            if actual_license != _FDB_LICENSE:
+                raise RuntimeError(
+                    f"FDB upstream license changed: expected {_FDB_LICENSE!r}, got {actual_license!r}. "
+                    "Review and update _FDB_LICENSE before proceeding."
+                )
 
     def iter_cases(self, split: str) -> Iterable[EvaluationCase]:
         if self.synthetic:
@@ -284,6 +306,14 @@ class FullDuplexBenchV15CaseSource:
                     "HF_TOKEN missing; set HF_TOKEN or run `huggingface-cli login`. "
                     "The FDB dataset is at https://huggingface.co/datasets/Ssshangfu/Full-Duplex-Bench-Data."
                 )
+            from huggingface_hub import dataset_info  # type: ignore[import-not-found]
+            info = dataset_info(_FDB_HF_SLUG, token=os.environ.get("HF_TOKEN"))
+            actual_license = (info.card_data.get("license") or "") if info.card_data else ""
+            if actual_license != _FDB_LICENSE:
+                raise RuntimeError(
+                    f"FDB upstream license changed: expected {_FDB_LICENSE!r}, got {actual_license!r}. "
+                    "Review and update _FDB_LICENSE before proceeding."
+                )
 
     def iter_cases(self, split: str) -> Iterable[EvaluationCase]:
         if self.synthetic:
@@ -317,18 +347,6 @@ class FullDuplexBenchV15CaseSource:
 
 
 assert isinstance(FullDuplexBenchV15CaseSource(), CaseSource)
-
-
-def _fdb_ordered(iterable: Iterable[dict], sort_head: int = 100) -> Iterable[dict]:
-    """Yield FDB rows with deterministic ordering over the first `sort_head`."""
-    head: list[dict] = []
-    it = iter(iterable)
-    for row in it:
-        head.append(row)
-        if len(head) >= sort_head:
-            break
-    yield from sorted(head, key=_fdb_stable_key)
-    yield from it
 
 
 # ---------------------------------------------------------------------------

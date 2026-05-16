@@ -197,6 +197,18 @@ class CandorCaseSource:
                     "and accept the CANDOR gate at "
                     "https://huggingface.co/datasets/ucsb-sobel-lab/CANDOR."
                 )
+            if not _CANDOR_REVISION or _CANDOR_REVISION.startswith("TBD"):
+                raise RuntimeError(
+                    "CANDOR revision hash must be filled; run the command in the comment above on b200."
+                )
+            from huggingface_hub import dataset_info  # type: ignore[import-not-found]
+            info = dataset_info(_CANDOR_HF_SLUG, token=os.environ.get("HF_TOKEN"))
+            actual_license = (info.card_data.get("license") or "") if info.card_data else ""
+            if actual_license != _CANDOR_LICENSE:
+                raise RuntimeError(
+                    f"CANDOR upstream license changed: expected {_CANDOR_LICENSE!r}, got {actual_license!r}. "
+                    "Review and update _CANDOR_LICENSE before proceeding."
+                )
 
     def iter_cases(self, split: str = "test") -> Iterable[EvaluationCase]:
         if self.synthetic:

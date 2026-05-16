@@ -49,6 +49,12 @@ def test_v15_synthetic_default_unchanged():
 # Real-mode HF_TOKEN check
 # ---------------------------------------------------------------------------
 
+def _fake_dataset_info(*args, **kwargs):
+    class _FakeInfo:
+        card_data = {"license": "apache-2.0"}
+    return _FakeInfo()
+
+
 def test_fdb_v1_real_mode_requires_hf_token():
     env = {k: v for k, v in os.environ.items() if k != "HF_TOKEN"}
     with patch.dict(os.environ, env, clear=True):
@@ -145,8 +151,9 @@ def test_v15_mapper_rejects_unknown_scenario():
 # ---------------------------------------------------------------------------
 
 def test_fdb_v1_skip_counter_tracks_malformed_rows():
-    with patch.dict(os.environ, {"HF_TOKEN": "fake-token"}):
-        src = FullDuplexBenchV1CaseSource(synthetic=False)
+    with patch("huggingface_hub.dataset_info", _fake_dataset_info):
+        with patch.dict(os.environ, {"HF_TOKEN": "fake-token"}):
+            src = FullDuplexBenchV1CaseSource(synthetic=False)
 
     good_row = _make_good_row(_SCENARIOS_V1[0])
     bad_row = {"scenario": _SCENARIOS_V1[0]}  # missing audio

@@ -83,9 +83,17 @@ def _fake_dataset(good_count: int, bad_count: int):
         yield {"speaker_id": "s2", "start_time": 1.0}  # missing audio
 
 
+def _fake_dataset_info(*args, **kwargs):
+    class _FakeInfo:
+        card_data = {"license": "apache-2.0"}
+    return _FakeInfo()
+
+
 def test_skip_counter_tracks_malformed_rows():
-    with patch.dict(os.environ, {"HF_TOKEN": "fake-token"}):
-        source = CandorCaseSource(synthetic=False)
+    with patch("companion_harness.evals.adapters.candor._CANDOR_REVISION", "abc123"):
+        with patch("huggingface_hub.dataset_info", _fake_dataset_info):
+            with patch.dict(os.environ, {"HF_TOKEN": "fake-token"}):
+                source = CandorCaseSource(synthetic=False)
     # Bypass __post_init__ check; monkeypatch _real_cases directly
     with patch("companion_harness.evals.adapters.candor.load_dataset", create=True) as mock_ld:
         # load_dataset is imported inside _real_cases; patch at the datasets level
@@ -114,19 +122,27 @@ def test_skip_counter_tracks_malformed_rows():
 # ---------------------------------------------------------------------------
 
 def test_skip_rate_gate_fires_above_threshold():
+    import json
     import tempfile
     from companion_harness.evals.runners import _run_candor
 
-    def _patched_case_source_below(synthetic=True, seed=42):
-        # 19 good + 1 bad → skip_rate ≈ 0.05, exactly at threshold (< 0.05 is pass)
-        # Actually 1/20 = 0.05 which is NOT < 0.05, so this should trigger gate
-        src = CandorCaseSource(synthetic=True)
-        return src
+    # Build a source whose skip stats reflect 12 attempted, 2 skipped (rate ≈ 0.167)
+    high_skip_source = CandorCaseSource(synthetic=True)
+    high_skip_source._attempted = 12
+    high_skip_source._skipped = 2
 
-    # Use synthetic mode which always passes skip-rate gate (0 attempted in real)
-    with tempfile.TemporaryDirectory() as tmpdir:
-        rc = _run_candor(tmpdir, "test", mode="synthetic", limit=5)
-    assert rc == 0, f"synthetic candor run should return 0, got {rc}"
+    with patch(
+        "companion_harness.evals.adapters.candor.CandorCaseSource",
+        return_value=high_skip_source,
+    ):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rc = _run_candor(tmpdir, "test", mode="synthetic", limit=5)
+            run_dirs = list(Path(tmpdir).iterdir())
+            run_json = json.loads((run_dirs[0] / "run.json").read_text())
+
+    assert rc == 1, f"skip-rate gate should fire (rc=1), got {rc}"
+    assert "skipped_row_count" in run_json
+    assert "total_row_count" in run_json
 
 
 # ---------------------------------------------------------------------------
@@ -135,18 +151,15 @@ def test_skip_rate_gate_fires_above_threshold():
 
 def test_candor_adapter_respects_limit_flag():
     """With limit=7 and 20 available rows, exactly 7 cases should be yielded."""
-    with patch.dict(os.environ, {"HF_TOKEN": "fake-token"}):
-        source = CandorCaseSource(synthetic=False)
+    with patch("companion_harness.evals.adapters.candor._CANDOR_REVISION", "abc123"):
+        with patch("huggingface_hub.dataset_info", _fake_dataset_info):
+            with patch.dict(os.environ, {"HF_TOKEN": "fake-token"}):
+                source = CandorCaseSource(synthetic=False)
 
     fake_rows = list(_fake_dataset(20, 0))
 
     def _fake_load_dataset(*args, **kwargs):
         return iter(fake_rows)
-
-    # Patch the import inside _real_cases
-    with patch.dict("sys.modules", {"datasets": type("m", (), {"load_dataset": _fake_load_dataset})()}):
-        with patch("companion_harness.evals.adapters.candor.load_dataset" if False else "builtins.__import__"):
-            pass
 
     # Directly call _real_cases with patched datasets import
     import sys
