@@ -1,6 +1,6 @@
 """SleepTimeAgent — async memory-commit adapter (v0.1e Task 10).
 
-Subscribes to memory_write_candidate events via EventLogger.subscribe(),
+Subscribes to memory_write_candidate events via EventLogger.late_subscribe(),
 finalizes provenance fields on a MemoryItem, and commits it to the
 appropriate store via MemoryManager.commit().
 
@@ -93,7 +93,7 @@ class SleepTimeAgent:
     async def start(self) -> None:
         if self._started:
             return
-        self._event_logger.subscribe(self._on_event)
+        self._event_logger.late_subscribe(self._on_event)
         self._started = True
 
     async def stop(self) -> None:

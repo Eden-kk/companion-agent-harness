@@ -102,10 +102,10 @@ class SharedLoggerProxy:
         self._inner.log(event)
 
     def subscribe(self, callback: Any) -> None:
-        # Bypass EventLogger's pre-start guard: per-session components (e.g.
-        # SleepTimeAgent) subscribe after the shared logger is already running.
-        # The drain loop iterates _subscribers dynamically so late subscription is safe.
-        self._inner._subscribers.append(callback)
+        self._inner.subscribe(callback)
+
+    def late_subscribe(self, callback: Any) -> None:
+        self._inner.late_subscribe(callback)
 
     def unsubscribe(self, callback: Any) -> None:
         self._inner.unsubscribe(callback)
