@@ -339,6 +339,118 @@ def _make_config_change_event(
     )
 
 
+def _make_model_swap_requested_event(
+    *,
+    seam: str,
+    from_enabled: bool,
+    to_enabled: bool,
+    operator_action_event_id: str,
+    seq_counter: dict,
+) -> Event:
+    event_id = f"model_swap_requested-{uuid.uuid4().hex}"
+    now_ms = int(time.monotonic() * 1000)
+    payload = {
+        "seam": seam,
+        "from_enabled": from_enabled,
+        "to_enabled": to_enabled,
+        "requested_at_ms": now_ms,
+        "operator_action_event_id": operator_action_event_id,
+    }
+    return Event(
+        event_id=event_id,
+        session_id=_OPERATOR_SESSION_ID,
+        schema_version=_CONFIG_EVENT_SCHEMA_VERSION,
+        seq_no=_next_operator_seq(seq_counter),
+        event_type="model_swap_requested",
+        timestamp_mono_ms=now_ms,
+        timestamp_wall=_now_wall(),
+        source="manual_test_console.server",
+        caused_by=[operator_action_event_id],
+        payload_hash="",
+        payload_ref=None,
+        payload_kind="signal",
+        subject_class="self",
+        sensitivity="safe",
+        retention_policy_id="config_change_30d",
+        payload_inline=payload,
+    )
+
+
+def _make_model_swap_completed_event(
+    *,
+    seam: str,
+    from_enabled: bool,
+    to_enabled: bool,
+    applied_at_ms: int,
+    latency_ms: int,
+    operator_action_event_id: str,
+    seq_counter: dict,
+) -> Event:
+    event_id = f"model_swap_completed-{uuid.uuid4().hex}"
+    payload = {
+        "seam": seam,
+        "from_enabled": from_enabled,
+        "to_enabled": to_enabled,
+        "applied_at_ms": applied_at_ms,
+        "latency_ms": latency_ms,
+        "operator_action_event_id": operator_action_event_id,
+    }
+    return Event(
+        event_id=event_id,
+        session_id=_OPERATOR_SESSION_ID,
+        schema_version=_CONFIG_EVENT_SCHEMA_VERSION,
+        seq_no=_next_operator_seq(seq_counter),
+        event_type="model_swap_completed",
+        timestamp_mono_ms=applied_at_ms,
+        timestamp_wall=_now_wall(),
+        source="manual_test_console.server",
+        caused_by=[operator_action_event_id],
+        payload_hash="",
+        payload_ref=None,
+        payload_kind="signal",
+        subject_class="self",
+        sensitivity="safe",
+        retention_policy_id="config_change_30d",
+        payload_inline=payload,
+    )
+
+
+def _make_model_swap_rejected_event(
+    *,
+    seam: str,
+    attempted_enabled: bool | None,
+    reason: str,
+    operator_action_event_id: str,
+    seq_counter: dict,
+) -> Event:
+    event_id = f"model_swap_rejected-{uuid.uuid4().hex}"
+    now_ms = int(time.monotonic() * 1000)
+    payload = {
+        "seam": seam,
+        "attempted_enabled": attempted_enabled,
+        "reason": reason,
+        "operator_action_event_id": operator_action_event_id,
+    }
+    return Event(
+        event_id=event_id,
+        session_id=_OPERATOR_SESSION_ID,
+        schema_version=_CONFIG_EVENT_SCHEMA_VERSION,
+        seq_no=_next_operator_seq(seq_counter),
+        event_type="model_swap_rejected",
+        timestamp_mono_ms=now_ms,
+        timestamp_wall=_now_wall(),
+        source="manual_test_console.server",
+        caused_by=[operator_action_event_id],
+        payload_hash="",
+        payload_ref=None,
+        payload_kind="signal",
+        subject_class="self",
+        sensitivity="safe",
+        retention_policy_id="config_change_30d",
+        payload_inline=payload,
+    )
+
+
 # ---------------------------------------------------------------------------
 # HTTP / WS handlers
 # ---------------------------------------------------------------------------
@@ -666,52 +778,6 @@ async def _handle_get_config_seams(request: web.Request) -> web.Response:
     })
 
 
-async def _handle_post_model_swap(request: web.Request) -> web.Response:
-    """Toggle a hot seam enabled/disabled.
-
-    Body: {seam: str, enabled: bool}.
-
-    On success, mutates ConfigStore and returns accepted=True.
-    The swap takes effect at the next session-construction boundary (F4).
-
-    Event emission (model_swap_requested / model_swap_completed /
-    model_swap_rejected) is wired in D2. Placeholder returned for now.
-    """
-    config_store: ConfigStore = request.app[KEY_CONFIG_STORE]  # type: ignore[assignment]
-
-    try:
-        body = await request.json()
-    except json.JSONDecodeError:
-        return web.json_response(
-            {"error": "request body is not valid JSON"},
-            status=400,
-        )
-
-    if not isinstance(body, dict) or "seam" not in body or "enabled" not in body:
-        return web.json_response(
-            {"error": "body must be {seam, enabled}"},
-            status=400,
-        )
-
-    seam = body["seam"]
-    enabled = body["enabled"]
-
-    if seam not in HOT_SEAMS:
-        return web.json_response({"error": f"unknown seam: {seam!r}", "seam": seam}, status=403)
-    ok, msg = validate_seam_patch(seam, enabled)
-    if not ok:
-        return web.json_response({"error": msg, "seam": seam}, status=400)
-
-    config_store.set_seam(seam, enabled)
-    # TODO(D2): emit operator_action + model_swap_requested + model_swap_completed events
-    return web.json_response({
-        "accepted": True,
-        "seam": seam,
-        "enabled": enabled,
-        "model_swap_event_id": "pending-d2-wiring",
-    })
-
-
 async def _handle_post_config_patch(request: web.Request) -> web.Response:
     """Apply a single Tier-B key override.
 
@@ -874,6 +940,103 @@ async def _handle_post_config_reset(request: web.Request) -> web.Response:
         "changes": cc_dicts,
         "operator_action_event_id": op_event.event_id,
         "config_change_event_ids": cc_event_ids,
+    })
+
+
+async def _handle_get_config_seams(request: web.Request) -> web.Response:
+    """Return current enabled state for all 12 hot seams."""
+    config_store: ConfigStore = request.app[KEY_CONFIG_STORE]  # type: ignore[assignment]
+    seam_state = config_store.current_seam_state()
+    return web.json_response({
+        "seams": [{"seam": s, "enabled": seam_state[s]} for s in HOT_SEAMS],
+    })
+
+
+async def _handle_post_model_swap(request: web.Request) -> web.Response:
+    """Toggle a hot-seam enabled/disabled state.
+
+    Body: {seam: str, enabled: bool}.
+
+    Emits:
+      - operator_action (root)
+      - model_swap_requested (caused_by=[operator_action_event_id])
+      - model_swap_completed OR model_swap_rejected (caused_by=[operator_action_event_id])
+
+    Event payload shape is locked per plan §F3.
+    """
+    config_store: ConfigStore = request.app[KEY_CONFIG_STORE]  # type: ignore[assignment]
+    logger: EventLogger = request.app[KEY_LOGGER]  # type: ignore[assignment]
+    seq_counter: dict = request.app[KEY_OPERATOR_SEQ]
+
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "request body is not valid JSON"}, status=400)
+
+    if not isinstance(body, dict) or "seam" not in body or "enabled" not in body:
+        return web.json_response({"error": "body must be {seam, enabled}"}, status=400)
+
+    seam = body["seam"]
+    enabled = body["enabled"]
+
+    op_event = _make_operator_action_event(
+        endpoint="/config/model-swap",
+        client_ip=request.remote or "",
+        request_id=f"req-{uuid.uuid4().hex[:8]}",
+        seq_counter=seq_counter,
+    )
+    logger.log(op_event)
+
+    ok, msg = validate_seam_patch(seam, enabled)
+    _is_unknown_seam = seam not in HOT_SEAMS
+    if not ok:
+        rej_event = _make_model_swap_rejected_event(
+            seam=seam if isinstance(seam, str) else str(seam),
+            attempted_enabled=enabled if isinstance(enabled, bool) else None,
+            reason="unknown_seam" if _is_unknown_seam else "invalid_enabled",
+            operator_action_event_id=op_event.event_id,
+            seq_counter=seq_counter,
+        )
+        logger.log(rej_event)
+        return web.json_response(
+            {"error": msg, "model_swap_event_id": rej_event.event_id},
+            status=403 if _is_unknown_seam else 400,
+        )
+
+    from_enabled = config_store.get_seam(seam)
+
+    req_event = _make_model_swap_requested_event(
+        seam=seam,
+        from_enabled=from_enabled,
+        to_enabled=enabled,
+        operator_action_event_id=op_event.event_id,
+        seq_counter=seq_counter,
+    )
+    logger.log(req_event)
+
+    t0_ns = time.monotonic_ns()
+    config_store.set_seam(seam, enabled)
+    latency_ms = max(0, (time.monotonic_ns() - t0_ns) // 1_000_000)
+    applied_at_ms = int(time.monotonic() * 1000)
+
+    cc_event = _make_model_swap_completed_event(
+        seam=seam,
+        from_enabled=from_enabled,
+        to_enabled=enabled,
+        applied_at_ms=applied_at_ms,
+        latency_ms=latency_ms,
+        operator_action_event_id=op_event.event_id,
+        seq_counter=seq_counter,
+    )
+    logger.log(cc_event)
+
+    return web.json_response({
+        "accepted": True,
+        "model_swap_event_id": cc_event.event_id,
+        "restart_required": False,
+        "requested_at_ms": req_event.payload_inline["requested_at_ms"],
+        "applied_at_ms": applied_at_ms,
+        "latency_ms": latency_ms,
     })
 
 

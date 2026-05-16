@@ -59,8 +59,7 @@ async def test_post_model_swap_valid_body_returns_accepted(tmp_path: Path) -> No
             body = await resp.json()
 
         assert body["accepted"] is True
-        assert body["seam"] == "vad"
-        assert body["enabled"] is False
+        assert "model_swap_event_id" in body
     finally:
         await server.close()
 
