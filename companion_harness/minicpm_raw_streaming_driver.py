@@ -152,20 +152,48 @@ class MiniCPMRawStreamingDriver:
             self._emit_session_started(raw_audio_event_id)
             yield frame_bytes, None  # type: ignore[misc]
 
+    async def _synthesize_and_publish(self, text: str) -> None:
+        """Fire-and-forget: synthesize TTS for one proposal and publish chunks.
+
+        Runs as a separate task so the infer_stream consumer loop (and its
+        frame_iter) keeps draining audio_in without waiting for synthesis.
+        """
+        try:
+            async for chunk in self._tts.synthesize(text, []):
+                if chunk and self._broker is not None:
+                    self._audio_seq += 1
+                    self._broker.publish(self._session_id, self._audio_seq, chunk)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
+
     async def _run(self) -> None:
         # DEMO MODE: bypasses SpeakPolicy + audit gates per spec invariants #2/#4.
+        #
+        # TTS synthesis is dispatched as a background task per proposal so that
+        # frame_iter continues draining audio_in while synthesis is running.
+        # Without this, the audio_in queue (maxsize=64) saturates within ~1.3 s
+        # at 50 fps, audio frames are dropped, and infer_stream never sees
+        # silence/EOU — causing indefinite response delay.
+        tts_tasks: list[asyncio.Task[None]] = []
         try:
             gen = await self._foreground.infer_stream(
                 frame_iter=self._frame_iter(),
                 caused_by=[],
             )
             async for proposal in gen:
-                # Bypass SpeakPolicy — synthesize directly from proposal text.
-                async for chunk in self._tts.synthesize(proposal.content, []):
-                    if chunk and self._broker is not None:
-                        self._audio_seq += 1
-                        self._broker.publish(self._session_id, self._audio_seq, chunk)
+                # Bypass SpeakPolicy — dispatch synthesis without blocking the loop.
+                task = asyncio.create_task(
+                    self._synthesize_and_publish(proposal.content)
+                )
+                tts_tasks.append(task)
         except asyncio.CancelledError:
+            for t in tts_tasks:
+                t.cancel()
             raise
         except Exception:
             pass
+        # Drain any in-flight TTS tasks before returning.
+        if tts_tasks:
+            await asyncio.gather(*tts_tasks, return_exceptions=True)
