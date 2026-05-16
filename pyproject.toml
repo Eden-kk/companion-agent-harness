@@ -34,11 +34,12 @@ include = ["companion_harness*", "manual_test_console*"]
 [tool.pytest.ini_options]
 markers = [
     "gpu: requires GPU and CUDA-specific deps (e.g., torchaudio cu128, kokoro_onnx, MiniCPM-o weights)",
+    "real_corpus: requires HF_TOKEN + accepted dataset gates; run on b200 with `pytest -m real_corpus tests/`",
 ]
-# Exclude gpu-marked tests by default so `pytest tests/` works on CI
-# (ubuntu-latest) and machines without GPU / model weights.
+# Exclude gpu-marked and real_corpus-marked tests by default.
 # Run GPU tests on b200: pytest -m gpu tests/
-addopts = "-m 'not gpu'"
+# Run real-corpus tests on b200: pytest -m real_corpus tests/
+addopts = "-m 'not gpu and not real_corpus'"
 # Cap each test at 120 s so a hanging subprocess can't consume the whole CI budget.
 # Tests that legitimately need more time should mark themselves with @pytest.mark.timeout(N).
 timeout = 120

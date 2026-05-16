@@ -2,6 +2,8 @@
 
 Usage:
     python -m companion_harness.evals run --adapter harness_native --output reports/
+    python -m companion_harness.evals run --adapter candor --mode synthetic --limit 10
+    python -m companion_harness.evals run --adapter full_duplex_bench_v1 --mode real --limit 5
 """
 
 from __future__ import annotations
@@ -107,6 +109,170 @@ def _run_harness_native(output: str, split: str) -> int:
     return _run_adapter(ADAPTERS["harness_native"], output, split)
 
 
+def _run_candor(
+    output: str,
+    split: str,
+    mode: str = "synthetic",
+    limit: int | None = None,
+) -> int:
+    from companion_harness.evals.adapters.candor import CandorCaseSource, CandorScenarioDriver
+    synthetic = mode == "synthetic"
+    try:
+        case_source = CandorCaseSource(synthetic=synthetic)
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    run_id = f"candor-{int(time.time())}-{uuid.uuid4().hex[:6]}"
+    output_dir = Path(output) / run_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    started_at = datetime.now(timezone.utc).isoformat()
+    driver = CandorScenarioDriver()
+    print(f"run_id={run_id}")
+
+    case_results: list[dict] = []
+    has_error = False
+
+    async def _run_all() -> None:
+        nonlocal has_error
+        cases = case_source.iter_cases(split)
+        count = 0
+        for case in cases:
+            if limit is not None and count >= limit:
+                break
+            replay_run = await driver.run(case, None, _RunConfig(output_dir))
+            passed = replay_run.final_status in ("completed", "skipped")
+            if replay_run.final_status == "error":
+                has_error = True
+            case_results.append({
+                "case_id": replay_run.case_id,
+                "final_status": replay_run.final_status,
+                "results": replay_run.results,
+                "event_log_path": str(replay_run.event_log_path),
+            })
+            status_str = "OK" if passed else "ERROR"
+            print(f"  [{status_str}] {case.case_id}: {replay_run.final_status}")
+            count += 1
+
+    asyncio.run(_run_all())
+
+    skip_stats = case_source.skip_stats()
+    finished_at = datetime.now(timezone.utc).isoformat()
+    run_json_path = output_dir / "run.json"
+    run_json_path.write_text(json.dumps({
+        "run_id": run_id,
+        "adapter": "candor",
+        "mode": mode,
+        "limit": limit,
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "skip_stats": skip_stats,
+        "skipped_row_count": skip_stats["skipped"],
+        "total_row_count": skip_stats["attempted"],
+        "cases": case_results,
+    }, indent=2))
+    print(f"[eval] wrote {run_json_path}")
+
+    if skip_stats["attempted"] > 0 and skip_stats["skip_rate"] >= 0.05:
+        print(
+            f"[eval] ERROR: dataset_row_skip_rate={skip_stats['skip_rate']:.3f} >= 0.05 "
+            f"({skip_stats['skipped']} skipped / {skip_stats['attempted']} attempted)",
+            file=sys.stderr,
+        )
+        return 1
+
+    return 1 if has_error else 0
+
+
+def _run_fdb(
+    output: str,
+    split: str,
+    mode: str = "synthetic",
+    limit: int | None = None,
+    version: str = "v1",
+) -> int:
+    from companion_harness.evals.adapters.full_duplex_bench import (
+        FullDuplexBenchV1CaseSource,
+        FullDuplexBenchV15CaseSource,
+        _SyntheticFDBDriver,
+    )
+    synthetic = mode == "synthetic"
+    try:
+        if version == "v1":
+            case_source: FullDuplexBenchV1CaseSource | FullDuplexBenchV15CaseSource = (
+                FullDuplexBenchV1CaseSource(synthetic=synthetic)
+            )
+            adapter_name = "full_duplex_bench_v1"
+        else:
+            case_source = FullDuplexBenchV15CaseSource(synthetic=synthetic)
+            adapter_name = "full_duplex_bench_v1_5"
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    run_id = f"fdb-{version}-{int(time.time())}-{uuid.uuid4().hex[:6]}"
+    output_dir = Path(output) / run_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    started_at = datetime.now(timezone.utc).isoformat()
+    driver = _SyntheticFDBDriver()
+    print(f"run_id={run_id}")
+
+    case_results: list[dict] = []
+    has_error = False
+
+    async def _run_all() -> None:
+        nonlocal has_error
+        cases = case_source.iter_cases(split)
+        count = 0
+        for case in cases:
+            if limit is not None and count >= limit:
+                break
+            replay_run = await driver.run(case, None, _RunConfig(output_dir))
+            passed = replay_run.final_status in ("completed", "skipped")
+            if replay_run.final_status == "error":
+                has_error = True
+            case_results.append({
+                "case_id": replay_run.case_id,
+                "final_status": replay_run.final_status,
+                "results": replay_run.results,
+                "event_log_path": str(replay_run.event_log_path),
+            })
+            status_str = "OK" if passed else "ERROR"
+            print(f"  [{status_str}] {case.case_id}: {replay_run.final_status}")
+            count += 1
+
+    asyncio.run(_run_all())
+
+    skip_stats = case_source.skip_stats()
+    finished_at = datetime.now(timezone.utc).isoformat()
+    run_json_path = output_dir / "run.json"
+    run_json_path.write_text(json.dumps({
+        "run_id": run_id,
+        "adapter": adapter_name,
+        "mode": mode,
+        "limit": limit,
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "skip_stats": skip_stats,
+        "skipped_row_count": skip_stats["skipped"],
+        "total_row_count": skip_stats["attempted"],
+        "cases": case_results,
+    }, indent=2))
+    print(f"[eval] wrote {run_json_path}")
+
+    if skip_stats["attempted"] > 0 and skip_stats["skip_rate"] >= 0.05:
+        print(
+            f"[eval] ERROR: dataset_row_skip_rate={skip_stats['skip_rate']:.3f} >= 0.05 "
+            f"({skip_stats['skipped']} skipped / {skip_stats['attempted']} attempted)",
+            file=sys.stderr,
+        )
+        return 1
+
+    return 1 if has_error else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m companion_harness.evals",
@@ -119,7 +285,7 @@ def main(argv: list[str] | None = None) -> int:
         "--adapter",
         required=True,
         metavar="NAME",
-        help="Adapter name. See ADAPTERS registry for available names.",
+        help="Adapter name. harness_native, candor, full_duplex_bench_v1, full_duplex_bench_v1_5, or registry name.",
     )
     run_p.add_argument(
         "--timing-mode",
@@ -140,6 +306,19 @@ def main(argv: list[str] | None = None) -> int:
         metavar="SPLIT",
         help="Dataset split passed to CaseSource.iter_cases().",
     )
+    run_p.add_argument(
+        "--mode",
+        default="synthetic",
+        choices=["synthetic", "real"],
+        help="Adapter mode. synthetic (default) uses fixtures; real streams from HuggingFace.",
+    )
+    run_p.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Cap the number of cases processed (per adapter). Omit for full corpus.",
+    )
 
     args = parser.parse_args(argv)
 
@@ -148,20 +327,34 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "run":
-        from companion_harness.evals.registry import ADAPTERS
-        info = ADAPTERS.get(args.adapter)
-        if info is None:
-            print(
-                f"adapter '{args.adapter}' is not registered. "
-                f"Known: {sorted(ADAPTERS)}. "
-                "File new-adapter requests via `gh issue create --label eval-adapter`.",
-                file=sys.stderr,
-            )
-            return 2
-        if info.status == "disabled":
-            print(f"adapter '{args.adapter}' is disabled: {info.notes or ''}", file=sys.stderr)
-            return 2
-        return _run_adapter(info, args.output, args.split)
+        mode = getattr(args, "mode", "synthetic")
+        limit = getattr(args, "limit", None)
+        split = args.split
+        output = args.output
+
+        if args.adapter == "harness_native":
+            return _run_harness_native(output, split)
+        elif args.adapter == "candor":
+            return _run_candor(output, split, mode, limit)
+        elif args.adapter == "full_duplex_bench_v1":
+            return _run_fdb(output, split, mode, limit, version="v1")
+        elif args.adapter == "full_duplex_bench_v1_5":
+            return _run_fdb(output, split, mode, limit, version="v1.5")
+        else:
+            from companion_harness.evals.registry import ADAPTERS
+            info = ADAPTERS.get(args.adapter)
+            if info is None:
+                print(
+                    f"adapter '{args.adapter}' is not registered. "
+                    f"Known: {sorted(ADAPTERS)}. "
+                    "File new-adapter requests via `gh issue create --label eval-adapter`.",
+                    file=sys.stderr,
+                )
+                return 2
+            if info.status == "disabled":
+                print(f"adapter '{args.adapter}' is disabled: {info.notes or ''}", file=sys.stderr)
+                return 2
+            return _run_adapter(info, output, split)
 
     parser.print_help()
     return 0
