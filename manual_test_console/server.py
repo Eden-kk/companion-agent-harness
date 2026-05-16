@@ -1017,18 +1017,11 @@ def _load_kokoro_tts_adapter() -> Any:
 
 
 def _load_native_minicpm_tts_adapter() -> Any:
-    """Seam factory for MiniCPM-o native duplex TTS.
-
-    UNAVAILABLE: #157 — libcudart blocker prevents loading stepaudio2/torchaudio.
-    When issue #157 resolves:
-      1. Remove the init_tts no-op patch in foreground_model_minicpm.py:131-139.
-      2. Replace this NotImplementedError with a real NativeMiniCPMTtsAdapter
-         import and construction (init_tts=True must be passed to MiniCPMStreamingModel).
-      3. Change the default in main() from _load_kokoro_tts_adapter to this function.
-    """
-    raise NotImplementedError(
-        "native_minicpm TTS unavailable — see issue #157 (libcudart blocker)"
-    )  # UNAVAILABLE: #157
+    """Lazy import + construct MiniCPMNativeTtsAdapter. b200 only (requires CUDA + init_tts)."""
+    from companion_harness.foreground_model_minicpm import MiniCPMStreamingModel  # noqa: WPS433
+    from companion_harness.tts_minicpm_native import MiniCPMNativeTtsAdapter  # noqa: WPS433
+    streaming_model = MiniCPMStreamingModel()
+    return MiniCPMNativeTtsAdapter(streaming_model)
 
 
 def _load_asr_model() -> Any:
@@ -1095,8 +1088,7 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "TTS adapter to load at startup. "
             "'kokoro' (default): Kokoro-82M-ONNX via KokoroTtsAdapter. "
-            "'native_minicpm': MiniCPM-o native duplex TTS — UNAVAILABLE until "
-            "issue #157 (libcudart blocker) resolves; raises NotImplementedError."
+            "'native_minicpm': MiniCPM-o native duplex TTS via MiniCPMNativeTtsAdapter."
         ),
     )
     args = parser.parse_args(argv)
