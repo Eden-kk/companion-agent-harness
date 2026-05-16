@@ -99,6 +99,7 @@ class MiniCPMRawStreamingDriver:
         self._audio_seq = 0
         self._session_event_emitted = False
         self._task: asyncio.Task[None] | None = None
+        self._tts_in_flight: bool = False
 
     @property
     def audio_in(self) -> asyncio.Queue[tuple[bytes, str]]:
@@ -152,11 +153,36 @@ class MiniCPMRawStreamingDriver:
             self._emit_session_started(raw_audio_event_id)
             yield frame_bytes, None  # type: ignore[misc]
 
+    def _make_dropped_event(self, proposal_content: str) -> Event:
+        now_ms = int(time.monotonic() * 1000)
+        event_id = f"raw_proposal_dropped_during_synthesis-{uuid.uuid4().hex[:12]}"
+        payload: dict = {"dropped_content_len": len(proposal_content)}
+        payload_hash = hashlib.sha256(str(payload).encode()).hexdigest()[:16]
+        return Event(
+            event_id=event_id,
+            session_id=self._session_id,
+            schema_version=_SCHEMA_VERSION,
+            seq_no=self._next_seq(),
+            event_type="raw_proposal_dropped_during_synthesis",
+            timestamp_mono_ms=now_ms,
+            timestamp_wall=datetime.now(timezone.utc).isoformat(),
+            source=_SOURCE,
+            caused_by=[],
+            payload_hash=payload_hash,
+            payload_ref=None,
+            payload_kind="signal",
+            subject_class="self",
+            sensitivity="safe",
+            retention_policy_id="signal_default_30d",
+            payload_inline=payload,
+        )
+
     async def _synthesize_and_publish(self, text: str) -> None:
-        """Fire-and-forget: synthesize TTS for one proposal and publish chunks.
+        """Synthesize TTS for one proposal and publish chunks.
 
         Runs as a separate task so the infer_stream consumer loop (and its
         frame_iter) keeps draining audio_in without waiting for synthesis.
+        _tts_in_flight is cleared on completion or cancel.
         """
         try:
             async for chunk in self._tts.synthesize(text, []):
@@ -167,6 +193,8 @@ class MiniCPMRawStreamingDriver:
             raise
         except Exception:
             pass
+        finally:
+            self._tts_in_flight = False
 
     async def _run(self) -> None:
         # DEMO MODE: bypasses SpeakPolicy + audit gates per spec invariants #2/#4.
@@ -176,24 +204,36 @@ class MiniCPMRawStreamingDriver:
         # Without this, the audio_in queue (maxsize=64) saturates within ~1.3 s
         # at 50 fps, audio frames are dropped, and infer_stream never sees
         # silence/EOU — causing indefinite response delay.
-        tts_tasks: list[asyncio.Task[None]] = []
+        #
+        # Only one TTS task runs at a time (_tts_in_flight guard, Option B).
+        # _tts_in_flight is set synchronously before create_task so subsequent
+        # proposals in the same loop iteration see it immediately.
+        # Proposals that arrive while synthesis is in-flight are dropped and
+        # logged as raw_proposal_dropped_during_synthesis for audit (invariant #1).
+        tts_task: asyncio.Task[None] | None = None
         try:
             gen = await self._foreground.infer_stream(
                 frame_iter=self._frame_iter(),
                 caused_by=[],
             )
             async for proposal in gen:
+                if self._tts_in_flight:
+                    # Skip-if-busy: drop concurrent proposal, emit audit event.
+                    self._logger.log(self._make_dropped_event(proposal.content))
+                    continue
                 # Bypass SpeakPolicy — dispatch synthesis without blocking the loop.
-                task = asyncio.create_task(
+                # Set the flag synchronously before create_task so subsequent proposals
+                # in the same generator batch see _tts_in_flight=True immediately.
+                self._tts_in_flight = True
+                tts_task = asyncio.create_task(
                     self._synthesize_and_publish(proposal.content)
                 )
-                tts_tasks.append(task)
         except asyncio.CancelledError:
-            for t in tts_tasks:
-                t.cancel()
+            if tts_task is not None:
+                tts_task.cancel()
             raise
         except Exception:
             pass
-        # Drain any in-flight TTS tasks before returning.
-        if tts_tasks:
-            await asyncio.gather(*tts_tasks, return_exceptions=True)
+        # Drain any in-flight TTS task before returning.
+        if tts_task is not None:
+            await asyncio.gather(tts_task, return_exceptions=True)
