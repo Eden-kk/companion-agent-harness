@@ -172,6 +172,7 @@ class PolicyInputs:
     aesthetic_novelty_score:     float = 0.0
     short_response_appropriate:  bool  = False
     retrieved_items:             list["MemoryItem"] = field(default_factory=list)
+    tool_status:                 str | None = None  # v0.1f Task 5: "in_progress" | None
     tool_progress_evidence:      ToolProgressEvidence | None = None  # v0.1f Anchor 4
     user_transcript:             str = ""  # ASR output for the current/just-completed turn. v0.1f addition.
 

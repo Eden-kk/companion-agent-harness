@@ -16,7 +16,7 @@ from companion_harness.speak_policy_config import (
     _LEVEL_TO_FLOAT_THRESHOLD,
 )
 
-POLICY_VERSION = "v0.1d"
+POLICY_VERSION = "v0.1f"
 CONFIG_VERSION = "v0.1e"
 
 _RESPONSE_SOURCE_FOR_ACTION: dict[str, ResponseContentSource] = {
@@ -105,6 +105,25 @@ def decide(
     # 3. EOU not confirmed — silence wins ties (invariant #8: tie goes to silence).
     if inputs.eou_probability <= 0.5:
         return _silence(ReasonCode.NOT_ADDRESSED_TO_AGENT, caused_by)
+
+    # 3b. Tool in progress — evidence-bound filler gate (OQ-5; invariant #9; Anchor 4).
+    if inputs.tool_status == "in_progress":
+        if inputs.tool_progress_evidence is None:
+            return _silence(ReasonCode.TOOL_PROGRESS_EVIDENCE_MISSING, caused_by)
+        ev = inputs.tool_progress_evidence
+        if ev.silence_won_already or ev.fillers_emitted_so_far >= 2:
+            return _silence(ReasonCode.TOOL_FILLER_BUDGET_EXHAUSTED, caused_by)
+        return SpeakDecision(
+            action_type="tool_status",
+            primary_reason_code=ReasonCode.PROACTIVITY_BUDGET_AVAILABLE,
+            supporting_reason_codes=[],
+            redacted_explanation=None,
+            caused_by=caused_by,
+            budget_bucket="tool_status",
+            allowed_prosody_tags=[],
+            max_duration_ms=None,
+            response_content_source="filler_with_tool_evidence",
+        )
 
     # 4. EOU confirmed + high backchannel probability — user is just acknowledging.
     if p_backchannel >= backchannel_threshold:
@@ -261,6 +280,14 @@ def _threshold_path_for(
         path.append("eou_gate:below_threshold")
         return path
     path.append("eou_gate:passed")
+    if inputs.tool_status == "in_progress":
+        if inputs.tool_progress_evidence is None:
+            path.append("tool_status:evidence_missing")
+        elif inputs.tool_progress_evidence.silence_won_already or inputs.tool_progress_evidence.fillers_emitted_so_far >= 2:
+            path.append("tool_status:budget_exhausted")
+        else:
+            path.append("tool_status:filler_permitted")
+        return path
     if p_backchannel >= backchannel_threshold:
         path.append("backchannel_threshold:exceeded")
         return path
