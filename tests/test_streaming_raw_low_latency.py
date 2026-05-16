@@ -147,7 +147,8 @@ async def test_no_indefinite_buffering_across_two_utterances() -> None:
 
     With the serial implementation, the loop was blocked on the first
     synthesize() call and could not process the second proposal at all until
-    synthesis completed. With the fix, both tasks run concurrently.
+    synthesis completed. With Option A (cancel-previous), the second proposal
+    cancels the first and runs to completion — at least one chunk is published.
     """
     proposals = [_make_proposal("first"), _make_proposal("second")]
     tts = _SlowTtsAdapter(delay_s=0.05)
@@ -170,8 +171,9 @@ async def test_no_indefinite_buffering_across_two_utterances() -> None:
     await asyncio.sleep(0.3)
     await driver.stop()
 
-    # Both proposals should have been synthesized.
-    assert len(broker.published) == 2, (
-        f"Expected 2 published chunks (one per proposal), got {len(broker.published)}. "
-        "Serial TTS may have blocked second proposal."
+    # The latest proposal must produce audio output (cancel-previous ensures the
+    # second proposal is never silently dropped).
+    assert len(broker.published) >= 1, (
+        f"Expected at least 1 published chunk (latest proposal), got {len(broker.published)}. "
+        "Second proposal may have been blocked or dropped."
     )

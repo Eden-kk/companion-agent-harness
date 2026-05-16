@@ -181,17 +181,17 @@ class MiniCPMRawStreamingDriver:
             payload_inline=payload,
         )
 
-    def _make_dropped_event(self, proposal_content: str) -> Event:
+    def _make_superseded_event(self, proposal_content: str) -> Event:
         now_ms = int(time.monotonic() * 1000)
-        event_id = f"raw_proposal_dropped_during_synthesis-{uuid.uuid4().hex[:12]}"
-        payload: dict = {"dropped_content_len": len(proposal_content)}
+        event_id = f"raw_proposal_superseded_by_newer-{uuid.uuid4().hex[:12]}"
+        payload: dict = {"superseded_content_len": len(proposal_content)}
         payload_hash = hashlib.sha256(str(payload).encode()).hexdigest()[:16]
         return Event(
             event_id=event_id,
             session_id=self._session_id,
             schema_version=_SCHEMA_VERSION,
             seq_no=self._next_seq(),
-            event_type="raw_proposal_dropped_during_synthesis",
+            event_type="raw_proposal_superseded_by_newer",
             timestamp_mono_ms=now_ms,
             timestamp_wall=datetime.now(timezone.utc).isoformat(),
             source=_SOURCE,
@@ -235,25 +235,30 @@ class MiniCPMRawStreamingDriver:
         # at 50 fps, audio frames are dropped, and infer_stream never sees
         # silence/EOU — causing indefinite response delay.
         #
-        # Only one TTS task runs at a time (_tts_in_flight guard, Option B).
-        # _tts_in_flight is set synchronously before create_task so subsequent
-        # proposals in the same loop iteration see it immediately.
-        # Proposals that arrive while synthesis is in-flight are dropped and
-        # logged as raw_proposal_dropped_during_synthesis for audit (invariant #1).
+        # Cancel-previous (Option A): when a new proposal arrives while synthesis
+        # is in-flight, the old task is cancelled and the new one takes over.
+        # MiniCPM proposals represent "latest thought" — older partials are obsolete.
+        # The cancelled task emits a raw_proposal_superseded_by_newer audit event
+        # (invariant #1). _tts_in_flight is set synchronously before create_task so
+        # the finally-block in _synthesize_and_publish always clears it on completion
+        # or cancel.
         tts_task: asyncio.Task[None] | None = None
+        superseded_content: str | None = None
         try:
             gen = await self._foreground.infer_stream(
                 frame_iter=self._frame_iter(),
                 caused_by=[],
             )
             async for proposal in gen:
-                if self._tts_in_flight:
-                    # Skip-if-busy: drop concurrent proposal, emit audit event.
-                    self._logger.log(self._make_dropped_event(proposal.content))
-                    continue
+                if tts_task is not None and not tts_task.done():
+                    # Cancel-previous: newest proposal wins, emit audit event.
+                    superseded_content = proposal.content
+                    tts_task.cancel()
+                    await asyncio.gather(tts_task, return_exceptions=True)
+                    self._logger.log(self._make_superseded_event(superseded_content))
                 # Bypass SpeakPolicy — dispatch synthesis without blocking the loop.
-                # Set the flag synchronously before create_task so subsequent proposals
-                # in the same generator batch see _tts_in_flight=True immediately.
+                # Set the flag synchronously before create_task so the finally-block
+                # in _synthesize_and_publish sees _tts_in_flight=True immediately.
                 self._tts_in_flight = True
                 tts_task = asyncio.create_task(
                     self._synthesize_and_publish(proposal.content)
