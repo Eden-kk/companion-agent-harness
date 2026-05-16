@@ -14,6 +14,7 @@ import pytest
 
 from companion_harness.core_user_profile_store import CoreUserProfileStore
 from companion_harness.episodic_memory_store import EpisodicMemoryStore
+from companion_harness.memory_manager import CommitResult
 from companion_harness.privacy_gates import _SkipCommit, check_privacy_gate
 from companion_harness.schemas import MemoryItem, SensitiveField
 from companion_harness.semantic_relational_store import SemanticRelationalStore
@@ -177,8 +178,9 @@ def test_episodic_no_memory_blocks_commit(tmp_path: pathlib.Path) -> None:
 
 def test_episodic_no_camera_memory_blocks_visual(tmp_path: pathlib.Path) -> None:
     store = EpisodicMemoryStore(tmp_path / "ep")
-    with pytest.raises(ValueError, match="no_camera_memory"):
-        store.commit(_make_item(content={"frame_id": "f-001"}), privacy_mode="no_camera_memory")
+    result = store.commit(_make_item(content={"frame_id": "f-001"}), privacy_mode="no_camera_memory")
+    assert result == CommitResult.SKIPPED_CAMERA
+    assert store.retrieve("") == []
 
 
 def test_episodic_no_camera_memory_allows_non_visual(tmp_path: pathlib.Path) -> None:
@@ -242,8 +244,9 @@ def test_session_no_memory_blocks_commit() -> None:
 
 def test_session_no_camera_memory_blocks_visual() -> None:
     store = SessionStateStore()
-    with pytest.raises(ValueError, match="no_camera_memory"):
-        store.commit(_make_item(content={"frame_id": "f-001"}), privacy_mode="no_camera_memory")
+    result = store.commit(_make_item(content={"frame_id": "f-001"}), privacy_mode="no_camera_memory")
+    assert result == CommitResult.SKIPPED_CAMERA
+    assert store.retrieve("") == []
 
 
 def test_session_no_camera_memory_allows_non_visual() -> None:
@@ -307,8 +310,9 @@ def test_profile_no_memory_blocks_commit(tmp_path: pathlib.Path) -> None:
 
 def test_profile_no_camera_memory_blocks_visual(tmp_path: pathlib.Path) -> None:
     store = CoreUserProfileStore(tmp_path / "profile.json")
-    with pytest.raises(ValueError, match="no_camera_memory"):
-        store.commit(_make_item(content={"frame_id": "f-001"}), privacy_mode="no_camera_memory")
+    result = store.commit(_make_item(content={"frame_id": "f-001"}), privacy_mode="no_camera_memory")
+    assert result == CommitResult.SKIPPED_CAMERA
+    assert store.retrieve("") == []
 
 
 def test_profile_no_camera_memory_allows_non_visual(tmp_path: pathlib.Path) -> None:
@@ -396,8 +400,9 @@ def test_semantic_no_camera_memory_blocks_visual(tmp_path: pathlib.Path) -> None
             value="alice seen at park",
         ),
     )
-    with pytest.raises(ValueError, match="no_camera_memory"):
-        store.commit(item, privacy_mode="no_camera_memory")
+    result = store.commit(item, privacy_mode="no_camera_memory")
+    assert result == CommitResult.SKIPPED_CAMERA
+    assert store.retrieve("alice") == []
 
 
 def test_semantic_no_camera_memory_allows_non_visual(tmp_path: pathlib.Path) -> None:

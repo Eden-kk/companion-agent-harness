@@ -38,6 +38,7 @@ import os
 import pathlib
 from datetime import datetime, timezone
 
+from companion_harness.memory_manager import CommitResult
 from companion_harness.privacy_gates import _SkipCommit, check_privacy_gate
 from companion_harness.schemas import MemoryItem, SensitiveField
 
@@ -127,13 +128,16 @@ class SemanticRelationalStore:
     # MemoryManager Protocol
     # ------------------------------------------------------------------
 
-    def commit(self, item: MemoryItem, privacy_mode: str = "normal") -> None:
+    def commit(self, item: MemoryItem, privacy_mode: str = "normal") -> CommitResult:
         try:
             check_privacy_gate(item, privacy_mode)
         except _SkipCommit:
-            return
+            return CommitResult.SKIPPED_PRIVACY
+        except ValueError:
+            return CommitResult.SKIPPED_CAMERA
         _validate_content_shape(item)
         self._write(item)
+        return CommitResult.COMMITTED
 
     def retrieve(
         self, query: str, top_k: int = 5, include_history: bool = False

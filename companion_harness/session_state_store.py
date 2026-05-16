@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from companion_harness.memory_manager import CommitResult
 from companion_harness.privacy_gates import _SkipCommit, check_privacy_gate
 from companion_harness.schemas import MemoryItem
 
@@ -33,12 +34,15 @@ class SessionStateStore:
     def __init__(self) -> None:
         self._items: dict[str, MemoryItem] = {}
 
-    def commit(self, item: MemoryItem, privacy_mode: str = "normal") -> None:
+    def commit(self, item: MemoryItem, privacy_mode: str = "normal") -> CommitResult:
         try:
             check_privacy_gate(item, privacy_mode)
         except _SkipCommit:
-            return
+            return CommitResult.SKIPPED_PRIVACY
+        except ValueError:
+            return CommitResult.SKIPPED_CAMERA
         self._items[item.item_id] = item
+        return CommitResult.COMMITTED
 
     def retrieve(self, query: str, top_k: int = 5) -> list[MemoryItem]:
         q = query.lower()

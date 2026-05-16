@@ -17,11 +17,24 @@ enumerated here.
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import Protocol, runtime_checkable
 
 from companion_harness.schemas import MemoryItem
 
-__all__ = ["EmbeddingAdapter", "MemoryManager", "MemoryManagerStub", "_NullEmbeddingAdapter"]
+__all__ = [
+    "CommitResult",
+    "EmbeddingAdapter",
+    "MemoryManager",
+    "MemoryManagerStub",
+    "_NullEmbeddingAdapter",
+]
+
+
+class CommitResult(Enum):
+    COMMITTED = "committed"
+    SKIPPED_PRIVACY = "skipped_privacy"
+    SKIPPED_CAMERA = "skipped_camera"
 
 
 @runtime_checkable
@@ -39,7 +52,7 @@ class _NullEmbeddingAdapter:
 
 @runtime_checkable
 class MemoryManager(Protocol):
-    def commit(self, item: MemoryItem, privacy_mode: str = "normal") -> None: ...
+    def commit(self, item: MemoryItem, privacy_mode: str = "normal") -> CommitResult: ...
     def retrieve(self, query: str, top_k: int = 5) -> list[MemoryItem]: ...
     def forget(self, item_id: str) -> None: ...
     def hard_delete(self, item_id: str) -> None: ...
@@ -49,7 +62,7 @@ class MemoryManager(Protocol):
 class MemoryManagerStub:
     """Inert skeleton — all methods raise NotImplementedError until Stage 4."""
 
-    def commit(self, item: MemoryItem, privacy_mode: str = "normal") -> None:
+    def commit(self, item: MemoryItem, privacy_mode: str = "normal") -> CommitResult:
         raise NotImplementedError("MemoryManager.commit: wired at Stage 4")
 
     def retrieve(self, query: str, top_k: int = 5) -> list[MemoryItem]:
