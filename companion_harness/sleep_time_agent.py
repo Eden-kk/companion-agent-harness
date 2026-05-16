@@ -26,8 +26,8 @@ if TYPE_CHECKING:
 
 __all__ = ["SleepTimeAgent"]
 
-CONFIDENCE_DEFAULT = 0.8
-SALIENCE_DEFAULT = 0.5
+CONFIDENCE_DEFAULT = 0.8  # UNAVAILABLE: #188 — replace with LLM-driven confidence scorer
+SALIENCE_DEFAULT = 0.5  # UNAVAILABLE: #188 — replace with LLM-driven salience scorer
 SUMMARY_TRUNCATE_CHARS = 80
 
 

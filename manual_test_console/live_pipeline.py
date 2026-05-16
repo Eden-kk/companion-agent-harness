@@ -47,6 +47,7 @@ from companion_harness.realtime_orchestrator import StreamingRealtimeOrchestrato
 from companion_harness.schemas import MemoryItem, PolicyInputs, ThinkerProposal, TurnSignal
 from companion_harness.turn_detector_smart import SmartTurnDetector
 from companion_harness.turn_detector_vad import VADDetector
+from companion_harness.sleep_time_agent import SleepTimeAgent
 from companion_harness.urgency_scorer import UrgencyScorer, _NullUrgencyScorer
 from manual_test_console.config_schema import ALLOWLIST
 from manual_test_console.config_store import ConfigStore
@@ -99,7 +100,10 @@ class SharedLoggerProxy:
         self._inner.log(event)
 
     def subscribe(self, callback: Any) -> None:
-        self._inner.subscribe(callback)
+        # Bypass EventLogger's pre-start guard: per-session components (e.g.
+        # SleepTimeAgent) subscribe after the shared logger is already running.
+        # The drain loop iterates _subscribers dynamically so late subscription is safe.
+        self._inner._subscribers.append(callback)
 
     def unsubscribe(self, callback: Any) -> None:
         self._inner.unsubscribe(callback)
@@ -403,11 +407,16 @@ class LivePipeline:
     core_store: Any = None
     episodic_store: Any = None
     semantic_store: Any = None
+    sleep_time_agent: SleepTimeAgent | None = None
 
     async def start(self) -> None:
         await self.orchestrator.start()
+        if self.sleep_time_agent is not None:
+            await self.sleep_time_agent.start()
 
     async def stop(self) -> None:
+        if self.sleep_time_agent is not None:
+            await self.sleep_time_agent.stop()
         await self.orchestrator.stop()
 
     def push_audio(self, frame_bytes: bytes, raw_audio_event_id: str) -> None:
@@ -453,6 +462,7 @@ def build_live_pipeline(
     vision_sidecar: Any = None,
     config_store: ConfigStore | None = None,
     blob_dir: Path | None = None,
+    wire_sleep_time_agent: bool = False,
 ) -> LivePipeline:
     """Construct a LivePipeline for one ingest session.
 
@@ -600,6 +610,20 @@ def build_live_pipeline(
         semantic_store=semantic_store,
     )
 
+    sleep_agent: SleepTimeAgent | None = None
+    if wire_sleep_time_agent:
+        stores = {
+            "session": session_state_store,
+            "core": core_store,
+            "episodic": episodic_store,
+            "semantic": semantic_store,
+        }
+        sleep_agent = SleepTimeAgent(
+            stores=stores,
+            event_logger=shielded_logger,  # type: ignore[arg-type]
+            payload_reader=lambda evt_id: orch._memory_event_payloads.get(evt_id),
+        )
+
     return LivePipeline(
         session_id=session_id,
         audio_in=audio_in,
@@ -610,4 +634,5 @@ def build_live_pipeline(
         core_store=core_store,
         episodic_store=episodic_store,
         semantic_store=semantic_store,
+        sleep_time_agent=sleep_agent,
     )
