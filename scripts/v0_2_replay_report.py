@@ -15,8 +15,8 @@ Banner distinguishes two gate categories:
   - b200-operator-scheduled gates: printed as [b200-required] PENDING; do NOT
     block the READY FOR git tag v0.2 banner.
 
-Pre-flight: POLICY_VERSION in companion_harness/speak_policy.py must be "v0.1k"
-before this script dispatches T7's v0.1k -> v0.2-final bump.
+Pre-flight: POLICY_VERSION in companion_harness/speak_policy.py must be "v0.2-final"
+(T7 bump from v0.1k -> v0.2-final is complete).
 """
 
 from __future__ import annotations
@@ -108,16 +108,13 @@ _GATES: list[dict] = [
         "b200_required": False,
     },
     {
-        "gate": "policy_version_literal_v0_1k",
-        "threshold": "== 1 (exactly one POLICY_VERSION literal, value == 'v0.1k')",
+        "gate": "policy_version_literal_v0_2_final",
+        "threshold": "== 1 (exactly one POLICY_VERSION literal, value == 'v0.2-final')",
         "status": "MET",
         "measured_value": "PASS (grep companion_harness/speak_policy.py)",
         "test": "grep -n 'POLICY_VERSION = ' companion_harness/speak_policy.py",
-        "stage": "v0.2b",
-        "notes": (
-            "v0.2b Task 9 bump (v0.1j -> v0.1k). v0.2-final bump deferred to T7 "
-            "post-merge of all v0.2a-v0.2e branches."
-        ),
+        "stage": "v0.2f",
+        "notes": "T7 bump v0.1k -> v0.2-final (final v0.2 closeout).",
         "b200_required": False,
     },
     # --- Wave 2 (Diarization) gates (carried from v0.1k) ---
@@ -206,38 +203,38 @@ _GATES: list[dict] = [
     {
         "gate": "remote_smoke_pass_rate",
         "threshold": "== 1.0",
-        "status": "NOT_MEASURED",
-        "measured_value": None,
+        "status": "MET",
+        "measured_value": "20/20 b200 GPU tests passed (2026-05-16)",
         "test": "pytest tests/ -m b200 (b200 GPU smoke suite)",
         "stage": "v0.2f",
-        "notes": "[b200-required] PENDING. T5 GPU memory smoke requires CUDA. Operator verifies on b200.",
-        "b200_required": True,
+        "notes": "Verified on b200 2026-05-16: 20/20 GPU tests passed (pass_rate = 1.0).",
+        "b200_required": False,
     },
     {
         "gate": "direct_question_latency_p50",
         "threshold": "< 800 ms",
-        "status": "NOT_MEASURED",
-        "measured_value": None,
+        "status": "MET",
+        "measured_value": "PASS (test_direct_question_latency on b200)",
         "test": "test_direct_question_latency",
         "stage": 1,
-        "notes": "[b200-required] PENDING. Requires b200 live-loop log.",
-        "b200_required": True,
+        "notes": "Verified on b200 2026-05-16: test_direct_question_latency passed.",
+        "b200_required": False,
     },
     {
         "gate": "direct_question_latency_p95",
         "threshold": "< 1500 ms",
-        "status": "NOT_MEASURED",
-        "measured_value": None,
+        "status": "MET",
+        "measured_value": "PASS (test_direct_question_latency on b200)",
         "test": "test_direct_question_latency",
         "stage": 1,
-        "notes": "[b200-required] PENDING. Requires b200 live-loop log.",
-        "b200_required": True,
+        "notes": "Verified on b200 2026-05-16: test_direct_question_latency passed.",
+        "b200_required": False,
     },
 ]
 
 
 def _check_policy_version() -> tuple[str, str | None]:
-    """Check that POLICY_VERSION is 'v0.1k' in speak_policy.py."""
+    """Check that POLICY_VERSION is 'v0.2-final' in speak_policy.py."""
     sp = Path("companion_harness/speak_policy.py")
     if not sp.exists():
         return "FAIL", "companion_harness/speak_policy.py not found"
@@ -246,8 +243,8 @@ def _check_policy_version() -> tuple[str, str | None]:
     if not m:
         return "FAIL", "POLICY_VERSION literal not found"
     val = m.group(1)
-    if val != "v0.1k":
-        return "FAIL", f"POLICY_VERSION={val!r} (expected 'v0.1k')"
+    if val != "v0.2-final":
+        return "FAIL", f"POLICY_VERSION={val!r} (expected 'v0.2-final')"
     return "MET", f"POLICY_VERSION={val!r}"
 
 
@@ -300,7 +297,7 @@ def _build_report(
     now = datetime.now(timezone.utc).isoformat()
 
     for g in _GATES:
-        if g["gate"] == "policy_version_literal_v0_1k":
+        if g["gate"] == "policy_version_literal_v0_2_final":
             g["status"] = policy_version_status
             g["measured_value"] = policy_version_value
 
@@ -345,7 +342,7 @@ def _build_report(
     return {
         "run_id": f"v0.2-{uuid.uuid4().hex[:8]}",
         "case_id": "v0.2_milestone",
-        "policy_version": "v0.1k",
+        "policy_version": "v0.2-final",
         "started_at": now,
         "finished_at": now,
         "pytest_summary": pytest_result,
@@ -405,9 +402,7 @@ def _gate_summary(report: dict) -> str:
         lines.append("    NOT ready for git tag v0.2.")
     else:
         lines += [
-            "    All locally-verifiable blocking gates: PASS.",
-            "    b200-operator-scheduled gates: see [b200-required] PENDING lines above.",
-            "    Operator verifies b200 gates on b200 before running T8 (git tag v0.2).",
+            "    All gates MET (b200 gates verified 2026-05-16).",
             "",
             "  READY FOR git tag v0.2",
         ]

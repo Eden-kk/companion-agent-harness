@@ -64,5 +64,5 @@ def test_tool_in_progress_with_evidence_missing_returns_silence():
     assert decision.primary_reason_code == ReasonCode.TOOL_PROGRESS_EVIDENCE_MISSING
 
 
-def test_policy_version_bumped_to_v0_1k():
-    assert speak_policy.POLICY_VERSION == "v0.1k"
+def test_policy_version_bumped_to_v0_2_final():
+    assert speak_policy.POLICY_VERSION == "v0.2-final"

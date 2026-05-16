@@ -16,7 +16,7 @@ from companion_harness.speak_policy_config import (
     _LEVEL_TO_FLOAT_THRESHOLD,
 )
 
-POLICY_VERSION = "v0.1k"
+POLICY_VERSION = "v0.2-final"
 CONFIG_VERSION = "v0.1e"
 
 _BLOCKING_SOCIAL_MODES = frozenset({
