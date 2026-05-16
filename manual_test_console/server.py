@@ -511,14 +511,23 @@ async def _handle_ingest_ws(request: web.Request) -> web.WebSocketResponse:
         # buffers the most-recent frame; _bounded_frame_gen pairs it with the
         # next audio chunk so the MiniCPM-o vision tower runs once per frame
         # (not once per audio chunk).
+        config_store: ConfigStore = request.app[KEY_CONFIG_STORE]  # type: ignore[assignment]
         sidecar: Any = None
         if request.app[KEY_VISION_ENABLED]:
             from companion_harness.vision_sidecar import VisionSidecar  # noqa: WPS433
-            scene_scorer = request.app[KEY_SCENE_SCORER] or _NullSceneScorer()
-            grounding_model = request.app[KEY_GROUNDING_MODEL] or _NullGroundingModel()
+            _scene = (
+                request.app[KEY_SCENE_SCORER]
+                if config_store.get_seam("scene_scorer")
+                else None
+            )
+            _grounding = (
+                request.app[KEY_GROUNDING_MODEL]
+                if config_store.get_seam("grounding_model")
+                else None
+            )
             sidecar = VisionSidecar(
-                scene_scorer=scene_scorer,
-                grounding_model=grounding_model,
+                scene_scorer=_scene or _NullSceneScorer(),
+                grounding_model=_grounding or _NullGroundingModel(),
                 session_id=session.session_id,
                 logger=logger,
             )
@@ -537,6 +546,7 @@ async def _handle_ingest_ws(request: web.Request) -> web.WebSocketResponse:
             audio_out_broker=request.app[KEY_AUDIO_OUT_BROKER],  # type: ignore[arg-type]
             tts_adapter=request.app[KEY_TTS_ADAPTER],
             vision_sidecar=sidecar,
+            config_store=config_store,
             blob_dir=request.app[KEY_BLOB_DIR],
             av_conflict_scorer=request.app[KEY_AV_CONFLICT_SCORER],
             urgency_scorer=request.app[KEY_URGENCY_SCORER],
@@ -1561,6 +1571,19 @@ def main(argv: list[str] | None = None) -> int:
             "Explicitly bypasses spec invariants #2, #4, and parts of #1."
         ),
     )
+    parser.add_argument(
+        "--disable-seam",
+        dest="disable_seams",
+        action="append",
+        metavar="SEAM",
+        default=[],
+        help=(
+            "Disable a hot seam at startup (repeatable). SEAM must be one of "
+            "the 12 names in HOT_SEAMS. Example: --disable-seam asr "
+            "--disable-seam tts. Overrides any default; the dashboard can "
+            "re-enable at runtime via POST /config/model-swap."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if args.minicpm_only and args.use_stubs:
@@ -1691,6 +1714,17 @@ def main(argv: list[str] | None = None) -> int:
             except Exception as exc:
                 print(f"SentenceTransformerEmbedder init FAILED: {type(exc).__name__}: {exc}", flush=True)
 
+    # Build seam_defaults from --disable-seam flags.  Unknown seam names are
+    # silently ignored here; the HTTP route rejects them at runtime.
+    seam_defaults: dict[str, bool] | None = None
+    if args.disable_seams:
+        seam_defaults = {s: False for s in args.disable_seams if s in HOT_SEAMS}
+        unknown = [s for s in args.disable_seams if s not in HOT_SEAMS]
+        for s in unknown:
+            print(f"WARNING: --disable-seam {s!r}: unknown seam (ignored)", flush=True)
+        if not seam_defaults:
+            seam_defaults = None
+
     tts_name = "MiniCPM-o native TTS" if args.tts_adapter == "native_minicpm" else "Kokoro-82M-ONNX"
     app = build_app(
         blob_dir,
@@ -1711,6 +1745,7 @@ def main(argv: list[str] | None = None) -> int:
         urgency_scorer=real_urgency_scorer,
         embedder=real_embedder,
         streaming_raw_mode=args.minicpm_streaming_raw,
+        seam_defaults=seam_defaults,
     )
     # Stamp the deictic_model label as "pending-foreground-load" so
     # _on_startup_finalize_deictic knows the operator asked for it.
