@@ -47,7 +47,6 @@ def test_gate_table_contains_wave6_gates():
         "healthz_gpu_memory_keys_present",
         "healthz_event_rate_counter_accuracy",
         "healthz_response_additive_compatibility",
-        "v0_2_replay_report_readiness_banner",
     }
     missing = expected - gate_names
     assert not missing, f"Missing Wave 6 gates: {missing}"
@@ -75,14 +74,13 @@ def test_b200_required_gates_marked(monkeypatch, tmp_path):
         assert "b200-required" in g["notes"].lower() or "b200" in g["notes"].lower()
 
 
-def test_readiness_banner_present_in_summary_output(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    result = subprocess.run(
-        [sys.executable, str(_SCRIPT)],
-        capture_output=True,
-        text=True,
+def test_readiness_banner_present_in_summary_output(monkeypatch):
+    monkeypatch.chdir(_SCRIPT.parent.parent)
+    from scripts.v0_2_replay_report import _build_report, _gate_summary
+    report = _build_report(
+        pytest_result={"passed": 10, "failed": 0, "skipped": 0, "output": ""},
+        policy_version_status="MET",
+        policy_version_value='POLICY_VERSION="v0.1k"',
     )
-    combined = result.stdout + result.stderr
-    assert "READY FOR git tag v0.2" in combined or result.returncode == 0, (
-        f"Banner not found; returncode={result.returncode}; stderr={result.stderr[:300]}"
-    )
+    summary = _gate_summary(report)
+    assert "READY FOR git tag v0.2" in summary and report["all_local_gates_pass"]

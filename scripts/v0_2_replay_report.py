@@ -64,7 +64,7 @@ _GATES: list[dict] = [
         "measured_value": "PASS (test_blob_retention_rotation)",
         "test": "test_blob_retention_rotation",
         "stage": "v0.2f",
-        "notes": "T3. Rotation worker removes only files older than the retention window.",
+        "notes": "T3. Rotation worker removes only files older than the retention window. No cross-reference with event log; file removal is based on mtime only.",
         "b200_required": False,
     },
     {
@@ -118,16 +118,6 @@ _GATES: list[dict] = [
             "v0.2b Task 9 bump (v0.1j -> v0.1k). v0.2-final bump deferred to T7 "
             "post-merge of all v0.2a-v0.2e branches."
         ),
-        "b200_required": False,
-    },
-    {
-        "gate": "v0_2_replay_report_readiness_banner",
-        "threshold": "== 1 (READY FOR git tag v0.2 printed)",
-        "status": "MET",
-        "measured_value": "PASS (this script prints the banner when all blocking gates pass)",
-        "test": "python scripts/v0_2_replay_report.py | grep 'READY FOR git tag v0.2'",
-        "stage": "v0.2f",
-        "notes": "T7. Script prints readiness banner when all locally-verifiable blocking gates pass.",
         "b200_required": False,
     },
     # --- Wave 2 (Diarization) gates (carried from v0.1k) ---

@@ -165,6 +165,7 @@ class _EventRateCounter:
         self._total = 0
 
     async def on_event(self, event: Event) -> None:
+        # Trimming is lazy: stale timestamps survive until the next event arrives.
         now_ms = event.timestamp_mono_ms
         self._timestamps.append(now_ms)
         self._total += 1
