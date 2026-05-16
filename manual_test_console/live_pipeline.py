@@ -48,6 +48,7 @@ from companion_harness.realtime_orchestrator import StreamingRealtimeOrchestrato
 from companion_harness.schemas import MemoryItem, PolicyInputs, ThinkerProposal, TurnSignal
 from companion_harness.turn_detector_smart import SmartTurnDetector
 from companion_harness.turn_detector_vad import VADDetector
+from companion_harness.memory_manager import CommitResult
 from companion_harness.sleep_time_agent import SleepTimeAgent
 from companion_harness.urgency_scorer import UrgencyScorer, _NullUrgencyScorer
 from manual_test_console.config_schema import ALLOWLIST
@@ -186,8 +187,8 @@ class EmptyTranscriptASRModel:
 class EmptyMemoryStore:
     """No-op MemoryManager stub: retrieve always returns [], writes are no-ops."""
 
-    def commit(self, item: MemoryItem, privacy_mode: str = "normal") -> None:
-        return None
+    def commit(self, item: MemoryItem, privacy_mode: str = "normal") -> CommitResult:
+        return CommitResult.COMMITTED
 
     def retrieve(self, query: str, top_k: int = 5) -> list[MemoryItem]:
         return []
