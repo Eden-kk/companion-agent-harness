@@ -53,11 +53,11 @@ class SessionStateStore:
         self._items[item.item_id] = item
         return CommitResult.COMMITTED
 
-    def retrieve(self, query: str, top_k: int = 5) -> list[MemoryItem]:
+    def retrieve(self, query: str, top_k: int = 5, include_history: bool = False) -> list[MemoryItem]:
         q = query.lower()
         hits = [
             item for item in self._items.values()
-            if _is_active(item) and q in str(item.content).lower()
+            if (include_history or _is_active(item)) and q in str(item.content).lower()
         ]
         return hits[:top_k]
 
