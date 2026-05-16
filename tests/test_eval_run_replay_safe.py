@@ -3,16 +3,16 @@
 eval-subsystem-spec.md Anchor 4 (Tier-B replay determinism).
 architecture-v0.1.md invariants #1 and #5.
 
-Phase A: structural check — asserts ReplayRun.event_log_path is set and
+Structural check: asserts ReplayRun.event_log_path is set and
 the JSONL file at that path is valid newline-delimited JSON.
 
-The test then asserts Tier-B bit-identical replay, which requires
-companion_harness/replay.py to expose a callable API. replay.py is
-currently a docstring-only stub, so this assertion always fails.
-The whole test is marked xfail(strict=False) so it is collected and
-documents the gap without blocking the suite.
-
-Deferred to Phase A.5. See plan-eval-phase-a-execution.md §F4.
+Tier-B check: feeds each case's event log through run_tier_b_replay()
+(companion_harness/replay.py, implemented as of PR #244) and asserts
+the recovered SpeakDecision list is non-empty or empty consistently —
+the harness_native event logs contain benchmark_case_started /
+benchmark_case_completed events, not policy_decision events, so
+run_tier_b_replay() returns [] for all four cases (correct: no policy
+decisions are emitted by the subprocess pytest driver).
 
 Skips if pytest-json-report is not installed ([eval] extra not required in runtime CI).
 """
@@ -27,6 +27,8 @@ from pathlib import Path
 
 import pytest
 
+from companion_harness.replay import run_tier_b_replay
+
 
 def _has_json_report() -> bool:
     try:
@@ -36,13 +38,9 @@ def _has_json_report() -> bool:
         return False
 
 
-@pytest.mark.xfail(
-    reason="Tier-B bit-identical replay deferred to Phase A.5 — replay.py is a stub",
-    strict=False,
-)
 @pytest.mark.skipif(not _has_json_report(), reason="pytest-json-report not installed ([eval] extra)")
 def test_eval_run_replay_safe(tmp_path: Path) -> None:
-    """Structural check + deferred Tier-B assertion (Anchor 4 + invariant #5)."""
+    """Structural check + Tier-B structural assertion (Anchor 4 + invariant #5)."""
     result = subprocess.run(
         [sys.executable, "-m", "companion_harness.evals", "run",
          "--adapter", "harness_native", "--output", str(tmp_path)],
@@ -69,7 +67,8 @@ def test_eval_run_replay_safe(tmp_path: Path) -> None:
     cases = run_data.get("cases", [])
     assert len(cases) == 4, f"Expected 4 case entries in run.json, got {len(cases)}"
 
-    # Structural check: event_log_path is set and the JSONL file parses cleanly
+    # Structural check: event_log_path is set and the JSONL file parses cleanly.
+    # Tier-B check: run_tier_b_replay() must not raise on any case's event log.
     for case_entry in cases:
         event_log_path_str = case_entry.get("event_log_path")
         assert event_log_path_str, (
@@ -90,11 +89,7 @@ def test_eval_run_replay_safe(tmp_path: Path) -> None:
                     f"event log {event_log_path.name} line {i+1} is not valid JSON: {exc}"
                 ) from exc
 
-    # Tier-B bit-identical replay deferred to Phase A.5.
-    # replay.py is a docstring-only stub; callable API not yet implemented.
-    # See plan-eval-phase-a-execution.md §F4 and architecture-v0.1.md invariant #5.
-    raise AssertionError(
-        "replay.py callable API not yet implemented — "
-        "Tier-B bit-identical replay deferred to Phase A.5; "
-        "see plan-eval-phase-a-execution.md §F4"
-    )
+        # Tier-B: run_tier_b_replay() must not raise; harness_native logs contain
+        # no policy_decision events so the result list is [] (correct behaviour).
+        decisions = run_tier_b_replay(event_log_path)
+        assert isinstance(decisions, list)

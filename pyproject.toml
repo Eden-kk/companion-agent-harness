@@ -35,11 +35,13 @@ include = ["companion_harness*", "manual_test_console*"]
 markers = [
     "gpu: requires GPU and CUDA-specific deps (e.g., torchaudio cu128, kokoro_onnx, MiniCPM-o weights)",
     "real_corpus: requires HF_TOKEN + accepted dataset gates; run on b200 with `pytest -m real_corpus tests/`",
+    "requires_diarization: requires v0.2b DiarizationAdapter + model weights; run on b200 with `pytest -m requires_diarization tests/`",
 ]
-# Exclude gpu-marked and real_corpus-marked tests by default.
+# Exclude gpu-marked, real_corpus-marked, and requires_diarization-marked tests by default.
 # Run GPU tests on b200: pytest -m gpu tests/
 # Run real-corpus tests on b200: pytest -m real_corpus tests/
-addopts = "-m 'not gpu and not real_corpus'"
+# Run diarization tests on b200: pytest -m requires_diarization tests/
+addopts = "-m 'not gpu and not real_corpus and not requires_diarization'"
 # Cap each test at 120 s so a hanging subprocess can't consume the whole CI budget.
 # Tests that legitimately need more time should mark themselves with @pytest.mark.timeout(N).
 timeout = 120

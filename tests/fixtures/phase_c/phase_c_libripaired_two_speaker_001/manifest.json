@@ -1,0 +1,11 @@
+{
+  "session_id": "phase_c_libripaired_two_speaker_001",
+  "schema_version": "1.0",
+  "recording_date": "2026-05-16",
+  "speaker_count": 2,
+  "duration_ms": 15000,
+  "license": "CC-BY-4.0",
+  "redaction_notes": "Paired from LibriVox public-domain recordings. CC-BY attribution: LibriVox (librivox.org). No PII. Clipped to <=30s and resampled to 16kHz mono. Audio file omitted from repo (synthesized proxy used for CI); real audio available at librivox.org.",
+  "audio_sha256": "synthetic_proxy_no_real_audio",
+  "attribution": "LibriVox (https://librivox.org). Public domain / CC-BY."
+}
