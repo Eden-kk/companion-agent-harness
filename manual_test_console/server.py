@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import collections
 import dataclasses
 import json
 import os
@@ -126,6 +127,7 @@ KEY_ADAPTER_LABELS: web.AppKey[dict] = web.AppKey("adapter_labels", dict)
 # --minicpm-only and --use-stubs. DEMO MODE: bypasses SpeakPolicy + audit gates.
 KEY_STREAMING_RAW_MODE: web.AppKey[bool] = web.AppKey("streaming_raw_mode", bool)
 KEY_BACKGROUND_REASONER: web.AppKey[object] = web.AppKey("background_reasoner", object)
+KEY_EVENT_RATE_COUNTER: web.AppKey[object] = web.AppKey("event_rate_counter", object)
 
 # Session id stamped onto operator_action + config_change events emitted from
 # the /config/* HTTP endpoints. These events are decoupled from any /ws/ingest
@@ -151,6 +153,31 @@ async def _null_sink(_event: Event) -> None:
     every event live. Durability is a follow-up concern (storage backend).
     """
     return None
+
+
+class _EventRateCounter:
+    """Sliding-window event-rate counter for /healthz."""
+
+    def __init__(self, window_seconds: int = 60) -> None:
+        self._window_ms = window_seconds * 1000
+        self._window_seconds = window_seconds
+        self._timestamps: collections.deque = collections.deque()
+        self._total = 0
+
+    async def on_event(self, event: Event) -> None:
+        # Trimming is lazy: stale timestamps survive until the next event arrives.
+        now_ms = event.timestamp_mono_ms
+        self._timestamps.append(now_ms)
+        self._total += 1
+        cutoff = now_ms - self._window_ms
+        while self._timestamps and self._timestamps[0] < cutoff:
+            self._timestamps.popleft()
+
+    def rate_per_second(self) -> float:
+        return len(self._timestamps) / self._window_seconds
+
+    def total_count(self) -> int:
+        return self._total
 
 
 class _NullSceneScorer:
@@ -695,6 +722,13 @@ async def _handle_audio_out_ws(request: web.Request) -> web.WebSocketResponse:
     return ws
 
 
+def _label_is_ready(label: str | None) -> bool:
+    """Return True iff label indicates a real (non-stub) loaded adapter."""
+    if not label:
+        return False
+    return not label.startswith("stub:")
+
+
 async def _handle_health(request: web.Request) -> web.Response:
     chunk_counter: dict[str, int] = request.app[KEY_CHUNK_COUNTER]
     logger: EventLogger = request.app[KEY_LOGGER]  # type: ignore[assignment]
@@ -726,6 +760,37 @@ async def _handle_health(request: web.Request) -> web.Response:
         server_mode = "stubs"
     else:
         server_mode = "live"
+
+    # T4: per-adapter readiness — bool iff label is a non-stub loaded label.
+    vad_ready = _label_is_ready(detector_labels.get("vad"))
+    smart_turn_ready = _label_is_ready(detector_labels.get("smart_turn"))
+    backchannel_ready = _label_is_ready(detector_labels.get("backchannel"))
+    asr_ready = _label_is_ready(detector_labels.get("asr"))
+    tts_ready = _label_is_ready(tts_label)
+    vision_ready = _label_is_ready(adapter_labels.get("scene_scorer")) and vision_enabled
+    foreground_model_ready = foreground_model is not None
+
+    # T5: GPU memory budget.
+    gpu_memory_allocated_mb: int | None = None
+    gpu_memory_reserved_mb: int | None = None
+    gpu_memory_total_mb: int | None = None
+    gpu_device_name: str | None = None
+    try:
+        import torch  # noqa: WPS433
+        if torch.cuda.is_available():
+            free_bytes, total_bytes = torch.cuda.mem_get_info()
+            gpu_memory_total_mb = total_bytes // (1024 * 1024)
+            gpu_memory_allocated_mb = torch.cuda.memory_allocated() // (1024 * 1024)
+            gpu_memory_reserved_mb = torch.cuda.memory_reserved() // (1024 * 1024)
+            gpu_device_name = torch.cuda.get_device_name(0)
+    except Exception:
+        pass
+
+    # T6: event-rate counters.
+    counter: _EventRateCounter = request.app[KEY_EVENT_RATE_COUNTER]  # type: ignore[assignment]
+    events_per_second_last_60s = round(counter.rate_per_second())
+    events_total_since_start = counter.total_count()
+
     return web.json_response({
         "status": "ok",
         "mode": server_mode,
@@ -753,6 +818,22 @@ async def _handle_health(request: web.Request) -> web.Response:
         "deictic_model": adapter_labels.get("deictic_model", "stub:_NullDeicticModel"),
         "urgency_scorer": adapter_labels.get("urgency_scorer", "stub:_NullUrgencyScorer"),
         "embedder": adapter_labels.get("embedder", "stub:_NullEmbeddingAdapter"),
+        # T4: per-adapter readiness
+        "vad_ready": vad_ready,
+        "smart_turn_ready": smart_turn_ready,
+        "backchannel_ready": backchannel_ready,
+        "asr_ready": asr_ready,
+        "tts_ready": tts_ready,
+        "vision_ready": vision_ready,
+        "foreground_model_ready": foreground_model_ready,
+        # T5: GPU memory budget
+        "gpu_memory_allocated_mb": gpu_memory_allocated_mb,
+        "gpu_memory_reserved_mb": gpu_memory_reserved_mb,
+        "gpu_memory_total_mb": gpu_memory_total_mb,
+        "gpu_device_name": gpu_device_name,
+        # T6: event-rate counters
+        "events_per_second_last_60s": events_per_second_last_60s,
+        "events_total_since_start": events_total_since_start,
     })
 
 
@@ -1108,6 +1189,7 @@ def build_app(
     diarization_adapter_factory: Any = None,
     streaming_raw_mode: bool = False,
     seam_defaults: dict[str, bool] | None = None,
+    blob_retention_days: int = 30,
 ) -> web.Application:
     """Build the aiohttp Application. Caller is responsible for run/cleanup.
 
@@ -1139,6 +1221,8 @@ def build_app(
     broker = DisplayBroker()
     logger = EventLogger(_null_sink, maxsize=4096)
     logger.subscribe(broker.on_event)
+    event_rate_counter = _EventRateCounter(window_seconds=60)
+    logger.subscribe(event_rate_counter.on_event)
     ingest = InputIngest(logger, blob_dir)
 
     audio_out_counter: dict[str, int] = {"chunks_sent": 0, "chunks_dropped": 0}
@@ -1147,6 +1231,7 @@ def build_app(
     app[KEY_BROKER] = broker
     app[KEY_LOGGER] = logger
     app[KEY_INGEST] = ingest
+    app[KEY_EVENT_RATE_COUNTER] = event_rate_counter
     app[KEY_BLOB_DIR] = blob_dir
     app[KEY_CHUNK_COUNTER] = {"sessions_opened": 0, "chunks_ingested": 0, "frames_ingested": 0}
     app[KEY_AUDIO_OUT_BROKER] = audio_out_broker
@@ -1393,6 +1478,28 @@ def build_app(
         print(f"  Embedder:          {adapter_labels.get('embedder', 'unknown')}", flush=True)
         print("=" * 72, flush=True)
 
+    async def _blob_rotation_worker() -> None:
+        """Delete blob files older than blob_retention_days. Runs hourly."""
+        if blob_retention_days <= 0:
+            return
+        retention_seconds = blob_retention_days * 86400
+        tick = min(3600, retention_seconds // 24)
+        print(
+            f"Blob rotation: retaining {blob_retention_days} days; "
+            f"tick every {tick}s.",
+            flush=True,
+        )
+        while True:
+            await asyncio.sleep(tick)
+            cutoff = time.time() - retention_seconds
+            for p in blob_dir.iterdir():
+                if p.is_file():
+                    try:
+                        if p.stat().st_mtime < cutoff:
+                            p.unlink()
+                    except Exception:
+                        pass
+
     async def _on_cleanup(_app: web.Application) -> None:
         # Stop any still-active live pipelines first (they share the logger).
         for pipeline in list(_app[KEY_ACTIVE_PIPELINES].values()):
@@ -1406,6 +1513,12 @@ def build_app(
     app.on_startup.append(_on_startup)
     app.on_startup.append(_on_startup_finalize_deictic)
     app.on_startup.append(_on_startup_summary)
+
+    async def _on_startup_rotation(_app: web.Application) -> None:
+        if blob_retention_days > 0:
+            asyncio.get_running_loop().create_task(_blob_rotation_worker())
+
+    app.on_startup.append(_on_startup_rotation)
     app.on_cleanup.append(_on_cleanup)
     return app
 
@@ -1634,6 +1747,17 @@ def main(argv: list[str] | None = None) -> int:
             "re-enable at runtime via POST /config/model-swap."
         ),
     )
+    parser.add_argument(
+        "--blob-retention-days",
+        dest="blob_retention_days",
+        type=int,
+        default=30,
+        help=(
+            "Delete blob files older than N days. Default 30. Set to 0 to disable "
+            "rotation. Blob retention window should be >= event-log retention; "
+            "rotating blobs still referenced by live event-log entries breaks replay."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if args.minicpm_only and args.use_stubs:
@@ -1806,6 +1930,7 @@ def main(argv: list[str] | None = None) -> int:
         diarization_adapter_factory=real_diarization_adapter_factory,
         streaming_raw_mode=args.minicpm_streaming_raw,
         seam_defaults=seam_defaults,
+        blob_retention_days=args.blob_retention_days,
     )
     # Stamp the deictic_model label as "pending-foreground-load" so
     # _on_startup_finalize_deictic knows the operator asked for it.

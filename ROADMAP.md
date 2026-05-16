@@ -76,7 +76,9 @@ v0.2 takes the harness from *demonstrable* (v0.1 skeleton complete) to *deployab
 **Wave status:**
 - Wave 0 (backfilled-shipped): tombstone for `forget that` (#253), 6-adapter live-wiring (#255), barge-in-vs-self fix (#271).
 - Wave 0′ (prerequisite): Eval Phase A.5 — ✅ complete.
-- Waves 1–6 (Reasoner, Diarization, Benchmark loaders, Phase C, Default-on, Deployability): not yet dispatched. Each wave starts with a fresh plan-critic'd execution plan grounded in then-current `main`.
+- Wave 2 (Diarization + v0.1k bump): ✅ feature-complete on `v0.2b-diarization-and-v0.1k` branch (pending merge).
+- Wave 6 (Deployability): ✅ feature-complete on `v0.2f-deployability` branch — replay export, tar bundle, blob rotation, /healthz extensions (per-adapter readiness, GPU memory, event-rate counters), `scripts/v0_2_replay_report.py`.
+- Waves 1, 3, 4, 5 (Reasoner, Benchmark loaders, Eval Phase C, Default-on): not yet dispatched.
 
 (The v0.1c milestone referenced here historically has long shipped — see SHIPPED MILESTONES above. The Eval Phase A.5 sub-section in CURRENT ACTIVE WORK below is now stale; closing as complete in the same change.)
 
