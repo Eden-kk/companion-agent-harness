@@ -12,7 +12,7 @@
 
 ## §0 Dependency on v0.2a / v0.2b / v0.2c
 
-**v0.2e cannot start until v0.2a, v0.2b, and v0.2c are merged.** Each wave contributes adapters that v0.2e measures:
+**v0.2e cannot start until v0.2a and v0.2c are merged.** v0.2b (diarization) is NOT a gate — diarization is out of scope for v0.2e and its default-on evaluation is deferred to v0.3. Each wave contributes adapters that v0.2e measures:
 
 - **v0.2a (Real BackgroundReasoner — roadmap Wave 1)** — does NOT add a new opt-in adapter under measurement here. Listed for completeness; v0.2e excludes BackgroundReasoner from the per-adapter rubric (its rollout is governed by `background_reasoner_budget_exhaustion_rate < 0.05` per roadmap Anchor on `BACKGROUND_REASONER` flag default, not by the GPU/latency/false-positive rubric in this plan).
 - **v0.2b (Real diarization — roadmap Wave 2)** — adds `--enable-diarization` (roadmap Task 11). v0.2e does NOT include diarization; its default-on evaluation defers to v0.3 (see BLOCKER 1 reconciliation: v0.2e is reconciled to the 6 adapters in the v0.2 roadmap Wave 5 "max 6 PRs" scope).
@@ -41,8 +41,8 @@ AttachmentRiskMonitor (`--enable-attachment-risk`) and PyannoteDiarizationAdapte
 ┌──────────────────────────────────────────────────────────────────────┐
 │ Wave-Pre (gates — must merge before any v0.2e PR opens):            │
 │   v0.2a Tasks 1-6 merged                                             │
-│   v0.2b Tasks 7-11 merged  (diarization; not a v0.2e gate — deferred to v0.3) │
 │   v0.2c Tasks 12-14 merged                                           │
+│   (v0.2b diarization is NOT a gate here — deferred to v0.3)         │
 └─────────┬────────────────────────────────────────────────────────────┘
           │
           ▼
@@ -70,7 +70,7 @@ AttachmentRiskMonitor (`--enable-attachment-risk`) and PyannoteDiarizationAdapte
 
 | Wave | Concurrency | Tasks | Notes |
 |---|---|---|---|
-| Pre | sequential gate | v0.2a + v0.2b + v0.2c | Hard gate; v0.2e does not open any PR until these merge. v0.2b slip does not block v0.2e (diarization is out of scope). |
+| Pre | sequential gate | v0.2a + v0.2c | Hard gate; v0.2e does not open any PR until these merge. v0.2b (diarization) is NOT a gate for v0.2e — diarization is out of scope and deferred to v0.3. |
 | A | **6×** (one agent per adapter) | T1, T2, T3, T4, T5, T6 | Each task is one PR. No shared file edits — each PR touches `manual_test_console/server.py` argparse default at a different line, plus the PR body's profiling block. **Anchor: one-at-a-time merge (not one-at-a-time author)** — OQ-2 below resolves that PRs are *authored* in parallel but *merged serially* so any regression bisects cleanly to one adapter flip. |
 | B | sequential | T7 | Closeout doc sweep — must come after every Wave-A PR merges (or defers). |
 
@@ -147,7 +147,7 @@ Every Wave-A task uses the same 3-stage profiling recipe. Recording this here so
 ## §Open Questions (with leans)
 
 - **OQ-1 — Which adapters are in scope?** **Resolved: the 6 adapters** matching the v0.2 roadmap Wave 5 "max 6 PRs" scope and the 6 `--enable-*` flags present in the live CLI (T1–T6 above). AttachmentRiskMonitor and PyannoteDiarizationAdapter are deferred to v0.3 (OQ-3 and diarization gating respectively). Excludes BackgroundReasoner (different rollout regime per roadmap Anchor 2) and TTS adapters (native MiniCPM TTS is opt-in per `--tts-adapter`, not per `--enable-X`; its default flip is a separate v0.3 decision tied to libcudart resolution).
-- **OQ-2 — Author-parallel or merge-parallel?** **Resolved as Anchor 2: author-parallel, merge-serial.** Rationale: 8-way author parallelism unlocks throughput; merge-serial preserves clean bisect when a flipped default later turns up a regression in a multi-day manual test.
+- **OQ-2 — Author-parallel or merge-parallel?** **Resolved as Anchor 2: author-parallel, merge-serial.** Rationale: 6-way author parallelism unlocks throughput; merge-serial preserves clean bisect when a flipped default later turns up a regression in a multi-day manual test.
 - **OQ-3 — Does AttachmentRiskMonitor get a `--enable-X` flag at all?** **Deferred to v0.3.** The live-wired path from PR #234 has no operator off-switch today, but resolving that asymmetry is not in v0.2e's 6-adapter scope. The flag posture question (always-on-monitored vs explicit `--enable-attachment-risk`) is recorded here for v0.3 planning.
 - **OQ-4 — What is "false-positive rate" per adapter?** **Resolved per §profiling rig Stage 3** (per-adapter fixture + per-adapter threshold). Each task PR cites the fixture and threshold it used.
 - **OQ-5 — What if a fixture from Stage 3 does not yet exist?** **Lean: best-effort against nearest available fixture + file a follow-up issue inside the same PR.** Do NOT block the wave on fixture authoring. The escape valve is documented in §profiling rig Stage 3.
@@ -165,7 +165,7 @@ Every Wave-A task uses the same 3-stage profiling recipe. Recording this here so
 **Files touched**
 - `manual_test_console/server.py` — change argparse default for `--enable-clip-scene` from `False` to `True` (one-line). Update the help text accordingly.
 - `docs/manual-test-handbook.md` — append a one-line entry to the cumulative changelog table (column: "default-on at v0.2e"; value: date + PR #).
-- (Stage-2 escape valve only if needed) `companion_harness/clip_scene_scorer.py` — emit `vision_frame.scene_change_score_ms` timing field if not already present. (Note: `docs/model-stack.md` references the old filename `clip_scene_change.py`; a separate cleanup PR should update that path.)
+- (Stage-2 escape valve only if needed) `companion_harness/clip_scene_scorer.py` — emit `vision_frame.scene_change_score_ms` timing field if not already present. (Filename confirmed: `clip_scene_scorer.py` is the actual name on main. `docs/model-stack.md` still references the old filename `clip_scene_change.py`; a separate cleanup PR should update that path. R2 finding on stale filename was not applicable to the plan — the plan uses the correct filename.)
 
 **Implementation sketch**
 1. **Pre-check.** Run `git log --oneline origin/main | head -1` to confirm v0.2a/b/c merged (commit titles per their roadmap tasks). If not, STOP.
@@ -202,7 +202,7 @@ $ python -m manual_test_console.server --no-enable-clip-scene  # starts in scene
 
 **Cross-references** — model-stack.md row 13; PR #248 (adapter landing); PR #255 (CLI flag landing); §profiling rig in this plan.
 
-**Blocker dependencies** — v0.2a + v0.2b + v0.2c merged. Previous Wave-A PRs (T-prior) merged (Anchor 2: merge-serial).
+**Blocker dependencies** — v0.2a + v0.2c merged (Wave-Pre gate). v0.2b is NOT a blocker for v0.2e. Previous Wave-A PRs (T-prior) merged (Anchor 2: merge-serial).
 
 ---
 
@@ -300,7 +300,7 @@ $ python -m manual_test_console.server --no-enable-clip-scene  # starts in scene
 - `manual_test_console/server.py` — argparse default for `--enable-grounding`.
 - `docs/manual-test-handbook.md` — cumulative changelog row.
 - `docs/model-stack.md` — row 17 default-on status column.
-- (Stage-2 escape valve) `companion_harness/grounding_dino_adapter.py` — emit `vision_frame.grounding_confidence_ms` timing field if missing. (Note: `docs/model-stack.md` references the old filename `grounding_dino.py`; a separate cleanup PR should update that path.)
+- (Stage-2 escape valve) `companion_harness/grounding_dino_adapter.py` — emit `vision_frame.grounding_confidence_ms` timing field if missing. (Filename confirmed: `grounding_dino_adapter.py` is the actual name on main. `docs/model-stack.md` still references the old filename `grounding_dino.py`; a separate cleanup PR should update that path. R2 finding on stale filename was not applicable to the plan — the plan uses the correct filename.)
 
 **Implementation sketch**
 1. Pre-check Wave-Pre merge state.
