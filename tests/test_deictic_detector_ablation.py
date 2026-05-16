@@ -134,16 +134,14 @@ async def test_deictic_detector_ablation():
 
     # Classify the utterance via DeicticDetector (uses gate frame's deictic_p).
     cause_en = [frame_events_en[-1]]
-    is_deictic, confidence, deictic_evt_id = detector_en.classify(
-        "what is this?", caused_by=cause_en
-    )
-    assert is_deictic is True, "enabled path: deictic_p=0.91 must yield is_deictic=True"
+    deictic_en = detector_en.classify("what is this?", caused_by=cause_en)
+    assert deictic_en.is_deictic is True, "enabled path: deictic_p=0.91 must yield is_deictic=True"
 
     # Run grounding pass (gate open).
     result_en = sidecar_en.resolve(
         "what is this?",
-        deictic_reference=is_deictic,
-        deictic_evt_id=deictic_evt_id,
+        deictic_reference=deictic_en.is_deictic,
+        deictic_evt_id=deictic_en.event_id,
     )
 
     await logger_en.stop()
@@ -198,8 +196,8 @@ async def test_deictic_detector_ablation():
     # (c) Enabled path causal chain: grounding event caused_by includes both
     #     the deictic_classification event_id and a frame event_id.
     ge = grounding_en[0]
-    assert deictic_evt_id in ge.caused_by, (
-        f"grounding event caused_by={ge.caused_by!r} missing deictic_classification id {deictic_evt_id!r}"
+    assert deictic_en.event_id in ge.caused_by, (
+        f"grounding event caused_by={ge.caused_by!r} missing deictic_classification id {deictic_en.event_id!r}"
     )
     assert result_en.frame_event_id is not None
     assert result_en.frame_event_id in ge.caused_by, (

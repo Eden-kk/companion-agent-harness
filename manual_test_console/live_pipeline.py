@@ -38,6 +38,7 @@ from companion_harness.addressing_classifier import (
 from companion_harness.audio_output_controller import AudioOutputController
 from companion_harness.av_conflict_scorer import AudioVisualConflictScorer, _NullAudioVisualConflictScorer
 from companion_harness.backchannel_classifier import BackchannelClassifier
+from companion_harness.deictic_detector import DeicticDetector, _NullDeicticModel
 from companion_harness.event_logger import EventLogger
 from companion_harness.foreground_model import ForegroundModel
 from companion_harness.input_ingest import IngestSession
@@ -544,6 +545,11 @@ def build_live_pipeline(
     # UNAVAILABLE: #157 — libcudart blocker, MiniCPM-derived addressing unavailable.
     minicpm_addressing = _NullMiniCPMAddressingClassifier()
     safety_net_addressing = WakeWordAddressingClassifier()
+    deictic_detector = DeicticDetector(
+        model=_NullDeicticModel(),
+        session_id=session_id,
+        logger=shielded_logger,  # type: ignore[arg-type]
+    )
 
     # Bind the audio_output.is_playing callback into the builder closure so
     # `PolicyInputs.assistant_speaking` reflects live playback state. The
@@ -589,6 +595,7 @@ def build_live_pipeline(
         # decision through SmartTurn/VAD fallback (signal_producer_fallback
         # event emitted per decision).
         native_duplex_eou_source=_NullNativeDuplexEouSource(),
+        deictic_detector=deictic_detector,
         episodic_store=episodic_store,
         semantic_store=semantic_store,
     )

@@ -72,6 +72,7 @@ from companion_harness.turn_detector_smart import SmartTurnDetector
 from companion_harness.turn_detector_vad import VADDetector
 
 if TYPE_CHECKING:
+    from companion_harness.deictic_detector import DeicticDetector
     from companion_harness.memory_manager import MemoryManager
     from companion_harness.vision_sidecar import VisionSidecar
     from manual_test_console.config_store import ConfigStore
@@ -204,6 +205,7 @@ class StreamingRealtimeOrchestrator:
         minicpm_addressing_classifier: MiniCPMAddressingClassifier | None = None,
         config_store: "ConfigStore | None" = None,
         native_duplex_eou_source: NativeDuplexEouSource | None = None,
+        deictic_detector: "DeicticDetector | None" = None,
     ) -> None:
         self._session_id = session_id
         self._logger = logger
@@ -275,6 +277,7 @@ class StreamingRealtimeOrchestrator:
         self._native_duplex_eou_source: NativeDuplexEouSource = (
             native_duplex_eou_source if native_duplex_eou_source is not None else _NullNativeDuplexEouSource()
         )
+        self._deictic_detector = deictic_detector
         # Last-applied policy thresholds (read from config_store at EOU); when
         # config_store is None we fall back to speak_policy.decide()'s defaults
         # by leaving these as None and not passing kwargs.
@@ -586,6 +589,14 @@ class StreamingRealtimeOrchestrator:
                 inputs.user_addressed_agent = derive_user_addressed_agent(
                     addressing_signal, inputs.social_mode
                 )
+
+            # --- Deictic detector: sets deictic_reference + deictic_ambiguous on inputs ---
+            if self._deictic_detector is not None:
+                deictic_result = self._deictic_detector.classify(
+                    transcript, [signal_evt_id]
+                )
+                inputs.deictic_reference = deictic_result.is_deictic
+                inputs.deictic_ambiguous = deictic_result.is_ambiguous
 
             # Emit policy_decision event FIRST so event_id is available before enqueueing (nit 10).
             policy_evt_id = self._new_event_id()

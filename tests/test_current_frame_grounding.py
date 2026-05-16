@@ -146,15 +146,15 @@ async def test_current_frame_grounding() -> None:
 
         if frame.get("target_grounding_frame"):
             target_raw_video_event_id = frame_event_id
-            is_deictic, confidence, deictic_evt_id = deictic_detector.classify(
+            deictic_result = deictic_detector.classify(
                 transcript="what is this?",
                 caused_by=[frame_event_id],
             )
-            assert is_deictic, f"deictic gate must fire for deictic_p={frame['deictic_p']}"
+            assert deictic_result.is_deictic, f"deictic gate must fire for deictic_p={frame['deictic_p']}"
             grounding_result = sidecar.resolve(
                 "what is this?",
-                deictic_reference=is_deictic,
-                deictic_evt_id=deictic_evt_id,
+                deictic_reference=deictic_result.is_deictic,
+                deictic_evt_id=deictic_result.event_id,
             )
 
     await logger.stop()
@@ -214,16 +214,16 @@ async def test_current_frame_grounding() -> None:
         nd_sidecar.ingest_frame(ref)
 
     nd_frame_event_id = f"cfgtest-nd-raw-{raw_frames[-1]['frame_id']}"
-    is_deictic_nd, _, _ = nd_deictic_detector.classify(
+    nd_deictic_result = nd_deictic_detector.classify(
         transcript="what time is it?",
         caused_by=[nd_frame_event_id],
     )
-    assert not is_deictic_nd, (
+    assert not nd_deictic_result.is_deictic, (
         f"deictic gate must NOT fire for deictic_p={classification_frame['deictic_p']}"
     )
     nd_result = nd_sidecar.resolve(
         "what time is it?",
-        deictic_reference=is_deictic_nd,
+        deictic_reference=nd_deictic_result.is_deictic,
     )
     assert nd_result.frame_event_id is None, "non-deictic query must not resolve a frame"
 
