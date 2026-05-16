@@ -137,6 +137,11 @@ class DecisionTrace:
     config_version:          str
     model_adapter_versions:  dict[str, str]
     retrieval_used:          list[str] = field(default_factory=list)
+    # Finding 8: ASR transcript that drove this decision, wrapped for retention
+    # governance (CLAUDE.md "Free-text fields go through SensitiveField").
+    # user_transcript_preview is the first 50 chars — safe for replay/audit logs.
+    user_transcript:         "SensitiveField | None" = None
+    user_transcript_preview: str | None = None
 
 
 @dataclass

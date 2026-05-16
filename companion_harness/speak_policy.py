@@ -10,7 +10,7 @@ free-text reasoning on the policy path (invariant #5 / Stage 0 Tier B replay).
 from __future__ import annotations
 
 from companion_harness.reason_codes import ReasonCode
-from companion_harness.schemas import DecisionTrace, PolicyInputs, ResponseContentSource, SpeakDecision, ThinkerProposal
+from companion_harness.schemas import DecisionTrace, PolicyInputs, ResponseContentSource, SensitiveField, SpeakDecision, ThinkerProposal
 from companion_harness.speak_policy_config import (
     SPEC_ALERT_THRESHOLD,
     _LEVEL_TO_FLOAT_THRESHOLD,
@@ -362,6 +362,17 @@ def build_decision_trace(
     threshold kwargs are forwarded to ``_threshold_path_for`` so the recorded
     threshold_path matches the gates that decide() actually applied.
     """
+    raw_transcript: str = inputs.user_transcript or ""
+    user_transcript_field: SensitiveField | None = (
+        SensitiveField(
+            retention_policy_id="transcript_audit_30d",
+            value=raw_transcript,
+            sensitivity="sensitive",
+        )
+        if raw_transcript
+        else None
+    )
+    user_transcript_preview: str | None = raw_transcript[:50] if raw_transcript else None
     return DecisionTrace(
         decision_id=decision_id,
         input_event_ids=list(input_event_ids) if input_event_ids is not None else list(signal_event_ids),
@@ -383,4 +394,6 @@ def build_decision_trace(
         config_version=config_version,
         model_adapter_versions={},
         retrieval_used=list(retrieval_event_ids) if retrieval_event_ids else [],
+        user_transcript=user_transcript_field,
+        user_transcript_preview=user_transcript_preview,
     )
