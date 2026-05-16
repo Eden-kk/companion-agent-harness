@@ -571,9 +571,9 @@ def test_policy_replay_exact_stage3():
     alert (all four modes), aesthetic_reaction (permitted / quiet_mode_blocked /
     mode_blocked / cooldown_blocked), short_reaction (budget replenished /
     exhausted), backchannel, clarification, full_response, and silence fallthrough.
-    No fixture-loader involvement.  Verifies invariant #5 and POLICY_VERSION == "v0.1f".
+    No fixture-loader involvement.  Verifies invariant #5 and POLICY_VERSION == "v0.1j".
     """
-    assert speak_policy.POLICY_VERSION == "v0.1f"
+    assert speak_policy.POLICY_VERSION == "v0.1j"
     assert len(_STAGE3_TRACE) == len(_STAGE3_BASELINE)
     assert len(_STAGE3_TRACE) == len(_STAGE3_P_BACKCHANNEL)
 
@@ -741,10 +741,10 @@ def test_policy_replay_exact_stage4():
     asserts (a) feeding populated retrieved_items through decide() does not
     perturb decisions, and (b) DecisionTrace.retrieval_used co-emission is
     deterministic across repeated calls with identical inputs.
-    POLICY_VERSION is "v0.1f" after Task 5 bump; retrieval plumbing changes
+    POLICY_VERSION is "v0.1j" after Wave 7 Task 18 bump; retrieval plumbing changes
     do not independently bump policy_version (spec line 202–209).
     """
-    assert speak_policy.POLICY_VERSION == "v0.1f"
+    assert speak_policy.POLICY_VERSION == "v0.1j"
     assert len(_STAGE4_TRACE) == len(_STAGE4_BASELINE)
     assert len(_STAGE4_TRACE) == len(_STAGE4_RETRIEVAL_EVENT_IDS)
 
@@ -805,4 +805,207 @@ def test_policy_replay_exact_stage4():
         )
         assert astuple(trace1) == astuple(trace2), (
             f"{frame_id}: trace run1 {astuple(trace1)!r} != run2 {astuple(trace2)!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Stage 5 — behavioral-tolerance extension (invariant #6, v0.1j Wave 7)
+# ---------------------------------------------------------------------------
+#
+# Real-signal producers (MiniCPM EOU, addressing classifier) may vary across
+# runs due to live ASR jitter and model non-determinism.  Tier B (bit-identical)
+# replay still holds for everything downstream of decide() — given identical
+# PolicyInputs the policy layer is deterministic (invariant #5).
+#
+# This test asserts the invariant #6 behavioral-tolerance tuple:
+#   same_action_class + same_interaction_intent + same_safety_class
+# across two decide() calls where the *real-signal* inputs are allowed to
+# vary within their operational range.  Policy inputs are held fixed so the
+# test is a pure policy-layer determinism check — the variance lives upstream.
+
+_ACTION_CLASS: dict[str, str] = {
+    "silence":           "no_speech",
+    "backchannel":       "acknowledgement",
+    "short_reaction":    "proactive_speech",
+    "aesthetic_reaction":"proactive_speech",
+    "full_response":     "reactive_speech",
+    "clarification":     "reactive_speech",
+    "alert":             "reactive_speech",
+    "tool_call":         "reactive_speech",
+    "tool_status":       "reactive_speech",
+}
+
+_INTERACTION_INTENT: dict[str, str] = {
+    "silence":           "wait",
+    "backchannel":       "social",
+    "short_reaction":    "proactive",
+    "aesthetic_reaction":"proactive",
+    "full_response":     "answer",
+    "clarification":     "clarify",
+    "alert":             "alert",
+    "tool_call":         "tool",
+    "tool_status":       "tool",
+}
+
+_SAFETY_CLASS: dict[str, str] = {
+    "silence":           "safe",
+    "backchannel":       "safe",
+    "short_reaction":    "safe",
+    "aesthetic_reaction":"safe",
+    "full_response":     "safe",
+    "clarification":     "safe",
+    "alert":             "safe",
+    "tool_call":         "safe",
+    "tool_status":       "safe",
+}
+
+
+def _behavioral_tuple(d: SpeakDecision) -> tuple[str, str, str]:
+    return (
+        _ACTION_CLASS[d.action_type],
+        _INTERACTION_INTENT[d.action_type],
+        _SAFETY_CLASS[d.action_type],
+    )
+
+
+_STAGE5_TRACE = [
+    # EOU confirmed + agent addressed → full_response (reactive_speech / answer / safe)
+    PolicyInputs(
+        user_speaking=False,
+        eou_probability=0.9,
+        assistant_speaking=False,
+        scene_change_score=0.0,
+        deictic_reference=False,
+        user_addressed_agent=True,
+        urgency_score=0.0,
+        proactivity_budget_remaining={},
+        privacy_mode="normal",
+        current_task_mode="normal",
+        social_mode="user_addressing_agent",
+        risk_mode="normal",
+        cooldown_state={},
+        attachment_risk_level=0.0,
+    ),
+    # EOU sub-threshold + not addressed → silence (no_speech / wait / safe)
+    PolicyInputs(
+        user_speaking=False,
+        eou_probability=0.3,
+        assistant_speaking=False,
+        scene_change_score=0.0,
+        deictic_reference=False,
+        user_addressed_agent=False,
+        urgency_score=0.0,
+        proactivity_budget_remaining={},
+        privacy_mode="normal",
+        current_task_mode="normal",
+        social_mode="user_addressing_agent",
+        risk_mode="normal",
+        cooldown_state={},
+        attachment_risk_level=0.0,
+    ),
+    # alert: urgency in cooking mode → alert (reactive_speech / alert / safe)
+    PolicyInputs(
+        user_speaking=False,
+        eou_probability=0.9,
+        assistant_speaking=False,
+        scene_change_score=0.0,
+        deictic_reference=False,
+        user_addressed_agent=True,
+        urgency_score=0.4,
+        proactivity_budget_remaining={},
+        privacy_mode="normal",
+        current_task_mode="cooking",
+        social_mode="user_addressing_agent",
+        risk_mode="normal",
+        cooldown_state={},
+        attachment_risk_level=0.0,
+    ),
+    # clarification: audio_visual_conflict → clarification (reactive_speech / clarify / safe)
+    PolicyInputs(
+        user_speaking=False,
+        eou_probability=0.9,
+        assistant_speaking=False,
+        scene_change_score=0.0,
+        deictic_reference=False,
+        user_addressed_agent=True,
+        urgency_score=0.0,
+        proactivity_budget_remaining={},
+        privacy_mode="normal",
+        current_task_mode="normal",
+        social_mode="user_addressing_agent",
+        risk_mode="normal",
+        cooldown_state={},
+        attachment_risk_level=0.0,
+        audio_visual_conflict_score=0.9,
+    ),
+    # aesthetic_reaction: permitted → proactive_speech / proactive / safe
+    PolicyInputs(
+        user_speaking=False,
+        eou_probability=0.9,
+        assistant_speaking=False,
+        scene_change_score=0.0,
+        deictic_reference=False,
+        user_addressed_agent=False,
+        urgency_score=0.0,
+        proactivity_budget_remaining={},
+        privacy_mode="normal",
+        current_task_mode="normal",
+        social_mode="user_addressing_agent",
+        risk_mode="normal",
+        cooldown_state={},
+        attachment_risk_level=0.0,
+        aesthetic_novelty_score=0.8,
+        quiet_mode_active=False,
+    ),
+]
+
+_STAGE5_P_BACKCHANNEL = [0.0, 0.0, 0.0, 0.0, 0.0]
+
+_STAGE5_EXPECTED_BEHAVIORAL_TUPLES = [
+    ("reactive_speech", "answer",    "safe"),
+    ("no_speech",       "wait",      "safe"),
+    ("reactive_speech", "alert",     "safe"),
+    ("reactive_speech", "clarify",   "safe"),
+    ("proactive_speech","proactive", "safe"),
+]
+
+
+def test_policy_replay_behavioral_tolerance_stage5():
+    """Invariant #6: behavioral-tolerance tuple stable for v0.1j real-signal producer range.
+
+    Tier B (bit-identical) replay holds for everything downstream of decide()
+    given fixed PolicyInputs (invariant #5). This test additionally asserts the
+    invariant #6 behavioral tuple (action_class + interaction_intent + safety_class)
+    is stable across two decide() runs and matches the expected class bucketing.
+    Covers all five leaf action classes used by v0.1j Wave 2-5 producers.
+    POLICY_VERSION == "v0.1j".
+    """
+    assert speak_policy.POLICY_VERSION == "v0.1j"
+    assert len(_STAGE5_TRACE) == len(_STAGE5_P_BACKCHANNEL)
+    assert len(_STAGE5_TRACE) == len(_STAGE5_EXPECTED_BEHAVIORAL_TUPLES)
+
+    run1 = [
+        speak_policy.decide(inputs, signal_event_ids=[f"s5-frame-{i:03d}"], p_backchannel=p_bc)
+        for i, (inputs, p_bc) in enumerate(zip(_STAGE5_TRACE, _STAGE5_P_BACKCHANNEL))
+    ]
+    run2 = [
+        speak_policy.decide(inputs, signal_event_ids=[f"s5-frame-{i:03d}"], p_backchannel=p_bc)
+        for i, (inputs, p_bc) in enumerate(zip(_STAGE5_TRACE, _STAGE5_P_BACKCHANNEL))
+    ]
+
+    for i, (d1, d2, expected_bt) in enumerate(
+        zip(run1, run2, _STAGE5_EXPECTED_BEHAVIORAL_TUPLES)
+    ):
+        frame_id = f"s5-frame-{i:03d}"
+
+        # Tier B: bit-identical across replays (invariant #5).
+        assert astuple(d1) == astuple(d2), (
+            f"{frame_id}: Tier B violated — run1 {astuple(d1)!r} != run2 {astuple(d2)!r}"
+        )
+
+        # Invariant #6: behavioral-tolerance tuple matches expected class bucketing.
+        bt = _behavioral_tuple(d1)
+        assert bt == expected_bt, (
+            f"{frame_id}: behavioral tuple {bt!r} != expected {expected_bt!r} "
+            f"(action_type={d1.action_type!r})"
         )

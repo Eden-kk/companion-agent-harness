@@ -16,7 +16,7 @@ from companion_harness.speak_policy_config import (
     _LEVEL_TO_FLOAT_THRESHOLD,
 )
 
-POLICY_VERSION = "v0.1f"
+POLICY_VERSION = "v0.1j"
 CONFIG_VERSION = "v0.1e"
 
 _RESPONSE_SOURCE_FOR_ACTION: dict[str, ResponseContentSource] = {
