@@ -36,6 +36,7 @@ from companion_harness.addressing_classifier import (
     WakeWordAddressingClassifier,
     _NullMiniCPMAddressingClassifier,
 )
+from companion_harness.attachment_risk_monitor import EventStreamAttachmentRiskMonitor
 from companion_harness.audio_output_controller import AudioOutputController
 from companion_harness.av_conflict_scorer import AudioVisualConflictScorer, _NullAudioVisualConflictScorer
 from companion_harness.backchannel_classifier import BackchannelClassifier
@@ -261,6 +262,7 @@ def _make_live_policy_inputs_builder(
     vision_sidecar: Any = None,
     av_scorer: AudioVisualConflictScorer | None = None,
     urgency_scorer: UrgencyScorer | None = None,
+    attachment_risk_monitor: EventStreamAttachmentRiskMonitor | None = None,
 ) -> Callable[[TurnSignal, list[TurnSignal]], PolicyInputs]:
     """Factory: return a builder closure with `assistant_speaking` bound to
     `is_playing_fn` (typically `AudioOutputController.is_playing`).
@@ -282,9 +284,14 @@ def _make_live_policy_inputs_builder(
     `urgency_scorer` (optional): the `UrgencyScorer` used to source
     `urgency_score`. Defaults to `_NullUrgencyScorer` (returns 0.0;
     UNAVAILABLE: #171).
+
+    `attachment_risk_monitor` (optional): the `EventStreamAttachmentRiskMonitor`
+    subscribed to the session event stream. When provided, `current_level()` is
+    called to source `attachment_risk_level`; otherwise defaults to `0.0`.
     """
     _av: AudioVisualConflictScorer = av_scorer if av_scorer is not None else _NullAudioVisualConflictScorer()
     _urgency: UrgencyScorer = urgency_scorer if urgency_scorer is not None else _NullUrgencyScorer()
+    _arm: EventStreamAttachmentRiskMonitor | None = attachment_risk_monitor
 
     def _builder(signal: TurnSignal, signal_history: list[TurnSignal]) -> PolicyInputs:
         """Build PolicyInputs from a TurnSignal + sorted history.
@@ -351,7 +358,7 @@ def _make_live_policy_inputs_builder(
             social_mode=social_mode,
             risk_mode="normal",
             cooldown_state={},
-            attachment_risk_level=0.0,  # UNAVAILABLE: #213 — EventStreamAttachmentRiskMonitor wiring pending
+            attachment_risk_level=_arm.current_level() if _arm is not None else 0.0,
             audio_visual_conflict_score=_av.score(b"", None),  # UNAVAILABLE: #168
             grounding_confidence=(
                 vision_sidecar.grounding_confidence()
@@ -575,6 +582,12 @@ def build_live_pipeline(
         logger=shielded_logger,  # type: ignore[arg-type]
     )
 
+    # Instantiate and subscribe the per-session attachment-risk monitor.
+    # SharedLoggerProxy.subscribe() uses the late-subscribe pattern from PR #194
+    # (appends directly to _inner._subscribers so the drain loop picks it up).
+    arm = EventStreamAttachmentRiskMonitor()
+    shielded_logger.subscribe(arm.on_event)
+
     # Bind the audio_output.is_playing callback into the builder closure so
     # `PolicyInputs.assistant_speaking` reflects live playback state. The
     # orchestrator-side signature is unchanged (closure approach).
@@ -585,6 +598,7 @@ def build_live_pipeline(
         is_playing_fn=lambda: audio_output.is_playing,
         vision_sidecar=vision_sidecar,
         urgency_scorer=_NullUrgencyScorer(),
+        attachment_risk_monitor=arm,
     )
 
     session_state_store: Any = EmptyMemoryStore()

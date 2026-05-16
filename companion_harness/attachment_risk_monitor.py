@@ -64,8 +64,26 @@ class EventStreamAttachmentRiskMonitor:
 
     Detects three Anchor-2 sub-categories by scanning an event stream.
     Returns the first (highest-confidence) signal found, or None.
-    No orchestrator state accessed; no historical accumulation across calls.
+    No orchestrator state accessed.
+
+    When used in the live pipeline, call `on_event(event)` (as an async
+    subscriber callback) to accumulate events; `current_level()` returns the
+    latest assessed risk level as a float in [0.0, 1.0].
     """
+
+    def __init__(self) -> None:
+        self._events: list[Event] = []
+        self._cached_level: float = 0.0
+
+    async def on_event(self, event: "Event") -> None:
+        """Subscriber callback — accumulates events, updates cached level."""
+        self._events.append(event)
+        signal = self.assess(iter(self._events))
+        self._cached_level = signal.confidence if signal is not None else 0.0
+
+    def current_level(self) -> float:
+        """Return latest assessed attachment-risk level (0.0 if no signal)."""
+        return self._cached_level
 
     def assess(self, event_stream: Iterable["Event"]) -> "AttachmentRiskSignal | None":
         from companion_harness.schemas import AttachmentRiskSignal
