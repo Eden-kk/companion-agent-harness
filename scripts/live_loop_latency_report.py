@@ -66,7 +66,13 @@ def _format_human(results: dict[str, MetricResult], show_trials: bool) -> str:
         if r.status == "NOT_MEASURED":
             reason = r.status_reason
             is_permanent = reason.startswith("physical_audio_path")
-            qualifier = " [PERMANENT — Task 8 dependency]" if is_permanent else " [TRANSIENT]"
+            is_misconfig = reason in ("trace_dir_not_provided", "trace_dir_missing")
+            if is_permanent:
+                qualifier = " [PERMANENT — Task 8 dependency]"
+            elif is_misconfig:
+                qualifier = " [OPERATOR CONFIG — pass --trace-dir]"
+            else:
+                qualifier = " [TRANSIENT]"
             lines.append(f"  [{status_str:<12}]  {name}")
             lines.append(f"               reason:  {reason}{qualifier}")
         else:
@@ -94,6 +100,7 @@ def _format_human(results: dict[str, MetricResult], show_trials: bool) -> str:
         "    NOT_MET  — gate threshold exceeded (n >= 3)",
         "    NOT_MEASURED — insufficient samples or dependency missing",
         "    PERMANENT: status_reason starts with 'physical_audio_path' → Task 8 required",
+        "    OPERATOR CONFIG: trace_dir_not_provided / trace_dir_missing → pass --trace-dir",
         "    TRANSIENT: all other NOT_MEASURED reasons → re-run with more samples",
         "=" * 68,
     ]
@@ -133,12 +140,13 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.trace_dir is not None:
-        trace_dir = Path(args.trace_dir)
+        trace_dir: Path | None = Path(args.trace_dir)
     else:
-        trace_dir = Path(args.log_path).parent / "decision_traces"
+        default = Path(args.log_path).parent / "decision_traces"
+        trace_dir = default if default.exists() else None
 
     events = _load_events(args.log_path)
-    results = compute_metrics(events, trace_dir=trace_dir if trace_dir.exists() else None)
+    results = compute_metrics(events, trace_dir=trace_dir)
     report = _build_report(results, args.log_path)
 
     if not args.json_only:

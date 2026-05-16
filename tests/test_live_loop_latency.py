@@ -441,8 +441,9 @@ def test_scripted_event_stream_expected_percentiles(tmp_path: Path):
 
 
 def test_missing_event_handling_zero_full_response(tmp_path: Path):
-    """No policy_decision with action_selected=='full_response' → NOT_MEASURED with correct reason."""
+    """Trace dir present but no policy_decision with action_selected=='full_response' → NOT_MEASURED."""
     trace_dir = tmp_path / "decision_traces"
+    trace_dir.mkdir()  # dir exists; no traces written → no full_response decisions
     events = [
         _evt("harness_init", 0),
         _evt("orchestrator_started", 10),

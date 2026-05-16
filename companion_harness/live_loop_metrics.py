@@ -11,6 +11,14 @@ status_reason convention (§8):
   Strings starting with "physical_audio_path" are PERMANENT (Task 8 dependency).
   All other reasons are TRANSIENT (more samples or config fix may resolve them).
 
+direct_question_latency status_reason values:
+  "trace_dir_not_provided"              — trace_dir is None (no store, action_selected unknown)
+  "trace_dir_missing"                   — trace_dir was provided but doesn't exist on disk
+  "no_full_response_decisions_in_session" — store present but no full_response decisions found
+  "sample_count_below_min: n=N, min=M" — < MIN_SAMPLES_FOR_GATE paired trials
+  "ok"                                  — measured, no anomalies
+  (may be appended with unpaired/dropped advisory notes)
+
 MIN_SAMPLES_FOR_GATE = 3.  Below this count → NOT_MEASURED.
 
 v0.1e Task 6: action_selected is read from DecisionTrace.counterfactuals via
@@ -135,10 +143,19 @@ def _load_action_selected(policy_evt: Event, store: Any) -> str | None:
 
 
 def _make_store(trace_dir: Path | None) -> Any:
-    if trace_dir is None:
+    if trace_dir is None or not trace_dir.exists():
         return None
     from companion_harness.decision_trace_store import DecisionTraceStore
     return DecisionTraceStore(trace_dir)
+
+
+def _no_fr_reason(store: Any, trace_dir: Path | None) -> str:
+    """Return the correct status_reason when no full_response decisions are found."""
+    if store is None:
+        if trace_dir is not None:
+            return "trace_dir_missing"
+        return "trace_dir_not_provided"
+    return "no_full_response_decisions_in_session"
 
 
 def _compute_direct_question_latency(
@@ -171,7 +188,7 @@ def _compute_direct_question_latency(
             p95_ms=None,
             sample_count=0,
             status="NOT_MEASURED",
-            status_reason="no_full_response_decisions_in_session",
+            status_reason=_no_fr_reason(store, trace_dir),
             trials=[],
             gate_threshold_p50_ms=800,
             gate_threshold_p95_ms=1500,
@@ -488,7 +505,8 @@ def compute_metrics(
 
     for sess_events in sessions:
         dql = _compute_direct_question_latency(sess_events, trace_dir)
-        if dql.status_reason == "no_full_response_decisions_in_session":
+        _no_fr_reasons = {"no_full_response_decisions_in_session", "trace_dir_not_provided", "trace_dir_missing"}
+        if dql.status_reason in _no_fr_reasons:
             dql_no_fr_sessions += 1
         else:
             all_dql_trials.extend(dql.trials)
@@ -522,7 +540,7 @@ def compute_metrics(
             p95_ms=None,
             sample_count=0,
             status="NOT_MEASURED",
-            status_reason="no_full_response_decisions_in_session",
+            status_reason=_no_fr_reason(_store, trace_dir),
             trials=[],
             gate_threshold_p50_ms=800,
             gate_threshold_p95_ms=1500,
