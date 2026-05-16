@@ -106,9 +106,14 @@ class SleepTimeAgent:
         self._started = False
 
     async def _on_event(self, event: Event) -> None:
-        if event.event_type != "memory_write_candidate":
+        if event.event_type == "memory_write_candidate":
+            await self._handle_write_candidate(event)
+            return
+        if event.event_type == "explicit_forget":
+            await self._handle_explicit_forget(event)
             return
 
+    async def _handle_write_candidate(self, event: Event) -> None:
         payload = self._read_payload(event)
         item = self._finalize_provenance(payload)
 
@@ -138,6 +143,58 @@ class SleepTimeAgent:
             self._event_logger.log(
                 _make_event("memory_commit_skipped", [event.event_id], self._seq, reason="no_camera_memory_visual")
             )
+
+    async def _handle_explicit_forget(self, event: Event) -> None:
+        """Tombstone every active item matching payload['query'] across all stores.
+
+        Bi-temporal tombstone (sets valid_to, leaves superseded_by None) per
+        MemoryManager Protocol contract. Invariant #3: memory items retain
+        provenance — items are NOT physically deleted.
+        """
+        payload = self._read_payload(event)
+        query = payload.get("query", "")
+        if not query:
+            return
+
+        tombstoned: list[tuple[str, str]] = []  # (store_name, item_id)
+        for store_name, store in self._stores.items():
+            try:
+                matches = store.retrieve(query, top_k=10)
+            except Exception as exc:
+                sys.stderr.write(
+                    f"[SleepTimeAgent] retrieve error on store {store_name}: {exc}\n"
+                )
+                continue
+            for item in matches:
+                try:
+                    store.forget(item.item_id)
+                except Exception as exc:
+                    sys.stderr.write(
+                        f"[SleepTimeAgent] forget error on store {store_name}: {exc}\n"
+                    )
+                    continue
+                tombstoned.append((store_name, item.item_id))
+
+        self._seq += 1
+        completion = _make_event(
+            "memory_tombstone_completed",
+            [event.event_id],
+            self._seq,
+            reason=f"matched_count={len(tombstoned)}",
+        )
+        # Inline payload so consumers can see which items were tombstoned without
+        # needing the per-store source_event_id closure here.
+        object.__setattr__(
+            completion,
+            "payload_dict",
+            {
+                "query": query,
+                "tombstoned": [
+                    {"store": s, "item_id": i} for s, i in tombstoned
+                ],
+            },
+        )
+        self._event_logger.log(completion)
 
     def _read_payload(self, event: Event) -> dict:
         if self._payload_reader is not None:

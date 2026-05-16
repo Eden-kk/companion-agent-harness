@@ -109,6 +109,26 @@ def _detect_explicit_remember(transcript: str) -> tuple[bool, str | None]:
     return False, None
 
 
+def _detect_explicit_forget(transcript: str) -> tuple[bool, str | None]:
+    """Detect explicit 'forget' intent in user transcript.
+
+    Returns (matched, query) where query is the substring identifying the
+    target memory item(s). Whitelist:
+    - "forget that ..."
+    - "forget about ..."
+    - "please forget ..."
+    Bare "forget that" / "forget about" with no trailing content is rejected to
+    avoid false positives (query would be empty → tombstone every item).
+    """
+    text = transcript.lower().strip()
+    for phrase in ("forget that ", "forget about ", "please forget "):
+        if text.startswith(phrase):
+            extracted = transcript[len(phrase):].strip()
+            if extracted:
+                return True, extracted
+    return False, None
+
+
 @dataclass
 class _VadOnsetFrame:
     """Lightweight internal item sent from T1 to T2's inbox for onset detection."""
@@ -798,6 +818,35 @@ class StreamingRealtimeOrchestrator:
                     payload_ref=f"orchestrator://{cand_event_id}",
                 )
                 self._logger.log(cand_event)
+
+            # --- Explicit-forget detection (fires unconditionally on intent) ---
+            # Payload carries a query string; SleepTimeAgent fans out across
+            # wired stores via retrieve(query) → forget(item_id) per match.
+            forget_matched, forget_query = _detect_explicit_forget(transcript)
+            if forget_matched and forget_query:
+                forget_event_id = self._new_event_id()
+                forget_payload = {
+                    "query": forget_query,
+                    "source_event_id": signal_evt_id,
+                    "privacy_mode": inputs.privacy_mode,
+                }
+                self._store_payload(forget_event_id, forget_payload)
+                forget_caused_by = [signal_evt_id]
+                if transcript_evt_id is not None:
+                    forget_caused_by.append(transcript_evt_id)
+                forget_event = dataclasses.replace(
+                    self._make_event(
+                        event_id=forget_event_id,
+                        event_type="explicit_forget",
+                        caused_by=forget_caused_by,
+                        payload_kind="memory_op",
+                    ),
+                    subject_class="self",
+                    sensitivity="sensitive",
+                    retention_policy_id="ep_default_30d",
+                    payload_ref=f"orchestrator://{forget_event_id}",
+                )
+                self._logger.log(forget_event)
 
             # --- User reduction command detection (v0.1g Task 9 / Wave 5) ---
             # Fires unconditionally on transcript; caused_by closes through
