@@ -101,3 +101,61 @@ def test_wall_clock_budget_exhausted_raises() -> None:
     event_types = [e.event_type for e in events]
     assert "tool_call_cancelled" in event_types
     assert "tool_call_completed" not in event_types
+
+
+def test_wait_for_aborts_slow_call_tool() -> None:
+    """asyncio.wait_for wraps call_tool: a blocking call_tool is aborted mid-flight."""
+    tool_mock = MagicMock()
+    tool_mock.name = "slow_tool"
+    tools_result = MagicMock()
+    tools_result.tools = [tool_mock]
+
+    session = AsyncMock()
+    session.initialize = AsyncMock()
+    session.list_tools = AsyncMock(return_value=tools_result)
+
+    async def _slow_call_tool(*args, **kwargs):
+        await asyncio.sleep(10)  # simulates a never-returning tool call
+
+    session.call_tool = _slow_call_tool
+
+    @asynccontextmanager
+    async def _fake_stdio(_p):
+        yield (MagicMock(), MagicMock())
+
+    @asynccontextmanager
+    async def _fake_session(_r, _w):
+        yield session
+
+    events = []
+    exc_caught = []
+
+    async def _inner():
+        import mcp
+        import mcp.client.stdio
+        orig_sc = mcp.client.stdio.stdio_client
+        orig_sp = mcp.StdioServerParameters
+        orig_cs = mcp.ClientSession
+        mcp.client.stdio.stdio_client = _fake_stdio
+        mcp.StdioServerParameters = MagicMock
+        mcp.ClientSession = _fake_session
+        try:
+            reasoner = MCPBackgroundReasoner(
+                mcp_server_url="stdio://fake",
+                session_id="sess-waitfor",
+                budget_wall_clock_s=0.05,  # 50 ms — call_tool sleeps 10 s
+            )
+            try:
+                async for evt in reasoner.select_and_call(_make_request()):
+                    events.append(evt)
+            except BackgroundReasonerBudgetExhausted as exc:
+                exc_caught.append(exc)
+        finally:
+            mcp.client.stdio.stdio_client = orig_sc
+            mcp.StdioServerParameters = orig_sp
+            mcp.ClientSession = orig_cs
+
+    asyncio.run(_inner())
+
+    assert len(exc_caught) == 1, "Expected BackgroundReasonerBudgetExhausted from wait_for timeout"
+    assert exc_caught[0].budget_kind == "wall_clock"

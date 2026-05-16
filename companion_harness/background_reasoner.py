@@ -12,6 +12,7 @@ MCPBackgroundReasoner only.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import time
 from collections.abc import AsyncIterator
@@ -45,6 +46,7 @@ class BackgroundReasonerBudgetExhausted(RuntimeError):
         self.budget_kind = budget_kind
         self.limit = limit
         self.observed = observed
+
 
 _SCHEMA_VERSION = "0.1"
 _SOURCE = "fake_background_reasoner"
@@ -346,11 +348,30 @@ class MCPBackgroundReasoner:
                     progress_events.append(p)
                     last_event_id = p.event_id
 
-                await session.call_tool(
-                    tool_name,
-                    request.arguments,
-                    progress_callback=_on_progress,
+                remaining_s = self._budget_wall_clock_s - (
+                    (int(time.monotonic() * 1000) - start_mono_ms) / 1000
                 )
+                if remaining_s <= 0:
+                    raise BackgroundReasonerBudgetExhausted(
+                        "wall_clock",
+                        self._budget_wall_clock_s,
+                        (int(time.monotonic() * 1000) - start_mono_ms) / 1000,
+                    )
+                try:
+                    await asyncio.wait_for(
+                        session.call_tool(
+                            tool_name,
+                            request.arguments,
+                            progress_callback=_on_progress,
+                        ),
+                        timeout=remaining_s,
+                    )
+                except asyncio.TimeoutError:
+                    raise BackgroundReasonerBudgetExhausted(
+                        "wall_clock",
+                        self._budget_wall_clock_s,
+                        (int(time.monotonic() * 1000) - start_mono_ms) / 1000,
+                    )
 
                 # Yield collected progress events, enforcing budget after each.
                 for p_evt in progress_events:

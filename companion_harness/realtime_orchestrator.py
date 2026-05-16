@@ -1141,22 +1141,19 @@ class StreamingRealtimeOrchestrator:
         exc: "BackgroundReasonerBudgetExhausted",
         caused_by: list[str],
     ) -> "Event":
-        import hashlib as _hl
-        from datetime import datetime as _dt, timezone as _tz
         now_ms = int(time.monotonic() * 1000)
         event_id = f"{self._session_id}-orch-budgetex-{now_ms}"
-        payload_hash = _hl.sha256(
+        payload_hash = hashlib.sha256(
             f"reasoner_budget_exhausted:{event_id}:{exc.budget_kind}".encode()
         ).hexdigest()[:16]
-        from companion_harness.schemas import Event as _Event
-        return _Event(
+        return Event(
             event_id=event_id,
             session_id=self._session_id,
             schema_version="0.1",
-            seq_no=0,
+            seq_no=self._next_seq(),
             event_type="reasoner_budget_exhausted",
             timestamp_mono_ms=now_ms,
-            timestamp_wall=_dt.now(_tz.utc).isoformat(),
+            timestamp_wall=datetime.now(timezone.utc).isoformat(),
             source="realtime_orchestrator",
             caused_by=caused_by,
             payload_hash=payload_hash,
@@ -1222,17 +1219,10 @@ class StreamingRealtimeOrchestrator:
             emit_threshold=cfg.get("detectors.backchannel.emit_threshold"),
         )
 
-        # Reasoner budget keys (v0.2a T3): apply to MCPBackgroundReasoner when wired.
-        # FakeBackgroundReasoner does not honour these keys (no-op for it).
+        # Reasoner budget keys (v0.2a T3): always read; apply when a reasoner is wired.
+        wcs = cfg.get("reasoner.budget_wall_clock_s")
+        sc = cfg.get("reasoner.budget_step_count")
         if self._background_reasoner is not None:
-            try:
-                wcs = cfg.get("reasoner.budget_wall_clock_s")
-            except KeyError:
-                wcs = None
-            try:
-                sc = cfg.get("reasoner.budget_step_count")
-            except KeyError:
-                sc = None
             if wcs is not None and hasattr(self._background_reasoner, "_budget_wall_clock_s"):
                 self._background_reasoner._budget_wall_clock_s = float(wcs)
             if sc is not None and hasattr(self._background_reasoner, "_budget_step_count"):

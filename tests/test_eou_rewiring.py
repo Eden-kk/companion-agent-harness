@@ -436,6 +436,8 @@ async def test_existing_config_store_wiring_intact(tmp_path: Path):
                 "detectors.smart_turn.silence_onset_ms": 320,
                 "detectors.smart_turn.silence_rms_threshold": 0.02,
                 "detectors.backchannel.emit_threshold": 0.7,
+                "reasoner.budget_wall_clock_s": 30.0,
+                "reasoner.budget_step_count": 8,
             }
 
         def get(self, key: str):
@@ -467,7 +469,7 @@ async def test_existing_config_store_wiring_intact(tmp_path: Path):
     await asyncio.sleep(0.15)
     await orch.stop()
 
-    # All 12 Tier-B keys must have been read at least once.
+    # All 14 Tier-B keys must have been read at least once.
     expected_keys = {
         "orchestrator.proposal_batch_window_ms",
         "orchestrator.hard_cancel_after_ms",
@@ -481,10 +483,12 @@ async def test_existing_config_store_wiring_intact(tmp_path: Path):
         "detectors.smart_turn.silence_onset_ms",
         "detectors.smart_turn.silence_rms_threshold",
         "detectors.backchannel.emit_threshold",
+        "reasoner.budget_wall_clock_s",
+        "reasoner.budget_step_count",
     }
     seen = set(cfg.calls)
     missing = expected_keys - seen
     assert not missing, (
-        f"REGRESSION GUARD FAILED: _snapshot_config() did not read all 12 "
+        f"REGRESSION GUARD FAILED: _snapshot_config() did not read all 14 "
         f"Tier-B keys at EOU. Missing: {sorted(missing)}"
     )

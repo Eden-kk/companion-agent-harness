@@ -45,7 +45,10 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
+
+if TYPE_CHECKING:
+    from companion_harness.background_reasoner import FakeBackgroundReasoner, MCPBackgroundReasoner
 
 from aiohttp import WSMsgType, web
 
@@ -1049,12 +1052,12 @@ async def _handle_post_model_swap(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 
 
-def _construct_background_reasoner() -> "Any | None":
+def _construct_background_reasoner() -> "FakeBackgroundReasoner | MCPBackgroundReasoner":
     """Construct the background reasoner from BACKGROUND_REASONER env var.
 
     BACKGROUND_REASONER=fake (default) → FakeBackgroundReasoner
     BACKGROUND_REASONER=mcp           → MCPBackgroundReasoner (requires MCP_SERVER_URL)
-    Absent env var                    → None (orchestrator uses no smart-path reasoner)
+    Absent env var                    → FakeBackgroundReasoner (default)
 
     Fails loudly on unknown choice or missing MCP_SERVER_URL — no silent fallback.
     """
