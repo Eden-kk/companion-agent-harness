@@ -13,9 +13,17 @@ hot seams. Cold seams (Phase 3) and multi-impl dropdowns (Phase 2) are
 explicitly out of scope.
 
 **Scope split:** five sub-PRs (D1–D5) with a file-conflict-aware
-dispatch map so D2/D3/D4 can fan out in parallel after D1 lands. Each
-sub-PR is independently reviewable, ships its own success criterion, and
-respects CLAUDE.md rule 4 ("one PR, one outcome").
+dispatch map so D2/D3/D4 can fan out after D1 lands. Each sub-PR is
+independently reviewable, ships its own success criterion, and respects
+CLAUDE.md rule 4 ("one PR, one outcome").
+
+**D3 parallelism contract:** D3 depends on D2's `model_swap_completed`
+event shape (the WS reconciliation step). To keep D3 parallel with D2,
+the event shape (all three payloads in §F3) is **locked in D1** and
+treated as a settled contract before D2 implements emission. D3 codes
+against this locked spec. D3 MUST NOT merge before D2 (D2 defines the
+actual emission that D3's WS handler consumes at runtime), but D3 can
+be developed and reviewed in parallel against the spec.
 
 ---
 
@@ -108,7 +116,8 @@ per the existing pattern at `manual_test_console/server.py:256–333`:
 {"seam": str,
  "from_enabled": bool,
  "to_enabled": bool,
- "requested_at_ms": int}
+ "requested_at_ms": int,
+ "operator_action_event_id": str}
 
 # model_swap_completed
 {"seam": str,
@@ -122,7 +131,8 @@ per the existing pattern at `manual_test_console/server.py:256–333`:
 {"seam": str,
  "attempted_enabled": bool,
  "reason": Literal["unknown_seam", "no_session_to_swap", "internal_error"],
- "error_class": str | None}
+ "error_class": str | None,
+ "operator_action_event_id": str}
 ```
 
 All three share `retention_policy_id="config_change_30d"` (existing
@@ -181,29 +191,34 @@ booleans into the same dict.
 
 ### F6 — Foreground model is NOT a hot seam (Phase 3 boundary)
 
-The PR #270 §Cold seams table lists 5 cold seams. None of them appear
-in `HOT_SEAMS` (F1). If a future operator/test issues `POST
-/config/model-swap` with `seam="foreground"` (or any other non-hot
-name), the server returns HTTP 403 and emits a `model_swap_rejected`
-event with `reason="unknown_seam"`. The cold-panel UI lands in Phase 3,
-not Phase 1.
+The PR #270 §Cold seams table lists 6 cold seams (Native TTS included).
+None of them appear in `HOT_SEAMS` (F1). If a future operator/test
+issues `POST /config/model-swap` with `seam="foreground"` (or any other
+non-hot name), the server returns HTTP 403 and emits a
+`model_swap_rejected` event with `reason="unknown_seam"`. The cold-panel
+UI lands in Phase 3, not Phase 1.
 
-### F7 — Replay-layer integration is documented, not enforced (Phase 1)
+### F7 — Replay-layer integration: per-span verification in D5
 
 The merged design's `replay_determinism_after_swap == 1.0` gate
-(numeric gate row 3) is **structurally enforced in Phase 1** via the D5
-contract test, which:
+(numeric gate row 3; PR #270 §Numeric gates) is **fully enforced in
+Phase 1** via the D5 contract test, which:
 
 1. Drives two `POST /config/model-swap` calls in a fixture session.
 2. Asserts the event log contains exactly two `model_swap_completed`
    events between the corresponding `operator_action` roots.
 3. Asserts `caused_by[]` closure (no orphan events).
+4. Replays the fixture log through the current `replay.py` callable API
+   and verifies per-span Tier-B determinism between the two swap
+   boundaries (same action class, timing bucket, interaction intent, and
+   safety class — per invariant #6).
 
-The full Tier-B-replay-spans-between-swaps verification (per-span
-breakdown in `scripts/v0_1h_replay_report.py`) is **deferred to
-Phase 1.5** (a follow-up PR that lands once `replay.py` has a callable
-API — same deferral as eval Phase A's F4). Phase 1 ships the event
-shape that makes the verification possible.
+The per-span replay walk uses whatever callable entry-point `replay.py`
+exposes at D5-implementation time. If `replay.py` does not yet have a
+public function, D5's implementer adds the minimal shim needed (a
+single-function wrapper, not a new module). Deferring to Phase 1.5 is
+**not** acceptable here — PR #270 made this a Phase 1 gate and that
+decision is not overridden without explicit author sign-off.
 
 ---
 
@@ -218,7 +233,7 @@ D1 merges, but **never touch the same file** (only D1 and D2 both touch
 | **D1: API + ConfigStore extension** | `manual_test_console/config_store.py` (extend), `manual_test_console/config_schema.py` (add `HOT_SEAMS`), `manual_test_console/server.py` (add `POST /config/model-swap` + `GET /config/seams` routes + handler stubs) | ~180 | none |
 | **D2: Event types + audit emission** | `companion_harness/schemas.py` (add 3 event_type string constants, if a registry exists), `manual_test_console/server.py` (extend `_make_*_event` helpers, wire D1's route stubs to emit events) | ~120 | D1 |
 | **D3: Frontend toggle UI** | `manual_test_console/index.html` (new `#hot-seams-panel` section + JS handlers) | ~150 | D1 |
-| **D4: Live-pipeline factory integration** | `manual_test_console/live_pipeline.py` (read `config_store.get_seam(...)` at session construction; gate the 12 factory args; new `_NullAttachmentRiskMonitor` if needed) | ~80 | D1 |
+| **D4: Live-pipeline factory integration** | `manual_test_console/live_pipeline.py` (read `config_store.get_seam(...)` at session construction; gate the 12 factory args; new `_NullAttachmentRiskMonitor` if needed), `manual_test_console/server.py` (CLI seam_defaults mapping + vision-sidecar gating — different regions from D2) | ~90 | D1 + D2 (server.py conflict avoidance) |
 | **D5: Contract tests** | `tests/test_dashboard_model_swap.py` (per-seam toggle round-trip), `tests/test_model_swap_events.py` (audit completeness + `caused_by` closure), `tests/test_dashboard_html_renders_seam_toggles.py` (HTML smoke), `tests/test_live_pipeline_reads_seam_state.py` (factory gating) | ~250 (4 test files) | D2 + D3 + D4 |
 
 **File-conflict matrix** (no two parallel sub-PRs touch the same file):
@@ -227,15 +242,18 @@ D1 merges, but **never touch the same file** (only D1 and D2 both touch
 |--------------|----|----|----|----|----|
 | `config_store.py` | W | — | — | R | R |
 | `config_schema.py` | W | — | R | R | R |
-| `server.py` | W | W (sequential after D1) | — | — | R |
+| `server.py` | W | W (sequential after D1) | — | W (sequential after D2) | R |
 | `schemas.py` (companion_harness) | — | W | — | — | R |
 | `index.html` | — | — | W | — | R |
 | `live_pipeline.py` | — | — | — | W | R |
 | `tests/test_dashboard_model_swap.py` | — | — | — | — | W |
 
-(W = writes, R = reads/imports.) D2 is the only sub-PR that re-touches
-`server.py` after D1 — that's why D2 is sequential after D1, not
-parallel.
+(W = writes, R = reads/imports.) D2 and D4 both re-touch `server.py`
+after D1 — they touch different code regions (D2: event-emission helpers
+at line 296; D4: CLI seam_defaults mapping at line 468–472 and
+vision-sidecar gating at line 397–406), but to avoid merge conflicts D4
+must be serialized after D2. Merge order: D1 → D2 → D4 (D3 is
+parallel with D2/D4 since it only touches `index.html`).
 
 ---
 
@@ -302,6 +320,11 @@ parallel.
 8. Do NOT touch `live_pipeline.py` in D1 (that's D4).
 9. Do NOT emit events in D1 (that's D2). The handler stub logs a TODO
    comment citing D2.
+10. **Lock the event shape spec.** D1's PR description (and a comment
+    in the handler stub) explicitly cites the three payload shapes from
+    §F3 as locked. This allows D3 to develop the WS reconciliation
+    handler in parallel against the spec without waiting for D2's
+    emission implementation.
 
 **Test plan:**
 - `tests/test_config_store_seam_state.py` (new, ships in D1):
@@ -532,14 +555,14 @@ parallel.
          if not config_store.get_seam("av_conflict_scorer"): av_conflict_scorer = None
          if not config_store.get_seam("urgency_scorer"): urgency_scorer = None
          if not config_store.get_seam("embedder"): embedder = None
-         if not config_store.get_seam("deictic_model"): deictic_model = None
          # scene_scorer, grounding_model, attachment_risk_monitor,
          # fast_tool_dispatcher: gated below at their wiring sites.
+         # (deictic is a cold seam per PR #270; not in HOT_SEAMS.)
      ```
    - This block sits BEFORE the existing `if vad_model is None: vad_model
      = EnergyVADModel()` fallbacks at line 548, so `disabled` cleanly
      becomes "use the existing None-handling neutral path" per F2.
-2. For the 3 seams that don't yet flow through `build_live_pipeline()`'s
+2. For the 4 seams that don't yet flow through `build_live_pipeline()`'s
    parameter list (`scene_scorer`, `grounding_model`,
    `attachment_risk_monitor`, `fast_tool_dispatcher`):
    - `scene_scorer` + `grounding_model` are wired in `server.py` at the
@@ -675,41 +698,43 @@ parallel.
 - The three numeric gates from PR #270 are demonstrably met:
   - `model_swap_audit_completeness == 1.0`
   - `hot_swap_latency_ms_p95 < 100`
-  - `replay_determinism_after_swap == 1.0` (structural form — see F7)
+  - `replay_determinism_after_swap == 1.0` (per-span Tier-B replay between swap boundaries — see F7)
 
 **Anchors locked:**
 - All Phase 1 numeric gates from PR #270 §Numeric gates.
 
 **OQs pre-resolved:**
-- *OQ: should D5 ship a `scripts/v0_1h_replay_report.py` per-span
-  breakdown?* — **Lean: no, defer to Phase 1.5.** Per F7, the full
-  replay-determinism verification requires a callable replay API; that
-  ships in a follow-up. Phase 1 contract tests cover the structural
-  invariants (audit completeness, DAG closure, latency).
+- *OQ: should D5 ship per-span replay verification?* — **Lean: yes,
+  in Phase 1.** Per F7 (revised), PR #270 made
+  `replay_determinism_after_swap == 1.0` a Phase 1 gate with per-span
+  replay verification. D5 must include this. The implementer uses
+  whatever `replay.py` callable API is available, adding a minimal shim
+  if needed. A standalone script is not required; the verification lives
+  inside the pytest test function.
 
 ---
 
 ## §Dependency graph
 
 ```
-D1 (API + ConfigStore) ──→ ┬─→ D2 (events) ──┐
-                            ├─→ D3 (UI) ──────┤
-                            └─→ D4 (pipeline)─┴─→ D5 (contract tests)
+D1 (API + ConfigStore) ──→ ┬─→ D2 (events) ──→ D4 (pipeline) ──┐
+                            │                                     │
+                            └─→ D3 (UI) ──────────────────────── ┴─→ D5 (contract tests)
 ```
 
 Linear notation:
 
-> D1 → (D2 ‖ D3 ‖ D4) → D5
+> D1 → (D2 → D4) ‖ D3 → D5
 
-**D1 is on the critical path.** D2, D3, D4 fan out 3× ONLY after D1's
-PR is on `origin/main` (same discipline as eval Phase A's A2 gate).
-D5 cannot dispatch until D2, D3, D4 have all merged because each test
-file imports symbols from a different sub-PR (events from D2's emission
-path, HTML structure from D3, factory wiring from D4).
+**D1 is on the critical path.** D2 and D3 fan out after D1 merges.
+D4 must follow D2 (both touch `server.py`; D4 serialized after D2 to
+avoid merge conflicts — see file-conflict matrix). D3 is parallel with
+D2/D4 because it only touches `index.html`. D5 cannot dispatch until D2,
+D3, D4 have all merged.
 
-If D2/D3/D4 must overlap (e.g., to compress wall-clock): each branches
-from D1's pre-merge feature branch and rebases on `main` post-D1-merge.
-The simpler discipline is to serialize D1 → fan-out.
+If D2/D3 must overlap aggressively: each branches from D1's pre-merge
+feature branch and rebases on `main` post-D1-merge. The simpler
+discipline is to serialize D1 → D2 → D4, with D3 parallel to D2/D4.
 
 ---
 
@@ -719,20 +744,17 @@ The simpler discipline is to serialize D1 → fan-out.
 agent-1: D1 (API + ConfigStore + route stubs)
         │
         ▼
-        GATE: D2/D3/D4 MUST NOT dispatch before D1's PR is on origin/main
+        GATE: D2/D3 MUST NOT dispatch before D1's PR is on origin/main
         │
-        ├──── agent-2: D2 (event emission) ──────┐
-        │                                         │
-        ├──── agent-3: D3 (frontend UI) ─────────┤
-        │                                         │
-        └──── agent-4: D4 (live_pipeline wiring)─┴── fan out 3×
-                                                  │
-                                                  ▼
-                                       agent-5: D5 (contract tests)
+        ├──── agent-2: D2 (event emission) ─────→ agent-4: D4 (live_pipeline wiring) ──┐
+        │         [D4 gates on D2 merge: both touch server.py]                          │
+        │                                                                                │
+        └──── agent-3: D3 (frontend UI, parallel) ──────────────────────────────────── ┴──▶ agent-5: D5
 ```
 
-**Max concurrency: 3 agents** during the D2/D3/D4 fan-out. D1 and D5
-each serialize.
+**Max concurrency: 2 agents** during the D2/D3 fan-out; D4 runs after
+D2 merges (server.py serialization constraint). D1 and D5 each
+serialize.
 
 **Wall-clock budget (optimistic):** D1 ≈ 1 day, D2/D3/D4 in parallel
 ≈ 1 day, D5 ≈ 1 day. Phase 1 ships in ~3 days of agent-time.
@@ -748,7 +770,7 @@ contract test:
 |---|---|---|
 | `model_swap_audit_completeness` | == 1.0 | `test_model_swap_events.py::test_audit_completeness` |
 | `hot_swap_latency_ms_p95` | < 100 | `test_hot_swap_latency_p95.py` |
-| `replay_determinism_after_swap` | == 1.0 | `test_model_swap_events.py::test_caused_by_closure` (structural form — full Tier-B-replay verification deferred to Phase 1.5 per F7) |
+| `replay_determinism_after_swap` | == 1.0 | `test_model_swap_events.py::test_replay_determinism_per_span` (per-span Tier-B replay between swap boundaries, per F7) |
 
 `cold_restart_caused_by_continuity` is Phase 3 only and not gated in
 Phase 1.
@@ -836,22 +858,29 @@ are pre-resolved with documented leans.
 
 ## §Critical findings
 
-1. **No new tier in the Tier-A/B/C taxonomy.** The merged design's
-   "Tier D" is a conceptual label, not a new code-level distinction in
-   Phase 1. The seam-state namespace lives next to Tier-B inside the
-   same ConfigStore. A "Tier D" `_TIER_D_KEYS` frozenset is **not**
-   added in Phase 1; the seam set is enumerated in `HOT_SEAMS`
-   directly. Tier-D-as-code lands when Phase 2 adds multi-impl adapter
-   identity (`real_v2`, `real_v3`).
+1. **No new tier in the Tier-A/B/C taxonomy (Phase 1 simplification).**
+   PR #270 defined Tier D as replay-affecting model identity with
+   `model_swap_completed` reconstruction. In Phase 1, boolean seam state
+   (`real` / `disabled`) suffices for the 2-state toggle; full Tier-D
+   semantics (model identity recorded in the event, reconstruction at
+   replay time) are not needed until Phase 2 adds model-replacement with
+   multiple real implementations per seam. Phase 1 therefore collapses
+   Tier D to a boolean seam-state namespace inside the same ConfigStore
+   next to Tier-B. A `_TIER_D_KEYS` frozenset is **not** added; the seam
+   set is enumerated in `HOT_SEAMS` directly. **Tier-D-as-code returns in
+   Phase 2** when `real_v2` / `real_v3` adapter identity must be recorded
+   per-swap.
 2. **`fast_tool_dispatcher` is not yet wired into
    `live_pipeline.py`.** Confirmed by `grep -n
    "fast_tool_dispatcher\|FastToolDispatcher" live_pipeline.py` (zero
-   hits as of v0.1g HEAD). D1 includes it in `HOT_SEAMS` so the route
-   accepts the name; D4 does NOT wire it through the factory. D5's
-   live-pipeline test skips it (parametrize over the 11 wired seams).
-   When `fast_tool_dispatcher` lands in `live_pipeline.py` as part of a
-   future PR, the gating block in D4 gains one more line — that's the
-   only churn.
+   hits as of v0.1g HEAD). D1 includes it in `HOT_SEAMS` so the HTTP
+   route accepts the toggle; the HTTP toggle exists but live-pipeline
+   coupling is deferred until `fast_tool_dispatcher` is imported by
+   `live_pipeline.py` in a future PR. D4 does NOT wire it through the
+   factory. D5's live-pipeline test parametrizes over the 11 wired seams
+   and skips `fast_tool_dispatcher` with an explicit skip reason. When
+   `fast_tool_dispatcher` lands in `live_pipeline.py`, the gating block
+   in D4 gains one more line — that's the only churn.
 3. **`attachment_risk_monitor` is unconditionally subscribed today.**
    `live_pipeline.py:607` calls `arm = EventStreamAttachmentRiskMonitor()`
    and `shielded_logger.late_subscribe(arm.on_event)` without a
