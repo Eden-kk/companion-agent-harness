@@ -49,6 +49,7 @@ def test_tts_adapter_flag_native_minicpm_no_longer_raises() -> None:
     )
 
 
+@pytest.mark.gpu
 def test_kokoro_path_unchanged() -> None:
     """Kokoro factory and KokoroTtsAdapter import are unmodified (regression guard)."""
     from companion_harness.tts_kokoro import KokoroTtsAdapter
@@ -78,6 +79,7 @@ def test_minicpm_native_tts_adapter_protocol_shape() -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.gpu
 @pytest.mark.skipif(
     not __import__("importlib").util.find_spec("torch") or
     not __import__("torch").cuda.is_available(),

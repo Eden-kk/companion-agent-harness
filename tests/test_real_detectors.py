@@ -18,6 +18,8 @@ import importlib
 
 import pytest
 
+pytestmark = pytest.mark.gpu
+
 from companion_harness.backchannel_classifier import BackchannelModel
 from companion_harness.turn_detector_smart import SmartTurnModel
 from companion_harness.turn_detector_vad import VADModel
