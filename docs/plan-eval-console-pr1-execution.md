@@ -32,7 +32,7 @@ These were converged in the draft and MUST hold across all sub-PRs. Repeated her
 ## Open questions — adopted leans
 
 - **OQ-1**: `/eval/runs` reads from disk (`<blob_dir>/eval_reports/`). Survives restarts; comparable across sessions.
-- **OQ-2**: `POST /eval/runs` returns immediately with `{run_id, status: "started"}`. Live progress streams over a WebSocket (`/eval/ws/runs/{run_id}`). For PR1, synchronous polling on `GET /eval/runs/{run_id}` is sufficient if WebSocket adds risk — fall back to polling-only behind a feature flag if the WS path slips.
+- **OQ-2**: `POST /eval/runs` returns immediately with `{run_id, status: "started"}`. Live progress in PR1 uses polling only: the frontend calls `GET /eval/runs/{run_id}` every 2 seconds while a run is active and stops when status is `completed` or `failed`. No WebSocket endpoint is registered in PR1. WebSocket-based live streaming is deferred to PR2, where it will be co-developed with the failure inspector to avoid a half-wired WS path shipping without a consumer.
 - **OQ-3**: Reports/output dir: `<blob_dir>/eval_reports/`, with `--eval-reports-dir` CLI flag override.
 - **OQ-4**: Cancellation: explicit `POST /eval/runs/{run_id}/cancel` only. No auto-cancel on browser disconnect.
 - **OQ-5**: Import direction: runner imports registry; registry imports adapter modules; adapter modules do not import registry. One-way.
@@ -284,7 +284,7 @@ Also add `eval_reports_dir: Path | None = None` to `build_app` kwargs (defaultin
 
 `eval.html` mirrors the same nav with `Eval` marked active.
 
-**`eval_app.js`** — vanilla JS, no build step. Mirrors `index.html`'s pattern (inline `<script>` or referenced module). Uses `fetch` for REST + optional `WebSocket` for live run progress.
+**`eval_app.js`** — vanilla JS, no build step. Mirrors `index.html`'s pattern (inline `<script>` or referenced module). Uses `fetch` for REST only. Polling: `eval_app.js` polls `GET /eval/runs/{run_id}` every 2 seconds when a run is active; stops polling when status is `completed` or `failed`.
 
 **`eval_style.css`** — eval-only stylesheet. Does NOT extract or modify inline CSS from `index.html` (Live view keeps its inline styles as-is). Defines eval-specific layout and the `.badge.synthetic` class. If shared design tokens (e.g. `--bg`, `--fg`, `--accent`) are needed, they are duplicated here rather than refactored out of `index.html` — scope is narrower that way.
 
