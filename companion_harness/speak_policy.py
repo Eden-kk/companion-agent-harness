@@ -187,6 +187,10 @@ def decide(
         return _silence(ReasonCode.COOLDOWN_BLOCKED, caused_by)
 
     # 9. EOU confirmed.  Respond only when the agent was addressed.
+    # None means no addressing signal was produced (e.g. ASR disabled) — emit
+    # MISSING_SIGNAL_PRODUCER so operators see WHY silence happened.
+    if inputs.user_addressed_agent is None:
+        return _silence(ReasonCode.MISSING_SIGNAL_PRODUCER, caused_by)
     if inputs.user_addressed_agent:
         return SpeakDecision(
             action_type="full_response",
@@ -309,6 +313,9 @@ def _threshold_path_for(
             path.append("short_reaction_budget:available")
         else:
             path.append("short_reaction_budget:exhausted")
+        return path
+    if inputs.user_addressed_agent is None:
+        path.append("user_addressed_agent:missing_signal_producer")
         return path
     if inputs.user_addressed_agent:
         path.append("user_addressed_agent:full_response")
