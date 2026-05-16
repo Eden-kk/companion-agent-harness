@@ -133,13 +133,15 @@ KEY_STREAMING_RAW_MODE: web.AppKey[bool] = web.AppKey("streaming_raw_mode", bool
 KEY_BACKGROUND_REASONER: web.AppKey[object] = web.AppKey("background_reasoner", object)
 KEY_EVENT_RATE_COUNTER: web.AppKey[object] = web.AppKey("event_rate_counter", object)
 KEY_START_TIME: web.AppKey[float] = web.AppKey("start_time", float)
+KEY_BLOB_ROTATION_TASK: web.AppKey[object] = web.AppKey("blob_rotation_task", object)
+KEY_BLOB_ROTATION_LAST_TICK: web.AppKey[object] = web.AppKey("blob_rotation_last_tick", object)
 
 # Session id stamped onto operator_action + config_change events emitted from
 # the /config/* HTTP endpoints. These events are decoupled from any /ws/ingest
 # session; they record control-plane mutations against the singleton
 # ConfigStore. Per docs/design-config-and-dashboard.md §8.
 _OPERATOR_SESSION_ID = "manual_test_console.operator"
-_CONFIG_EVENT_SCHEMA_VERSION = "v0.1f"
+_CONFIG_EVENT_SCHEMA_VERSION = "0.1"
 
 
 def _event_to_json(event: Event) -> dict:
@@ -834,6 +836,10 @@ async def _handle_health(request: web.Request) -> web.Response:
     events_per_second_last_60s = round(counter.rate_per_second())
     events_total_since_start = counter.total_count()
 
+    rotation_task = request.app[KEY_BLOB_ROTATION_TASK]
+    blob_rotation_alive = rotation_task is not None and not rotation_task.done()
+    blob_rotation_last_tick_wall: str | None = request.app[KEY_BLOB_ROTATION_LAST_TICK]
+
     return web.json_response({
         "status": "ok",
         "mode": server_mode,
@@ -877,6 +883,9 @@ async def _handle_health(request: web.Request) -> web.Response:
         # T6: event-rate counters
         "events_per_second_last_60s": events_per_second_last_60s,
         "events_total_since_start": events_total_since_start,
+        # Blob rotation worker liveness
+        "blob_rotation_alive": blob_rotation_alive,
+        "blob_rotation_last_tick_wall": blob_rotation_last_tick_wall,
     })
 
 
@@ -1403,6 +1412,9 @@ def build_app(
         ),
     }
 
+    app[KEY_BLOB_ROTATION_TASK] = None
+    app[KEY_BLOB_ROTATION_LAST_TICK] = None
+
     app.router.add_get("/", _handle_index)
     app.router.add_get("/healthz", _handle_health)
     app.router.add_get("/metrics", _handle_metrics)
@@ -1603,6 +1615,7 @@ def build_app(
                             p.unlink()
                     except Exception:
                         pass
+            app[KEY_BLOB_ROTATION_LAST_TICK] = _now_wall()
 
     async def _display_sampling_reporter() -> None:
         """Every 60s emit a display_event_sampled summary event so the dashboard
@@ -1658,7 +1671,9 @@ def build_app(
 
     async def _on_startup_rotation(_app: web.Application) -> None:
         if blob_retention_days > 0:
-            asyncio.get_running_loop().create_task(_blob_rotation_worker())
+            _app[KEY_BLOB_ROTATION_TASK] = asyncio.get_running_loop().create_task(
+                _blob_rotation_worker()
+            )
         asyncio.get_running_loop().create_task(_display_sampling_reporter())
 
     app.on_startup.append(_on_startup_rotation)

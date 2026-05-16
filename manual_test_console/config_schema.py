@@ -136,10 +136,10 @@ ALLOWLIST: dict[str, TierBSchemaEntry] = {
     "orchestrator.proposal_batch_window_ms": TierBSchemaEntry(
         key="orchestrator.proposal_batch_window_ms",
         code_location="realtime_orchestrator.py:175",
-        default=80,
+        default=600,
         min=40,
-        max=200,
-        step=10,
+        max=1500,
+        step=50,
         value_type=int,
         description="T4 grace window for first ThinkerProposal",
     ),
