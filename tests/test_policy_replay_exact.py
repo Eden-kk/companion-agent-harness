@@ -571,9 +571,9 @@ def test_policy_replay_exact_stage3():
     alert (all four modes), aesthetic_reaction (permitted / quiet_mode_blocked /
     mode_blocked / cooldown_blocked), short_reaction (budget replenished /
     exhausted), backchannel, clarification, full_response, and silence fallthrough.
-    No fixture-loader involvement.  Verifies invariant #5 and POLICY_VERSION == "v0.1d".
+    No fixture-loader involvement.  Verifies invariant #5 and POLICY_VERSION == "v0.1f".
     """
-    assert speak_policy.POLICY_VERSION == "v0.1d"
+    assert speak_policy.POLICY_VERSION == "v0.1f"
     assert len(_STAGE3_TRACE) == len(_STAGE3_BASELINE)
     assert len(_STAGE3_TRACE) == len(_STAGE3_P_BACKCHANNEL)
 
@@ -741,10 +741,10 @@ def test_policy_replay_exact_stage4():
     asserts (a) feeding populated retrieved_items through decide() does not
     perturb decisions, and (b) DecisionTrace.retrieval_used co-emission is
     deterministic across repeated calls with identical inputs.
-    POLICY_VERSION stays at "v0.1d" — schema/metadata plumbing changes do
-    not bump policy_version (spec line 202–209).
+    POLICY_VERSION is "v0.1f" after Task 5 bump; retrieval plumbing changes
+    do not independently bump policy_version (spec line 202–209).
     """
-    assert speak_policy.POLICY_VERSION == "v0.1d"
+    assert speak_policy.POLICY_VERSION == "v0.1f"
     assert len(_STAGE4_TRACE) == len(_STAGE4_BASELINE)
     assert len(_STAGE4_TRACE) == len(_STAGE4_RETRIEVAL_EVENT_IDS)
 
