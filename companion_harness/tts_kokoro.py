@@ -76,6 +76,9 @@ __all__ = ["KokoroTtsAdapter"]
 # playback sink is responsible for any resampling.
 _SAMPLE_RATE = 24000
 
+# 200 ms of PCM16 at 24 kHz mono: 24000 samples/s * 0.2 s * 2 bytes/sample
+_MAX_CHUNK_BYTES = 9600
+
 
 class KokoroTtsAdapter:
     """``TtsAdapter`` concrete implementation backed by Kokoro-82M-ONNX.
@@ -137,7 +140,9 @@ class KokoroTtsAdapter:
             # float32 [-1, 1] → int16 little-endian PCM bytes
             clipped = np.clip(samples, -1.0, 1.0)
             pcm16 = (clipped * 32767.0).astype("<i2")
-            yield pcm16.tobytes()
+            raw = pcm16.tobytes()
+            for offset in range(0, len(raw), _MAX_CHUNK_BYTES):
+                yield raw[offset : offset + _MAX_CHUNK_BYTES]
 
     @property
     def sample_rate(self) -> int:
