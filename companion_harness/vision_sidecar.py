@@ -245,6 +245,9 @@ class VisionSidecar:
         """Wall-time ms for last scene scorer call (Stage-2 profiling: scene_change_score_ms)."""
         return self._last_scene_change_score_ms
 
+    def last_av_conflict_ms(self) -> float | None:
+        return self._last_av_conflict_ms
+
     def grounding_confidence(self) -> float:
         """Most recently resolved grounding confidence, or 0.0 if no resolve call yet."""
         return self._last_grounding_confidence

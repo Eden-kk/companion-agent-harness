@@ -26,7 +26,6 @@ from __future__ import annotations
 import array
 import asyncio
 import math
-import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -355,7 +354,7 @@ def _make_live_policy_inputs_builder(
             scene_change_score=scene_score,
             deictic_reference=False,  # UNAVAILABLE: #169 — XLLM 2025 deictic detector pending model wiring
             user_addressed_agent=False,  # UNAVAILABLE: #139 — placeholder; AddressingClassifier overrides post-ASR.
-            urgency_score=_urgency.score("", None),  # Stage-2 timing: addressing_classified.urgency_score_ms measured at call site
+            urgency_score=_urgency.score("", None),  # UNAVAILABLE: #171; Stage-2 timing: addressing_classified.urgency_score_ms measured at call site
             proactivity_budget_remaining={},
             privacy_mode="normal",
             current_task_mode="normal",

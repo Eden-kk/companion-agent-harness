@@ -382,7 +382,7 @@ The following 6 opt-in adapters were flipped to **default-ON** in v0.2e (2026-05
 Timing instrumentation (Stage-2 escape valve per `docs/plan-v0.2e-execution.md §profiling rig`):
 - `scene_change_score_ms` — stored on `VisionSidecar._last_scene_change_score_ms`; accessible via `last_scene_change_score_ms()`.
 - `grounding_confidence_ms` — emitted in `deictic_grounding` event `payload_inline`.
-- `audio_visual_conflict_ms` — stored on `VisionSidecar._last_av_conflict_ms`.
+- `audio_visual_conflict_ms` — stored on `VisionSidecar._last_av_conflict_ms`; accessible via `last_av_conflict_ms()`.
 - `urgency_score_ms`, `deictic_reference_ms`, `embedding_ms` — wall-clock at call site (b200 profiling uses `time.monotonic()` around the respective `.score()` / `.classify()` / `.embed()` calls).
 
 Deferred to v0.3: `AttachmentRiskMonitor` default-on posture (OQ-3), `PyannoteDiarizationAdapter` (depends on v0.2b).
