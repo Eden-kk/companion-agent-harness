@@ -340,19 +340,22 @@
     body.innerHTML = preview ? `<span class="payload-preview">${escapeHtml(preview)}</span>` : "";
     row.title = `${fmtTs(evt.timestamp_mono_ms)}  src=${evt.source}  seq=${evt.seq_no}\ncaused_by=[${cb}]  hash=${(evt.payload_hash || "").slice(0,12)}\nevent_id=${evt.event_id}`;
 
-    const isIngest = evt.payload_kind === "raw_audio" || evt.payload_kind === "raw_video";
-    const target = isIngest ? ingestRows : (SIGNAL_TYPES.has(evt.event_type) || evt.payload_kind === "signal") ? signalRows : ingestRows;
-    target.appendChild(row);
+    // Signal events are rendered exclusively by the filter-aware subscriber
+    // (applyFilter / buildSignalRow). Skip direct-append for those.
+    const goesSignal = SIGNAL_TYPES.has(evt.event_type) || evt.payload_kind === "signal";
+    if (goesSignal) return;
+
+    ingestRows.appendChild(row);
     row.prepend(kind);
     row.dataset.eventId = evt.event_id || "";
     eventRowsById.set(evt.event_id, row);
     // Cap rendered rows.
-    while (target.children.length > 500) {
-      const stale = target.firstChild;
+    while (ingestRows.children.length > 500) {
+      const stale = ingestRows.firstChild;
       if (stale && stale.dataset && stale.dataset.eventId) eventRowsById.delete(stale.dataset.eventId);
-      target.removeChild(stale);
+      ingestRows.removeChild(stale);
     }
-    target.scrollTop = target.scrollHeight;
+    ingestRows.scrollTop = ingestRows.scrollHeight;
   }
 
   // ---------------- Display WS ----------------
