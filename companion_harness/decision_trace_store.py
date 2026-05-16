@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 
 from companion_harness.reason_codes import ReasonCode
-from companion_harness.schemas import DecisionTrace
+from companion_harness.schemas import DecisionTrace, SensitiveField
 
 __all__ = ["DecisionTraceStore"]
 
@@ -31,6 +31,10 @@ def _trace_from_dict(d: dict) -> DecisionTrace:
     d = dict(d)
     d["primary_reason_code"] = ReasonCode(d["primary_reason_code"])
     d["supporting_reason_codes"] = [ReasonCode(v) for v in d["supporting_reason_codes"]]
+    # Reconstruct SensitiveField from dict representation (dataclasses.asdict expands it).
+    raw_sf = d.get("user_transcript")
+    if isinstance(raw_sf, dict):
+        d["user_transcript"] = SensitiveField(**raw_sf)
     return DecisionTrace(**d)
 
 
@@ -47,10 +51,19 @@ class DecisionTraceStore:
         redacted_explanation and sensitive_explanation_ref are forced null on
         disk (sensitive fields; spec line 379). Last-writer-wins on collision.
         """
+        # Redact sensitive value from user_transcript on disk; keep the wrapper
+        # (with retention_policy_id + preview) so audit consumers know the field
+        # existed without accessing the raw text.
+        redacted_transcript = (
+            dataclasses.replace(trace.user_transcript, value=None, value_ref=None)
+            if trace.user_transcript is not None
+            else None
+        )
         sanitized = dataclasses.replace(
             trace,
             redacted_explanation=None,
             sensitive_explanation_ref=None,
+            user_transcript=redacted_transcript,
         )
         data = _trace_to_dict(sanitized)
         path = self._dir / f"{trace.decision_id}.json"

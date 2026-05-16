@@ -768,10 +768,16 @@ class StreamingRealtimeOrchestrator:
             )
             self._logger.log(policy_evt)
 
+            _redacted_transcript = (
+                dataclasses.replace(trace.user_transcript, value=None, value_ref=None)
+                if trace.user_transcript is not None
+                else None
+            )
             trace_dict = dataclasses.asdict(dataclasses.replace(
                 trace,
                 redacted_explanation=None,
                 sensitive_explanation_ref=None,
+                user_transcript=_redacted_transcript,
             ))
             # Convert Enum values to strings for consistent hashing.
             trace_dict["primary_reason_code"] = trace.primary_reason_code.value
