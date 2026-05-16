@@ -144,7 +144,6 @@ Phase 1 server: it normally stays running. If you do need to stop it, `kill <PID
 
 The blob store does not auto-clean. Delete `/tmp/manual_test_blobs/<session_id>/` on b200 once you no longer need replay; it is ephemeral.
 
-<<<<<<< HEAD
 **Memory slate hygiene.** Each session now creates per-session memory directories under `<blob_dir>/<session_id>/memory/{session,core,episodic,semantic}/`. If you want a completely clean memory slate before a new session (no residual store directories from prior runs), run:
 
 ```bash
