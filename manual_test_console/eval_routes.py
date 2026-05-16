@@ -97,6 +97,7 @@ def _load_run_json(run_dir: Path) -> dict[str, Any] | None:
 
 async def _handle_get_runs(request: web.Request) -> web.Response:
     reports_dir: Path = request.app[KEY_EVAL_REPORTS_DIR]
+    handles: dict[str, EvalRunHandle] = request.app[KEY_EVAL_RUNS]
     runs: list[dict] = []
     if reports_dir.exists():
         for run_dir in sorted(reports_dir.iterdir()):
@@ -104,7 +105,6 @@ async def _handle_get_runs(request: web.Request) -> web.Response:
                 summary = _load_run_json(run_dir)
                 if summary is not None:
                     # Overlay in-memory status if run is still active.
-                    handles: dict[str, EvalRunHandle] = request.app[KEY_EVAL_RUNS]
                     handle = handles.get(summary["run_id"])
                     if handle is not None:
                         summary["status"] = handle.status
@@ -149,7 +149,7 @@ async def _handle_post_runs(request: web.Request) -> web.Response:
     loop = asyncio.get_running_loop()
 
     def _sync_run() -> int:
-        return _run_adapter(info, run_output_dir, split)
+        return _run_adapter(info, run_output_dir, split, run_id)
 
     async def _async_run() -> int:
         return await loop.run_in_executor(None, _sync_run)
@@ -220,9 +220,10 @@ async def _handle_post_cancel(request: web.Request) -> web.Response:
     handle = handles.get(run_id)
     if handle is None:
         raise web.HTTPNotFound(reason=f"run '{run_id}' not found or already finished")
-    handle.task.cancel()
-    handle.status = "cancelled"
-    return web.json_response({"run_id": run_id, "status": "cancelled"})
+    if not handle.task.done():
+        handle.task.cancel()
+        handle.status = "cancelled"
+    return web.json_response({"run_id": run_id, "status": handle.status})
 
 
 def register_eval_routes(app: web.Application, *, eval_reports_dir: Path) -> None:

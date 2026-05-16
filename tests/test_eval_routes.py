@@ -270,6 +270,34 @@ async def test_post_eval_runs_all_six_adapters_dispatch(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# round-trip: POST /eval/runs → GET /eval/runs/{run_id} never 404s
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_post_then_get_run_id_round_trip(tmp_path: Path) -> None:
+    """Returned run_id from POST must be retrievable via GET without 404."""
+    app = _make_app(tmp_path)
+    server = TestServer(app)
+    await server.start_server()
+    try:
+        async with TestClient(server) as client:
+            post_resp = await client.post(
+                "/eval/runs",
+                data=json.dumps({"adapter": "harness_native"}),
+                headers={"Content-Type": "application/json"},
+            )
+            assert post_resp.status == 200
+            run_id = (await post_resp.json())["run_id"]
+
+            get_resp = await client.get(f"/eval/runs/{run_id}")
+            assert get_resp.status == 200, f"GET /eval/runs/{run_id} returned 404 — run_id mismatch"
+            data = await get_resp.json()
+            assert data["run_id"] == run_id
+    finally:
+        await server.close()
+
+
+# ---------------------------------------------------------------------------
 # --eval-reports-dir wiring via build_app
 # ---------------------------------------------------------------------------
 

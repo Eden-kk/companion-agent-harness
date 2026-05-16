@@ -12,6 +12,7 @@ import json
 import sys
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -26,15 +27,17 @@ def _name_prefix(name: str) -> str:
     return "".join(w[0] for w in name.replace("-", "_").split("_") if w)
 
 
-def _run_adapter(info: object, output: str, split: str) -> int:
+def _run_adapter(info: object, output: str, split: str, run_id: str | None = None) -> int:
     from companion_harness.evals.registry import AdapterInfo
     assert isinstance(info, AdapterInfo)
 
-    prefix = _name_prefix(info.name)
-    run_id = f"{prefix}-{int(time.time())}-{uuid.uuid4().hex[:6]}"
+    if run_id is None:
+        prefix = _name_prefix(info.name)
+        run_id = f"{prefix}-{int(time.time())}-{uuid.uuid4().hex[:6]}"
     output_dir = Path(output) / run_id
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    started_at = datetime.now(timezone.utc).isoformat()
     adapter = info.build()
     print(f"run_id={run_id}")
 
@@ -80,10 +83,19 @@ def _run_adapter(info: object, output: str, split: str) -> int:
                 status_str = "OK" if passed else "ERROR"
                 print(f"  [{status_str}] {case.case_id}: {replay_run.final_status}")
 
+        # TODO(PR2): pass a threading.Event cancel flag when real-mode adapters land.
+        # asyncio.run inside a thread cannot be cancelled by the outer task.cancel().
         asyncio.run(_run_all())
 
+    finished_at = datetime.now(timezone.utc).isoformat()
     run_json_path = output_dir / "run.json"
-    run_json_path.write_text(json.dumps({"run_id": run_id, "adapter": info.name, "cases": case_results}, indent=2))
+    run_json_path.write_text(json.dumps({
+        "run_id": run_id,
+        "adapter": info.name,
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "cases": case_results,
+    }, indent=2))
     print(f"[eval] wrote {run_json_path}")
 
     return 1 if has_error else 0

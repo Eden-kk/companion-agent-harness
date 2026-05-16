@@ -4,14 +4,15 @@ const $ = id => document.getElementById(id);
 
 let _pollTimer = null;
 let _activeRunId = null;
+let _adaptersCache = [];
 
 async function loadAdapters() {
   try {
     const resp = await fetch('/eval/adapters');
-    const adapters = await resp.json();
+    _adaptersCache = await resp.json();
     const sel = $('adapter-sel');
     sel.innerHTML = '';
-    adapters.forEach(a => {
+    _adaptersCache.forEach(a => {
       const opt = document.createElement('option');
       opt.value = a.name;
       opt.textContent = `${a.name} ${a.version} [${a.status}]`;
@@ -28,10 +29,8 @@ function onAdapterChange() {
   const opt = sel.options[sel.selectedIndex];
   if (!opt) return;
   const name = opt.value;
-  // fetch details to show notes + badge
-  fetch('/eval/adapters').then(r => r.json()).then(adapters => {
-    const info = adapters.find(a => a.name === name);
-    if (!info) return;
+  const info = _adaptersCache.find(a => a.name === name);
+  if (info) {
     const badgeEl = $('adapter-badge');
     const notesEl = $('adapter-notes');
     if (info.status === 'ready') {
@@ -45,7 +44,7 @@ function onAdapterChange() {
       badgeEl.className = 'badge disabled';
     }
     notesEl.textContent = info.notes || '';
-  });
+  }
 }
 
 async function startRun() {
@@ -145,10 +144,11 @@ async function loadRunDetail(runId) {
       </div>
     `;
     const caseList = $('case-list');
+    const adapterInfo = _adaptersCache.find(a => a.name === data.adapter);
     cases.forEach(c => {
       const row = document.createElement('div');
       row.className = 'case-row';
-      const isSynthetic = true; // all PR1 adapters are synthetic
+      const isSynthetic = adapterInfo ? !adapterInfo.supports_real_mode : true;
       row.innerHTML = `
         <span class="case-id">${c.case_id}</span>
         ${isSynthetic ? '<span class="badge synthetic">SYNTHETIC</span>' : ''}
