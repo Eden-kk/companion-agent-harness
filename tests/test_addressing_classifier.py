@@ -86,18 +86,20 @@ def test_multi_speaker_count_three_yields_background() -> None:
 
 
 def test_single_speaker_mode_addressing_agent_yields_implicit_true() -> None:
+    """Substantive transcript (≥3 tokens, not denylist) ⇒ implicit True."""
     clf = WakeWordAddressingClassifier()
     sig = clf("what time is it", speaker_count=1, social_mode="user_addressing_agent")
     assert sig.confidence == "implicit"
     assert sig.evidence == "implicit_fallback"
-    assert derive_user_addressed_agent(sig, "user_addressing_agent") is True
+    assert derive_user_addressed_agent(sig, "user_addressing_agent", transcript="what time is it") is True
 
 
-def test_single_speaker_mode_addressing_other_yields_implicit_false() -> None:
+def test_implicit_short_transcript_returns_false() -> None:
+    """Short transcript (< IMPLICIT_MIN_TOKENS) ⇒ implicit False regardless of social_mode."""
     clf = WakeWordAddressingClassifier()
-    sig = clf("hey bob, how are you", speaker_count=1, social_mode="user_addressing_other")
+    sig = clf("hi", speaker_count=1, social_mode="user_addressing_agent")
     assert sig.confidence == "implicit"
-    assert derive_user_addressed_agent(sig, "user_addressing_other") is False
+    assert derive_user_addressed_agent(sig, "user_addressing_agent", transcript="hi") is False
 
 
 def test_speaker_count_none_falls_through_to_implicit() -> None:
@@ -105,21 +107,22 @@ def test_speaker_count_none_falls_through_to_implicit() -> None:
     clf = WakeWordAddressingClassifier()
     sig = clf("the weather is nice", speaker_count=None, social_mode="user_addressing_agent")
     assert sig.confidence == "implicit"
-    assert derive_user_addressed_agent(sig, "user_addressing_agent") is True
+    assert derive_user_addressed_agent(sig, "user_addressing_agent", transcript="the weather is nice") is True
 
 
-def test_empty_transcript_speaker_count_none_yields_implicit() -> None:
+def test_empty_transcript_speaker_count_none_yields_implicit_false() -> None:
+    """Empty transcript ⇒ implicit tier ⇒ False (invariant #8: silence wins ties)."""
     clf = WakeWordAddressingClassifier()
     sig = clf("", speaker_count=None, social_mode="user_addressing_agent")
     assert sig.confidence == "implicit"
-    assert derive_user_addressed_agent(sig, "user_addressing_agent") is True
+    assert derive_user_addressed_agent(sig, "user_addressing_agent", transcript="") is False
 
 
 def test_empty_transcript_other_mode_yields_implicit_false() -> None:
     clf = WakeWordAddressingClassifier()
     sig = clf("", speaker_count=None, social_mode="background_presence")
     assert sig.confidence == "implicit"
-    assert derive_user_addressed_agent(sig, "background_presence") is False
+    assert derive_user_addressed_agent(sig, "background_presence", transcript="") is False
 
 
 # ---------------------------------------------------------------------------
