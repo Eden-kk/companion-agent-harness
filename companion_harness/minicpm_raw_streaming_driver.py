@@ -19,11 +19,15 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import time
+import traceback
 import uuid
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from typing import Any
+
+_log = logging.getLogger(__name__)
 
 from companion_harness.schemas import Event
 
@@ -153,6 +157,30 @@ class MiniCPMRawStreamingDriver:
             self._emit_session_started(raw_audio_event_id)
             yield frame_bytes, None  # type: ignore[misc]
 
+    def _make_tts_error_event(self, error_summary: str) -> Event:
+        now_ms = int(time.monotonic() * 1000)
+        event_id = f"raw_tts_synthesis_error-{uuid.uuid4().hex[:12]}"
+        payload: dict = {"error_summary": error_summary[:256]}
+        payload_hash = hashlib.sha256(str(payload).encode()).hexdigest()[:16]
+        return Event(
+            event_id=event_id,
+            session_id=self._session_id,
+            schema_version=_SCHEMA_VERSION,
+            seq_no=self._next_seq(),
+            event_type="raw_tts_synthesis_error",
+            timestamp_mono_ms=now_ms,
+            timestamp_wall=datetime.now(timezone.utc).isoformat(),
+            source=_SOURCE,
+            caused_by=[],
+            payload_hash=payload_hash,
+            payload_ref=None,
+            payload_kind="signal",
+            subject_class="self",
+            sensitivity="safe",
+            retention_policy_id="signal_default_30d",
+            payload_inline=payload,
+        )
+
     def _make_dropped_event(self, proposal_content: str) -> Event:
         now_ms = int(time.monotonic() * 1000)
         event_id = f"raw_proposal_dropped_during_synthesis-{uuid.uuid4().hex[:12]}"
@@ -191,8 +219,10 @@ class MiniCPMRawStreamingDriver:
                     self._broker.publish(self._session_id, self._audio_seq, chunk)
         except asyncio.CancelledError:
             raise
-        except Exception:
-            pass
+        except Exception as exc:
+            summary = f"{type(exc).__name__}: {exc}"
+            _log.error("raw TTS synthesis failed: %s\n%s", summary, traceback.format_exc())
+            self._logger.log(self._make_tts_error_event(summary))
         finally:
             self._tts_in_flight = False
 
