@@ -169,7 +169,8 @@ Wave 3 (CLI tests)
 
 **Change:**
 - Replace the `NotImplementedError` (line 105) with a call to `self._real_cases(split)` when `self.synthetic is False`.
-- Add module-level `_CANDOR_HF_SLUG = "<slug>"` and `_CANDOR_REVISION = "<commit_hash>"` constants (slug filled at impl time per PF2).
+- Add module-level `_CANDOR_HF_SLUG = "<slug>"` and `_CANDOR_REVISION = "<commit_hash>"` constants (slug + commit hash filled at impl time per PF2; hash looked up on the HF dataset's "Files and versions" → "History" tab or via `huggingface_hub.list_repo_commits`).
+- Add import-time assertion: `assert _CANDOR_REVISION, "CANDOR revision hash must be set before import; fill _CANDOR_REVISION from the HF dataset commit history."` — this fires if a coder accidentally ships the placeholder string.
 - Add `_load_candor_streaming(split: str) -> Iterable[dict]`:
   ```
   from datasets import load_dataset
@@ -186,12 +187,12 @@ Wave 3 (CLI tests)
   - `consent_class`: `"safe_eval_fixture"` (OQ resolution).
   - `benchmark_name`: `"candor"`, `benchmark_version`: `"v1"`.
   - All other fields mirror the synthetic mapper at `candor.py:115-135`.
-- Add **row-skip running counter**: `_real_cases` increments `self._attempted` per row, `self._skipped` on row-mapper failure (try/except around the mapper; log `dataset_row_skip_failure` per skip). Counter is exposed via `self.skip_stats() -> dict` so the runner can include `{'attempted': N, 'skipped': M, 'skip_rate': M/N}` in `run.json`. This satisfies the `dataset_row_skip_rate < 0.05` gate measurement column.
+- Add **row-skip running counter**: `_real_cases` increments `self._attempted` per row, `self._skipped` on row-mapper failure (try/except around the mapper; log `dataset_row_skip_failure` per skip). Counter is exposed via `self.skip_stats() -> dict` so the runner can include `{'attempted': N, 'skipped': M, 'skip_rate': M/N}` in `run.json`. This satisfies the `dataset_row_skip_rate < 0.05` gate measurement column. The runner writes these under `ReplayRun.results` using the field names `skipped_row_count` (= `M`) and `total_row_count` (= `N`); the runner raises `RuntimeError` (non-zero exit) if `skipped_row_count / total_row_count >= 0.05` after completing the run (gate is enforced at runner level, not loader level, so partial results are still written to `run.json` before the raise).
 - Loader init refuses if `os.environ.get("HF_TOKEN") is None` AND the HF cache does not already hold the gate-accepted token. Raise `RuntimeError("HF_TOKEN missing; set HF_TOKEN or run `huggingface-cli login` and accept the CANDOR gate at <URL>.")`.
 
 **Success criterion:** `CandorCaseSource(synthetic=False).iter_cases("test")` yields at least one `EvaluationCase` against the live HF dataset; `pytest tests/test_candor_real_loader.py` (T6a) passes; `dataset_row_skip_rate < 0.05` on the smoke fixture.
 
-**Discipline note:** No "configurability" beyond `synthetic` and `seed` already on the dataclass. No new dataclass fields. Slug + revision are module constants, not init params.
+**Discipline note:** No "configurability" beyond `synthetic` and `seed` already on the dataclass. No new dataclass fields. Slug + revision are module constants, not init params. Also remove the stale phrase "Neither is required for Phase B1" from the `candor.py` line 24 module docstring — it is no longer accurate once T1 ships the real loader.
 
 ---
 
@@ -212,14 +213,17 @@ Wave 3 (CLI tests)
 
 ### T3 — `_load_fdb_streaming(version, split)` for FDB V1 and V1.5
 
+**Scope declaration:** This is a **full HF streaming loader for V1 and V1.5 static cases** (option a). `--mode real` is NOT stubbed to `NotImplementedError` for a future wave — T3 replaces the `NotImplementedError` seam added by T0a with a working loader. No live examiner (Phase C) is needed for static corpus cases; the audio bytes travel in `inputs` for future Phase C consumption.
+
 **Files:** `companion_harness/evals/adapters/full_duplex_bench.py`.
 
 **Change:**
-- Add `_FDB_V1_HF_SLUG`, `_FDB_V1_REVISION`, `_FDB_V15_HF_SLUG`, `_FDB_V15_REVISION` module constants (slugs at impl time per PF2).
+- Add `_FDB_V1_HF_SLUG`, `_FDB_V1_REVISION`, `_FDB_V15_HF_SLUG`, `_FDB_V15_REVISION` module constants (slugs + commit hashes filled at impl time per PF2; hashes looked up on each dataset's HF "Files and versions" → "History" tab or via `huggingface_hub.list_repo_commits`). Add import-time assertions for both revision constants (same pattern as CANDOR — see T1).
 - Inline `_load_fdb_v1_streaming(split)` inside `FullDuplexBenchV1CaseSource._real_cases(split)`. Same `load_dataset(...streaming=True, revision=...)` + stable-key sort pattern as CANDOR.
 - Inline `_load_fdb_v15_streaming(split)` inside `FullDuplexBenchV15CaseSource._real_cases(split)`. **Do NOT factor into a shared helper** — three call sites (or even two) is below the threshold for shared abstraction per CLAUDE.md rule 2. Two near-identical 8-line generators are easier to read and easier to delete independently if one dataset gates differently.
 - Per-source skip counter, same shape as CANDOR's.
-- Same `HF_TOKEN`-missing fail-fast init check.
+- `HF_TOKEN`-missing fail-fast init check: **per-loader inline** (no shared `_check_hf_auth()` helper — two call sites do not justify shared abstraction per CLAUDE.md rule 2). Each loader's `__post_init__` (when `synthetic=False`) checks `os.environ.get("HF_TOKEN")` and raises `RuntimeError` with the actionable message identical in shape to the CANDOR check, but with the FDB-specific gate URL.
+- License string: pinned in each loader's docstring (V1 and V1.5 separately). Loader init reads the upstream license field from the HF dataset card metadata and raises `RuntimeError` if it differs from the pinned string.
 
 **Success criterion:** `FullDuplexBenchV1CaseSource(synthetic=False).iter_cases("test")` and `FullDuplexBenchV15CaseSource(synthetic=False).iter_cases("test")` each yield at least one `EvaluationCase` against the live HF datasets.
 
@@ -271,7 +275,9 @@ Wave 3 (CLI tests)
 - `test_real_mode_requires_hf_token` — with `HF_TOKEN` unset, `CandorCaseSource(synthetic=False).iter_cases("test")` raises `RuntimeError` with the actionable message.
 - `test_real_mode_smoke_yields_cases` — **marked `@pytest.mark.gpu`** (or `@pytest.mark.real_corpus`; new marker added in `pyproject.toml` if not present) — runs only on b200 dev or wherever `HF_TOKEN` is set; consumes the first 5 streamed rows; asserts each is a valid `EvaluationCase` with `inputs['audio_pcm_bytes']` non-empty.
 - `test_skip_counter_tracks_malformed_rows` — feeds a fake row generator (monkeypatch `load_dataset`) with 10 good rows + 1 malformed; asserts `skip_stats == {'attempted': 11, 'skipped': 1, 'skip_rate': 1/11}`.
+- `test_skip_rate_gate_fires_above_threshold` — feeds a fixture with 19 good rows + 1 malformed (skip_rate ≈ 0.05, exactly at threshold boundary) followed by a second fixture with 10 good rows + 2 malformed (skip_rate ≈ 0.167 > 0.05); asserts the runner raises / returns non-zero only for the second fixture and that `run.json` contains `skipped_row_count: 2` and `total_row_count: 12` for that run.
 - `test_real_audio_row_runs_through_driver` — feeds one real-mode `EvaluationCase` (mock-constructed, no HF call) through `CandorScenarioDriver.run()`; asserts `ReplayRun.results` contains the four timing observation lists.
+- `test_candor_adapter_respects_limit_flag` — monkeypatches `load_dataset` to return a generator of 20 fake rows; calls `CandorCaseSource(synthetic=False).iter_cases("test")` sliced to `limit=7`; asserts exactly 7 cases are yielded (i.e., `min(limit, total)` = 7 < 20).
 
 **Discipline note:** Tests that require live HF access carry the `real_corpus` marker and are excluded from default `pytest tests/` per `pyproject.toml [tool.pytest.ini_options]` marker config (mirror the existing `gpu` marker pattern).
 
