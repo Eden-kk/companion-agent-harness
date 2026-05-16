@@ -432,11 +432,18 @@ async def test_memory_commit_skipped_emitted_on_guest_present() -> None:
 
 
 @pytest.mark.asyncio
-async def test_subscribe_after_start_raises() -> None:
+async def test_agent_start_after_logger_start_succeeds() -> None:
+    """SleepTimeAgent.start() after EventLogger.start() succeeds via late_subscribe().
+
+    Previously SleepTimeAgent called EventLogger.subscribe(), which raises if the
+    logger has already started. The agent now uses late_subscribe() so a shared
+    logger (e.g. SharedLoggerProxy in the manual-test server) can be started
+    once at Application boot and per-session SleepTimeAgents can subscribe later.
+    """
     logger = EventLogger(_noop_sink)
     store = _InMemoryStore()
     agent = SleepTimeAgent({"episodic": store}, logger)
     await logger.start()
-    with pytest.raises(RuntimeError, match="subscribe\\(\\) must be called before"):
-        await agent.start()
+    await agent.start()  # must NOT raise
+    await agent.stop()
     await logger.stop()

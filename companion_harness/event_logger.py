@@ -41,6 +41,17 @@ class EventLogger:
             raise RuntimeError("subscribe() must be called before EventLogger.start()")
         self._subscribers.append(callback)
 
+    def late_subscribe(self, callback: Sink) -> None:
+        """Subscribe after the logger has started.
+
+        Receives all NEW events from the moment of subscription onward;
+        historical events are not replayed. Safe to call while _drain is
+        running: list.append is atomic in CPython and the drain loop iterates
+        a snapshot-free reference, so no lock is needed under asyncio's
+        single-threaded event loop.
+        """
+        self._subscribers.append(callback)
+
     def unsubscribe(self, callback: Sink) -> None:
         if callback in self._subscribers:
             self._subscribers.remove(callback)
