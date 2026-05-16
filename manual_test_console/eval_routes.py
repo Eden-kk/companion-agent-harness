@@ -208,7 +208,7 @@ async def _handle_get_event_log(request: web.Request) -> web.Response:
     run_id = request.match_info["run_id"]
     case_id = request.match_info["case_id"]
     reports_dir: Path = request.app[KEY_EVAL_REPORTS_DIR]
-    jsonl_path = reports_dir / run_id / case_id / "events.jsonl"
+    jsonl_path = reports_dir / run_id / "event_logs" / f"{case_id}.jsonl"
     if not jsonl_path.exists():
         return web.json_response({"error": f"event log not found for {run_id}/{case_id}"}, status=404)
     return web.FileResponse(jsonl_path)
