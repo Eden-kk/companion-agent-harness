@@ -24,6 +24,7 @@ does not run. Full wiring of the grounding pass is implemented in v0.1c Task 7.
 from __future__ import annotations
 
 import hashlib
+import time
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -129,6 +130,8 @@ class VisionSidecar:
         self._buffer: deque[FrameRef] = deque()
         self._last_frame: bytes | None = None
         self._last_scene_change_score: float = 0.0
+        self._last_scene_change_score_ms: float = 0.0  # Stage-2 timing: vision_frame.scene_change_score_ms
+        self._last_av_conflict_ms: float = 0.0  # Stage-2 timing: audio_visual_conflict_ms
         self._last_grounding_confidence: float = 0.0
         self._seq = 0
         # Live-loop pairing buffer: single most-recent frame, consumed by
@@ -152,7 +155,9 @@ class VisionSidecar:
 
         score = 0.0
         if self._last_frame is not None:
+            _t0 = time.monotonic()
             score = self._scene_scorer(self._last_frame, ref.frame_bytes)
+            self._last_scene_change_score_ms = (time.monotonic() - _t0) * 1000.0
         self._last_frame = ref.frame_bytes
         self._last_scene_change_score = score
 
@@ -236,6 +241,10 @@ class VisionSidecar:
         """Most recently computed scene-change score, or 0.0 if no pair seen yet."""
         return self._last_scene_change_score
 
+    def last_scene_change_score_ms(self) -> float:
+        """Wall-time ms for last scene scorer call (Stage-2 profiling: scene_change_score_ms)."""
+        return self._last_scene_change_score_ms
+
     def grounding_confidence(self) -> float:
         """Most recently resolved grounding confidence, or 0.0 if no resolve call yet."""
         return self._last_grounding_confidence
@@ -248,7 +257,10 @@ class VisionSidecar:
 
     def audio_visual_conflict_score(self, audio: bytes, frame: bytes | None = None) -> float:
         """Return AV conflict score via the injected scorer (default: _NullAudioVisualConflictScorer)."""
-        return self._av_conflict_scorer.score(audio, frame)
+        _t0 = time.monotonic()
+        result = self._av_conflict_scorer.score(audio, frame)
+        self._last_av_conflict_ms = (time.monotonic() - _t0) * 1000.0  # Stage-2 timing: audio_visual_conflict_ms
+        return result
 
     # ------------------------------------------------------------------
     # Grounding pass (gated by deictic_reference)
@@ -286,14 +298,16 @@ class VisionSidecar:
                 return _NOT_RESOLVABLE
         else:
             frame_ref = self._buffer[-1]
+        _t0 = time.monotonic()
         label, confidence = self._grounding_model(frame_ref.frame_bytes, query)
+        grounding_ms = (time.monotonic() - _t0) * 1000.0
         self._last_grounding_confidence = confidence
         result = GroundingResult(
             label=label,
             confidence=confidence,
             frame_event_id=frame_ref.event_id,
         )
-        self._emit_grounding_event(frame_ref, label, confidence, deictic_evt_id)
+        self._emit_grounding_event(frame_ref, label, confidence, deictic_evt_id, grounding_ms)
         return result
 
     # ------------------------------------------------------------------
@@ -311,7 +325,7 @@ class VisionSidecar:
         self._seq += 1
         return self._seq
 
-    def _emit_grounding_event(self, frame_ref: FrameRef, label: str, confidence: float, deictic_evt_id: str) -> None:
+    def _emit_grounding_event(self, frame_ref: FrameRef, label: str, confidence: float, deictic_evt_id: str, grounding_ms: float = 0.0) -> None:
         if self._logger is None:
             return
         seq = self._next_seq()
@@ -337,6 +351,7 @@ class VisionSidecar:
             subject_class="self",
             sensitivity="safe",
             retention_policy_id="default",
+            payload_inline={"grounding_confidence_ms": round(grounding_ms, 1)},
         )
         self._logger.log(evt)
 

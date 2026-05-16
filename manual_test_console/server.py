@@ -1524,53 +1524,54 @@ def main(argv: list[str] | None = None) -> int:
             "'native_minicpm': MiniCPM-o native duplex TTS via MiniCPMNativeTtsAdapter."
         ),
     )
-    # Real-adapter wiring flags. Default OFF — each flag swaps in the
+    # Real-adapter wiring flags. Default ON (v0.2e) — each flag swaps in the
     # corresponding real impl for its null stub. See live_pipeline.py.
+    # Use --no-enable-X to revert to the null stub (operator rollback path).
     parser.add_argument(
         "--enable-clip-scene",
         dest="enable_clip_scene",
-        action="store_true",
-        default=False,
-        help="Wire CLIPSceneChangeScorer in place of _NullSceneScorer (issue #166).",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Wire CLIPSceneChangeScorer in place of _NullSceneScorer (issue #166). Default ON since v0.2e.",
     )
     parser.add_argument(
         "--enable-grounding",
         dest="enable_grounding",
-        action="store_true",
-        default=False,
-        help="Wire GroundingDINOAdapter in place of _NullGroundingModel (issue #172).",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Wire GroundingDINOAdapter in place of _NullGroundingModel (issue #172). Default ON since v0.2e.",
     )
     parser.add_argument(
         "--enable-av-conflict",
         dest="enable_av_conflict",
-        action="store_true",
-        default=False,
-        help="Wire HeuristicAVConflictScorer in place of _NullAudioVisualConflictScorer (issue #168).",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Wire HeuristicAVConflictScorer in place of _NullAudioVisualConflictScorer (issue #168). Default ON since v0.2e.",
     )
     parser.add_argument(
         "--enable-deictic",
         dest="enable_deictic",
-        action="store_true",
-        default=False,
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help=(
             "Wire MiniCPMDeicticDetector in place of _NullDeicticModel (issue #169). "
             "Reuses the already-loaded foreground model. No effect without a "
-            "foreground model that exposes .chat()."
+            "foreground model that exposes .chat(). Default ON since v0.2e."
         ),
     )
     parser.add_argument(
         "--enable-urgency",
         dest="enable_urgency",
-        action="store_true",
-        default=False,
-        help="Wire ProsodyLexiconUrgencyScorer in place of _NullUrgencyScorer (issue #171).",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Wire ProsodyLexiconUrgencyScorer in place of _NullUrgencyScorer (issue #171). Default ON since v0.2e.",
     )
     parser.add_argument(
         "--enable-embeddings",
         dest="enable_embeddings",
-        action="store_true",
-        default=False,
-        help="Wire SentenceTransformerEmbedder in place of _NullEmbeddingAdapter (issue #183).",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Wire SentenceTransformerEmbedder in place of _NullEmbeddingAdapter (issue #183). Default ON since v0.2e.",
     )
     parser.add_argument(
         "--minicpm-only",

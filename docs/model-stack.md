@@ -122,31 +122,31 @@ PARALLEL / OFF-PATH:
 
 ## Real models (operational)
 
-| # | Component | Stage | Backend | Adapter file |
-|---|---|---|---|---|
-| 1 | Silero VAD | T1 detector — VAD safety net | PyTorch `silero-vad` | `companion_harness/turn_detector_vad.py` |
-| 2 | SmartTurn v3 | T1 detector — turn-end (interim primary) | Pipecat mLSTM weights | `companion_harness/turn_detector_smart.py` |
-| 3 | MiniCPM-o native_duplex EOU | T1 EOU — final primary | `MiniCPMODuplex.streaming_generate()` `is_listen` | `companion_harness/native_duplex_eou.py::MiniCPMNativeDuplexEouSource` |
-| 4 | Backchannel classifier | T1 backchannel | faster-whisper-tiny + curated lexicon | `companion_harness/backchannel_asr_lexicon.py` |
-| 5 | Whisper-tiny ASR | T2 ASR | `faster-whisper` (cu128) | `companion_harness/asr_faster_whisper.py` |
-| 6 | MiniCPM addressing classifier | T2 addressing — primary | `MiniCPMDuplexModel.chat(yes/no prompt)` | `companion_harness/addressing_classifier.py::MiniCPMAddressingClassifierImpl` |
-| 7 | Wake-word addressing | T2 addressing — safety net | regex on `"Claude" / "Claudia"` | `companion_harness/addressing_classifier.py::WakeWordAddressingClassifier` |
-| 8 | MiniCPM-o foreground | T4 proposal generation | `MiniCPM-o-2_6` (init_vision=audio=tts=True) | `companion_harness/foreground_model_minicpm.py` |
-| 9 | Kokoro TTS | T4 TTS — default | Kokoro-82M-ONNX (onnxruntime) | `companion_harness/tts_kokoro.py` |
-| 10 | MiniCPM-o native TTS | T4 TTS — opt-in | `MiniCPMO.chat(generate_audio=True)` | `companion_harness/tts_minicpm_native.py` |
-| 11 | EventStreamAttachmentRiskMonitor | parallel — risk | event-stream heuristic (3 sub-categories); wired live (PR #234) | `companion_harness/attachment_risk_monitor.py` |
-| 12 | RegexAestheticRubric | T3 rubric gate | regex/lexicon (8 violation IDs) | `companion_harness/aesthetic_rubric.py` |
-| 13 | `CLIPSceneChangeScorer` | T2 vision — scene change | openai/clip-vit-base-patch32, CPU-default (PR #248) | `companion_harness/clip_scene_change.py` |
-| 14 | `HeuristicAVConflictScorer` | T2 vision — A/V conflict | VAD RMS × OpenCV Haar lip-region pixel-diff (PR #242) | `companion_harness/av_conflict_scorer.py` |
-| 15 | `MiniCPMDeicticDetector` | T2 vision — deictic | `MiniCPM.chat()` yes/no — text-only (no image arg in current chat() API) (PR #246) | `companion_harness/deictic_detector_minicpm.py` |
-| 16 | `ProsodyLexiconUrgencyScorer` | T2 urgency | 13 distress phrases + RMS + speech-rate composite (PR #244) | `companion_harness/urgency_scorer.py` |
-| 17 | `GroundingDINOAdapter` | T2 vision — grounding | IDEA-Research/grounding-dino-tiny (PR #250) | `companion_harness/grounding_dino.py` |
-| 18 | `SentenceTransformerEmbedder` | T2 memory — embeddings | sentence-transformers/all-MiniLM-L6-v2, CPU-default (PR #247) | `companion_harness/embedder_sentence_transformer.py` |
-| 19 | `MiniCPMProvenanceComputer` | parallel — SleepTimeAgent | `MiniCPM.chat()` for confidence/salience/summary (PR #235) | `companion_harness/provenance_minicpm.py` |
+| # | Component | Stage | Backend | Adapter file | default-on status (v0.2e) |
+|---|---|---|---|---|---|
+| 1 | Silero VAD | T1 detector — VAD safety net | PyTorch `silero-vad` | `companion_harness/turn_detector_vad.py` | out of scope @ v0.2e (always-on; no `--enable-X` gate) |
+| 2 | SmartTurn v3 | T1 detector — turn-end (interim primary) | Pipecat mLSTM weights | `companion_harness/turn_detector_smart.py` | out of scope @ v0.2e (always-on; no `--enable-X` gate) |
+| 3 | MiniCPM-o native_duplex EOU | T1 EOU — final primary | `MiniCPMODuplex.streaming_generate()` `is_listen` | `companion_harness/native_duplex_eou.py::MiniCPMNativeDuplexEouSource` | out of scope @ v0.2e (always-on; no `--enable-X` gate) |
+| 4 | Backchannel classifier | T1 backchannel | faster-whisper-tiny + curated lexicon | `companion_harness/backchannel_asr_lexicon.py` | out of scope @ v0.2e (always-on; no `--enable-X` gate) |
+| 5 | Whisper-tiny ASR | T2 ASR | `faster-whisper` (cu128) | `companion_harness/asr_faster_whisper.py` | out of scope @ v0.2e (always-on; no `--enable-X` gate) |
+| 6 | MiniCPM addressing classifier | T2 addressing — primary | `MiniCPMDuplexModel.chat(yes/no prompt)` | `companion_harness/addressing_classifier.py::MiniCPMAddressingClassifierImpl` | out of scope @ v0.2e (always-on; no `--enable-X` gate) |
+| 7 | Wake-word addressing | T2 addressing — safety net | regex on `"Claude" / "Claudia"` | `companion_harness/addressing_classifier.py::WakeWordAddressingClassifier` | out of scope @ v0.2e (always-on; no `--enable-X` gate) |
+| 8 | MiniCPM-o foreground | T4 proposal generation | `MiniCPM-o-2_6` (init_vision=audio=tts=True) | `companion_harness/foreground_model_minicpm.py` | out of scope @ v0.2e (different rollout regime; no `--enable-X` gate) |
+| 9 | Kokoro TTS | T4 TTS — default | Kokoro-82M-ONNX (onnxruntime) | `companion_harness/tts_kokoro.py` | out of scope @ v0.2e (governed by `--tts-adapter`; libcudart gate) |
+| 10 | MiniCPM-o native TTS | T4 TTS — opt-in | `MiniCPMO.chat(generate_audio=True)` | `companion_harness/tts_minicpm_native.py` | out of scope @ v0.2e (governed by `--tts-adapter`; libcudart gate) |
+| 11 | EventStreamAttachmentRiskMonitor | parallel — risk | event-stream heuristic (3 sub-categories); wired live (PR #234) | `companion_harness/attachment_risk_monitor.py` | deferred @ v0.2e → v0.3 (OQ-3: flag posture unresolved) |
+| 12 | RegexAestheticRubric | T3 rubric gate | regex/lexicon (8 violation IDs) | `companion_harness/aesthetic_rubric.py` | out of scope @ v0.2e (always-on; no `--enable-X` gate) |
+| 13 | `CLIPSceneChangeScorer` | T2 vision — scene change | openai/clip-vit-base-patch32, CPU-default (PR #248) | `companion_harness/clip_scene_scorer.py` | default-on @ v0.2e (`--enable-clip-scene` default=True) |
+| 14 | `HeuristicAVConflictScorer` | T2 vision — A/V conflict | VAD RMS × OpenCV Haar lip-region pixel-diff (PR #242) | `companion_harness/av_conflict_scorer_heuristic.py` | default-on @ v0.2e (`--enable-av-conflict` default=True) |
+| 15 | `MiniCPMDeicticDetector` | T2 vision — deictic | `MiniCPM.chat()` yes/no — text-only (no image arg in current chat() API) (PR #246) | `companion_harness/deictic_detector_minicpm.py` | default-on @ v0.2e (`--enable-deictic` default=True) |
+| 16 | `ProsodyLexiconUrgencyScorer` | T2 urgency | 13 distress phrases + RMS + speech-rate composite (PR #244) | `companion_harness/urgency_scorer_prosody_lexicon.py` | default-on @ v0.2e (`--enable-urgency` default=True) |
+| 17 | `GroundingDINOAdapter` | T2 vision — grounding | IDEA-Research/grounding-dino-tiny (PR #250) | `companion_harness/grounding_dino_adapter.py` | default-on @ v0.2e (`--enable-grounding` default=True) |
+| 18 | `SentenceTransformerEmbedder` | T2 memory — embeddings | sentence-transformers/all-MiniLM-L6-v2, CPU-default (PR #247) | `companion_harness/embedder_sentence_transformer.py` | default-on @ v0.2e (`--enable-embeddings` default=True) |
+| 19 | `MiniCPMProvenanceComputer` | parallel — SleepTimeAgent | `MiniCPM.chat()` for confidence/salience/summary (PR #235) | `companion_harness/provenance_minicpm.py` | out of scope @ v0.2e (SleepTimeAgent path; no `--enable-X` gate) |
 
-Live-pipeline wiring is opt-in via PR #255 CLI flags: `--enable-clip-scene`,
-`--enable-grounding`, `--enable-av-conflict`, `--enable-deictic`,
-`--enable-urgency`, `--enable-embeddings`, `--enable-vision`.
+Live-pipeline wiring default-ON since v0.2e: `--enable-clip-scene`, `--enable-grounding`,
+`--enable-av-conflict`, `--enable-deictic`, `--enable-urgency`, `--enable-embeddings`.
+Use `--no-enable-X` to revert any to OFF. `--enable-vision` remains OFF by default (+18 GB VRAM).
 
 ---
 
