@@ -42,7 +42,7 @@ from companion_harness.deictic_detector import DeicticDetector, _NullDeicticMode
 from companion_harness.event_logger import EventLogger
 from companion_harness.foreground_model import ForegroundModel
 from companion_harness.input_ingest import IngestSession
-from companion_harness.native_duplex_eou import _NullNativeDuplexEouSource
+from companion_harness.native_duplex_eou import MiniCPMNativeDuplexEouSource, _NullNativeDuplexEouSource
 from companion_harness.realtime_orchestrator import StreamingRealtimeOrchestrator
 from companion_harness.schemas import MemoryItem, PolicyInputs, ThinkerProposal, TurnSignal
 from companion_harness.turn_detector_smart import SmartTurnDetector
@@ -439,6 +439,15 @@ class LivePipeline:
                 pass
 
 
+def _is_minicpm_streaming(model: Any) -> bool:
+    """Return True when model is a MiniCPMStreamingModel (duck-type check).
+
+    Avoids importing MiniCPMStreamingModel at module level (which pulls torch).
+    Checks for _last_is_listen, the attribute added in Task 8 to expose EOU state.
+    """
+    return hasattr(model, "_last_is_listen") and hasattr(model, "_duplex")
+
+
 # ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
@@ -601,10 +610,11 @@ def build_live_pipeline(
         minicpm_addressing_classifier=minicpm_addressing,
         addressing_classifier=safety_net_addressing,
         config_store=config_store,
-        # UNAVAILABLE: #157 — libcudart blocker; null source routes every EOU
-        # decision through SmartTurn/VAD fallback (signal_producer_fallback
-        # event emitted per decision).
-        native_duplex_eou_source=_NullNativeDuplexEouSource(),
+        native_duplex_eou_source=(
+            MiniCPMNativeDuplexEouSource(foreground_duplex_model)
+            if _is_minicpm_streaming(foreground_duplex_model)
+            else _NullNativeDuplexEouSource()
+        ),
         deictic_detector=deictic_detector,
         episodic_store=episodic_store,
         semantic_store=semantic_store,

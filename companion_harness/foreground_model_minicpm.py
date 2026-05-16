@@ -117,6 +117,9 @@ class MiniCPMStreamingModel:
         ).eval().cuda()
 
         self._duplex = base.as_duplex(generate_audio=False)
+        # Tracks is_listen from the most recent streaming_generate call.
+        # True (listen) is the safe default — EOU has not fired yet.
+        self._last_is_listen: bool = True
 
     def infer(self, audio_frame: bytes, video_frame: bytes | None = None) -> ThinkerProposal | None:
         """DuplexModel Protocol stub — single-frame path not used for streaming."""
@@ -166,8 +169,9 @@ class MiniCPMStreamingModel:
                     text_repetition_penalty=duplex.text_repetition_penalty,
                     text_repetition_window_size=duplex.text_repetition_window_size,
                 )
+                self._last_is_listen = bool(result.get("is_listen", True))
                 text = result.get("text", "")
-                if not result.get("is_listen", True) and text:
+                if not self._last_is_listen and text:
                     return ThinkerProposal(
                         proposal_type="observation",
                         content=text,

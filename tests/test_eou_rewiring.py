@@ -230,11 +230,11 @@ async def _push_frames(
 # ---------------------------------------------------------------------------
 
 
-def test_null_native_duplex_source_marker():
-    """_NullNativeDuplexEouSource source must carry the UNAVAILABLE: #157 marker."""
+def test_null_native_duplex_source_no_marker():
+    """_NullNativeDuplexEouSource must NOT carry the UNAVAILABLE: #157 marker (resolved in Task 8)."""
     src = _NullNativeDuplexEouSource()
     source_text = inspect.getsource(src.__class__)
-    assert "UNAVAILABLE: #157" in source_text
+    assert "UNAVAILABLE: #157" not in source_text
     assert src.get_eou_signal() is None
 
 
