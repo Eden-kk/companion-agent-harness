@@ -66,28 +66,35 @@ Stage 6 — **Companion texture.** `ThinkerProposalGen` emits proposals only (in
 
 ---
 
-## CURRENT MILESTONE: Eval Phase A.5 + v0.2 proposal
+## CURRENT MILESTONE: v0.2 (production-quality)
 
-- **Eval Phase A.5** is the active in-flight track. Status and quickstart: `docs/eval-quickstart.md`.
-- **v0.2 production-quality milestone** is proposed in `docs/roadmap-v0.2-draft.md` (open PR #254). v0.2 supersedes the prior v0.1c-stage scoping that lived in this section.
+v0.2 takes the harness from *demonstrable* (v0.1 skeleton complete) to *deployable* (real reasoning, attribution, benchmarks, persistence — without operator workarounds). No new spec stages; capability-upgrades to existing ones.
 
-(The v0.1c milestone referenced here historically has long shipped — see SHIPPED MILESTONES above.)
+- **Eval Phase A.5** — ✅ complete on `main` (`SyntheticClock`, `DirectAudioInputFeeder`, `FixtureScenarioDriver`, bit-identical Tier-B replay all shipped and tested). Was the Wave 0′ prerequisite for v0.2.
+- **v0.2 roadmap** — `docs/roadmap-v0.2-draft.md` (in PR #254 until merged; v0.2 supersedes the prior v0.1c-stage scoping that lived in this section).
+
+**Wave status:**
+- Wave 0 (backfilled-shipped): tombstone for `forget that` (#253), 6-adapter live-wiring (#255), barge-in-vs-self fix (#271).
+- Wave 0′ (prerequisite): Eval Phase A.5 — ✅ complete.
+- Waves 1–6 (Reasoner, Diarization, Benchmark loaders, Phase C, Default-on, Deployability): not yet dispatched. Each wave starts with a fresh plan-critic'd execution plan grounded in then-current `main`.
+
+(The v0.1c milestone referenced here historically has long shipped — see SHIPPED MILESTONES above. The Eval Phase A.5 sub-section in CURRENT ACTIVE WORK below is now stale; closing as complete in the same change.)
 
 ---
 
 ## CURRENT ACTIVE WORK
 
-### Eval Phase A.5 — offline fixture ingestion (next ramp)
+### v0.2 Wave 1 dispatch (next ramp)
 
-`SyntheticClock`, `DirectAudioInputFeeder`, `FixtureScenarioDriver`, Tier-B replay verification per case (removes xfail on `test_eval_run_replay_safe`). Gates on Phase A being complete (done).
+v0.2 Wave 1 is real BackgroundReasoner (MCP-primary backend). Each wave starts with a fresh plan-critic'd execution plan written at dispatch time, grounded in then-current `main`. Open the wave by writing `docs/plan-v0.2-wave-1-execution.md` and running it through `/plan-review` to convergence.
 
 ### v0.1h Wave 4 — operator handbook walks (outstanding)
 
 Manual-test handbook scenario walks that exercise the full v0.1h live-loop with the dashboard active. Documented in `docs/plan-v0.1h-execution.md`.
 
-### v0.1i tag + v0.1j tag (project-lead actions)
+### v0.1[a-j] tags (project-lead actions)
 
-Both milestones are feature-complete; the project lead applies the git tags.
+All v0.1 milestones are feature-complete; the project lead applies the git tags.
 
 ---
 
