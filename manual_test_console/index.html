@@ -1355,7 +1355,10 @@
     "log_drop_or_degrade", "orchestrator_started", "orchestrator_stopped",
     "config_change", "operator_action",
   ]);
-  const DEFAULT_OFF = new Set(["vad_frame", "raw_audio_chunk", "audio_frame"]);
+  const DEFAULT_OFF = new Set([
+    "vad_frame", "raw_audio_chunk", "audio_frame",
+    "assistant_audio_buffer_queued", "display_subscriber_drop",
+  ]);
 
   // All event types seen so far (for dynamic checklist).
   const seenTypes = new Set();

@@ -74,7 +74,7 @@ from manual_test_console.live_pipeline import (
 __all__ = ["build_app", "main"]
 
 # Per-display-WS queue depth. Drops oldest on overflow.
-_DISPLAY_QUEUE_DEPTH = 256
+_DISPLAY_QUEUE_DEPTH = 1024
 
 # Event types that are high-rate frame signals — sampled before display fanout.
 # The EventLogger ring still records every event (audit invariant #1).
@@ -220,17 +220,23 @@ class DisplayBroker:
     always forwarded regardless of sampling rate.
     """
 
-    def __init__(self, sampling_rate: int = 5) -> None:
+    def __init__(self, sampling_rate: int = 1, queue_depth: int = _DISPLAY_QUEUE_DEPTH) -> None:
         self._queues: list[asyncio.Queue[dict]] = []
         self._drops_by_queue: dict[int, int] = {}
         self._sampling_rate = max(1, sampling_rate)
+        self._queue_depth = max(64, min(16384, queue_depth))
         self._counters: dict[str, int] = {}  # per event_type seen count
         self._sampled_in: dict[str, int] = {}   # forwarded this window
         self._sampled_out: dict[str, int] = {}  # dropped-by-sampling this window
         self._window_start_ms: float = time.monotonic() * 1000
+        self._logger: Any = None
+        self._drop_throttle: dict[tuple[str, str], float] = {}  # (sub_id, event_type) → last emit ts
+
+    def set_logger(self, logger: Any) -> None:
+        self._logger = logger
 
     def add(self) -> asyncio.Queue[dict]:
-        q: asyncio.Queue[dict] = asyncio.Queue(maxsize=_DISPLAY_QUEUE_DEPTH)
+        q: asyncio.Queue[dict] = asyncio.Queue(maxsize=self._queue_depth)
         self._queues.append(q)
         self._drops_by_queue[id(q)] = 0
         return q
@@ -275,7 +281,42 @@ class DisplayBroker:
             try:
                 q.put_nowait(msg)
             except asyncio.QueueFull:
-                self._drops_by_queue[id(q)] = self._drops_by_queue.get(id(q), 0) + 1
+                new_count = self._drops_by_queue.get(id(q), 0) + 1
+                self._drops_by_queue[id(q)] = new_count
+                if (
+                    self._logger is not None
+                    and event.event_type != "display_subscriber_drop"
+                ):
+                    sub_id = str(id(q))
+                    throttle_key = (sub_id, event.event_type)
+                    now = time.monotonic()
+                    if now - self._drop_throttle.get(throttle_key, 0.0) >= 60.0:
+                        self._drop_throttle[throttle_key] = now
+                        now_ms = int(now * 1000)
+                        drop_evt = Event(
+                            event_id=f"display-drop-{now_ms}-{sub_id}",
+                            session_id="",
+                            schema_version="0.1",
+                            seq_no=0,
+                            event_type="display_subscriber_drop",
+                            timestamp_mono_ms=now_ms,
+                            timestamp_wall=_now_wall(),
+                            source="display_broker",
+                            caused_by=[event.event_id],
+                            payload_hash="",
+                            payload_ref=None,
+                            payload_kind="signal",
+                            subject_class="self",
+                            sensitivity="safe",
+                            retention_policy_id="default",
+                            payload_inline={
+                                "subscriber_id": sub_id,
+                                "subscriber_drop_count": new_count,
+                                "dropped_event_type": event.event_type,
+                                "queue_depth": q.qsize(),
+                            },
+                        )
+                        self._logger.log(drop_evt)
 
 
 class AudioOutBroker:
@@ -1302,6 +1343,7 @@ def build_app(
     blob_retention_days: int = 30,
     event_log_maxsize: int = 16384,
     display_sampling_rate: int = 1,
+    display_queue_depth: int = 1024,
 ) -> web.Application:
     """Build the aiohttp Application. Caller is responsible for run/cleanup.
 
@@ -1330,8 +1372,9 @@ def build_app(
             fire.
     """
     app = web.Application()
-    broker = DisplayBroker(sampling_rate=display_sampling_rate)
+    broker = DisplayBroker(sampling_rate=display_sampling_rate, queue_depth=display_queue_depth)
     logger = EventLogger(_null_sink, maxsize=event_log_maxsize)
+    broker.set_logger(logger)
     logger.subscribe(broker.on_event)
     event_rate_counter = _EventRateCounter(window_seconds=60)
     logger.subscribe(event_rate_counter.on_event)
@@ -1928,13 +1971,18 @@ def main(argv: list[str] | None = None) -> int:
         "--display-sampling-rate",
         dest="display_sampling_rate",
         type=int,
-        default=5,
+        default=1,
         help=(
-            "Display-broker sampling rate N for high-rate frame events "
-            "(raw_audio_chunk, vad_frame): only 1-in-N forwarded to dashboard subscribers. "
-            "Default 5. Set to 1 to disable sampling (backward-compat). "
-            "The EventLogger ring always records every event."
+            "Sampling rate for high-volume display events. Default 1 (no sampling — every event "
+            "reaches /ws/display subscribers; frontend filter controls UI density)."
         ),
+    )
+    parser.add_argument(
+        "--display-queue-depth",
+        dest="display_queue_depth",
+        type=int,
+        default=1024,
+        help="Per-subscriber display WS queue depth (default 1024, range 64..16384).",
     )
     args = parser.parse_args(argv)
 
@@ -2111,6 +2159,7 @@ def main(argv: list[str] | None = None) -> int:
         blob_retention_days=args.blob_retention_days,
         event_log_maxsize=args.event_log_maxsize,
         display_sampling_rate=args.display_sampling_rate,
+        display_queue_depth=args.display_queue_depth,
     )
     # Stamp the deictic_model label as "pending-foreground-load" so
     # _on_startup_finalize_deictic knows the operator asked for it.
