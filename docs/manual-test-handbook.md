@@ -6,6 +6,18 @@ If you want *what the harness is for*: read [`architecture-v0.1.md`](architectur
 If you want *the model + flow at a glance*: read [`model-stack.md`](model-stack.md).
 If you want *how to run a session and what to expect*: keep reading.
 
+> ## Status banner — 2026-05-16 (v0.2 released)
+>
+> - **v0.2 tag shipped.** POLICY_VERSION = `v0.2-final`. All 19/19 readiness gates MET.
+> - `/healthz` now reports per-adapter readiness, GPU memory, and event rate (see §2.9).
+> - `/metrics` Prometheus endpoint is live at the same port (see §2.9).
+> - `/eval.html` eval console available for benchmark runs (see §2.10).
+> - Hot-seam toggle panel: 12 adapters switchable live (real ↔ disabled) in the tuning drawer.
+> - `--enable-diarization` enables pyannote speaker labeling; `current_speaker_id` flows into policy.
+> - `--blob-retention-days N` controls blob/event-log retention window (default: 7 days).
+> - Real benchmark loaders available: see §6 for the `--mode real` command.
+> - `scripts/v0_2_replay_report.py` prints a readiness banner.
+
 > ## Status banner — 2026-05-15
 >
 > - Addressing classifier (Finding 6) **is wired and live**: MiniCPM-driven primary path + wake-word ("Claude" / "Claudia") safety net + mechanical `solo` fallback. `user_addressed_agent=True` now fires for addressed utterances.
@@ -386,3 +398,91 @@ Timing instrumentation (Stage-2 escape valve per `docs/plan-v0.2e-execution.md �
 - `urgency_score_ms`, `deictic_reference_ms`, `embedding_ms` — wall-clock at call site (b200 profiling uses `time.monotonic()` around the respective `.score()` / `.classify()` / `.embed()` calls).
 
 Deferred to v0.3: `AttachmentRiskMonitor` default-on posture (OQ-3), `PyannoteDiarizationAdapter` (depends on v0.2b).
+
+---
+
+## 9. v0.2 release (2026-05-16) — operator-visible changes
+
+### 9.1 `/healthz` extended
+
+`/healthz` now returns a richer JSON body. Sample:
+
+```bash
+curl -s http://localhost:8800/healthz | python3 -m json.tool
+```
+
+New fields in the response:
+
+| Field | Description |
+|---|---|
+| `adapters` | Per-adapter readiness dict: `{"silero_vad": "ready", "pyannote_diarization": "ready", ...}` |
+| `gpu_memory_used_gb` | From `nvidia-smi`; `null` if not available |
+| `gpu_memory_total_gb` | From `nvidia-smi`; `null` if not available |
+| `event_rate_per_s` | Events/s over the last 10 s window |
+
+### 9.2 `/metrics` Prometheus endpoint
+
+Prometheus-compatible text format at the same port:
+
+```bash
+curl -s http://localhost:8800/metrics
+```
+
+Exposes counters for event rate, TTS chunk count, active session count, and per-adapter readiness gauge.
+
+### 9.3 `/eval.html` eval console
+
+Browser → `http://localhost:8800/eval.html`. Select an adapter, click **Run**, poll for results. The console calls `POST /eval/run` and polls `GET /eval/status/<run_id>`.
+
+For CLI use:
+
+```bash
+# Synthetic mode (no HF_TOKEN needed)
+python -m companion_harness.evals run --adapter candor --mode synthetic --limit 10
+
+# Real mode (requires HF_TOKEN + accepted dataset license)
+HF_TOKEN=<token> python -m companion_harness.evals runners \
+    --adapter candor --mode real --limit 10
+```
+
+### 9.4 Hot-seam model toggle (tuning drawer)
+
+The tuning drawer (right column) now has a second section: **Hot seams**. Each row shows one adapter seam with a toggle (real ↔ disabled). Flipping a toggle calls `POST /config/seam` and takes effect on the next event cycle — no restart needed. Toggle state is recorded as `model_swap_requested` / `model_swap_completed` events in the audit log.
+
+### 9.5 Diarization flag
+
+```bash
+/raid/yid042/venvs/companion-harness/bin/python3 \
+    -m manual_test_console.server --host 0.0.0.0 --port 8800 \
+    --blob-dir /tmp/manual_test_blobs --enable-diarization
+```
+
+Enables `PyannoteDiarizationAdapter`. `current_speaker_id` will appear in `addressing_classified` events and flow into `PolicyInputs`. Adds ~2–4 GB VRAM.
+
+### 9.6 Blob retention
+
+```bash
+    --blob-retention-days 14
+```
+
+Controls how long session blobs and event logs are kept. Default is 7 days. A background rotation worker scans at startup and then on a 1-hour interval.
+
+### 9.7 Readiness banner
+
+```bash
+python scripts/v0_2_replay_report.py
+```
+
+Prints the v0.2 readiness banner: POLICY_VERSION, adapter inventory, gate summary. Use this after a `git pull` to confirm the deployment is on the v0.2-final build.
+
+---
+
+## 10. Known limitations (v0.2)
+
+1. **`--minicpm-streaming-raw` produces no audio in practice.** Bypassing VAD/EOU removed MiniCPM's "now generate" trigger. Fix requires re-enabling VAD as an EOU-only gate. Until then, use the default (non-raw) path.
+
+2. **`speaker_continuity_anchor` event never emits.** The schema field and `PolicyInputs` slot are present (v0.2b), but the emitter code was deferred. Diarization data reaches policy but the anchor event is missing from the audit log.
+
+3. **`--filter K=V` CLI flag not yet available.** The eval runner has `--mode` and `--limit` but no per-field filtering. Use `--limit N` to cap row count.
+
+4. **`_CANDOR_REVISION` constant is a TBD placeholder.** Operators must fill in the commit hash of the accepted HF dataset version after accepting the license on b200. Without it, the loader resolves `main` and eval runs are not reproducible.
