@@ -43,6 +43,8 @@ class FailureSlice:
     case_id: str
     causal_event_ids: tuple[str, ...]
     suspected_adapter: str | None
+    relevant_policy_inputs: dict = field(default_factory=dict)
+    suggested_fix: str | None = None
 
 
 @dataclass(frozen=True)
