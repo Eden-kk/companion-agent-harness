@@ -22,6 +22,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.gpu
+
 from companion_harness.audio_output_controller import AudioOutputController
 from companion_harness.causal_graph import CausalGraph
 from companion_harness.event_logger import EventLogger

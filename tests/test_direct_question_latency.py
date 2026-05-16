@@ -15,6 +15,8 @@ import time
 
 import pytest
 
+pytestmark = pytest.mark.gpu
+
 torch = pytest.importorskip("torch", reason="torch not available — b200 venv required")
 
 if not torch.cuda.is_available():

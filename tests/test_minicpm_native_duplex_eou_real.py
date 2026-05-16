@@ -85,12 +85,14 @@ def streaming_model():
     return MiniCPMStreamingModel()
 
 
+@pytest.mark.gpu
 def test_minicpm_native_duplex_eou_source_runtime_checkable(streaming_model):
     """MiniCPMNativeDuplexEouSource satisfies NativeDuplexEouSource Protocol."""
     src = MiniCPMNativeDuplexEouSource(streaming_model)
     assert isinstance(src, NativeDuplexEouSource)
 
 
+@pytest.mark.gpu
 @pytest.mark.asyncio
 async def test_sample_returns_turn_signal_or_none(streaming_model):
     """After driving infer_stream, get_eou_signal() returns TurnSignal or None.
@@ -124,6 +126,7 @@ async def test_sample_returns_turn_signal_or_none(streaming_model):
         assert 0.0 <= result.confidence <= 1.0
 
 
+@pytest.mark.gpu
 def test_get_eou_signal_none_before_infer_stream(streaming_model):
     """Before any infer_stream call, _last_is_listen=True so signal is None."""
     fresh_model = MiniCPMStreamingModel()
