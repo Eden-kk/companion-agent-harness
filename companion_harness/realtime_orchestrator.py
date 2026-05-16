@@ -274,6 +274,13 @@ class StreamingRealtimeOrchestrator:
         self._batch_close_event = asyncio.Event()
 
         # Coalescing guard — T2 only
+        # _decision_in_flight is True from the moment a TurnSignal passes the guard
+        # until the resulting (signal_evt_id, future, policy_evt_id) tuple has been
+        # put onto _policy_decisions.  It is NOT cleared when the future becomes done
+        # (set_result is called before the put), which was the pre-fix bug: a done
+        # future made the old guard evaluate to False, letting subsequent same-turn
+        # signals through as duplicate decisions.
+        self._decision_in_flight: bool = False
         self._pending_decision_future: asyncio.Future[SpeakDecision] | None = None
         self._pending_signal_evt_id: str = ""
 
@@ -502,10 +509,15 @@ class StreamingRealtimeOrchestrator:
             # Track latest backchannel score for barge-in post-validation.
             self._latest_p_backchannel = signal.p_backchannel
 
-            # Coalescing guard (edge case i): skip if a decision_future is still pending.
-            if self._pending_decision_future is not None and not self._pending_decision_future.done():
+            # Coalescing guard (edge case i): skip if a decision is already in flight.
+            # _decision_in_flight remains True until after await _policy_decisions.put(),
+            # so it stays set even after set_result() marks the future done — that was
+            # the pre-fix bug (done future → guard evaluated False → duplicate decision).
+            if self._decision_in_flight:
                 self._emit("turn_signal_coalesced", [self._pending_signal_evt_id], "signal")
                 continue
+
+            self._decision_in_flight = True
 
             # --- ConfigStore snapshot (per docs/design-config-and-dashboard.md §3) ---
             # Read all 12 Tier-B keys once at the EOU boundary. There is no await
@@ -887,6 +899,9 @@ class StreamingRealtimeOrchestrator:
             self._batch_open_event.set()
 
             await self._policy_decisions.put((signal_evt_id, decision_future, policy_evt_id))
+            # _decision_in_flight is NOT reset here — T4 resets it after get() so that
+            # any TurnSignals that arrive in _t2_inbox before T4 dequeues are still
+            # coalesced (they see _decision_in_flight=True and emit turn_signal_coalesced).
 
     async def _foreground_stream_task(self) -> None:
         """T3: Per-batch bounded frame_iter → ForegroundModel → proposal_buffer."""
@@ -952,6 +967,12 @@ class StreamingRealtimeOrchestrator:
         """T4: Await policy_decision Future; grace window; snapshot; synthesize if approved."""
         while True:
             signal_evt_id, decision_future, policy_evt_id = await self._policy_decisions.get()
+            # Reset the coalescing guard now that this decision has been consumed.
+            # T2 sets _decision_in_flight=True when it starts processing a TurnSignal
+            # and leaves it True until T4 dequeues here — so any same-turn signals
+            # that arrived in _t2_inbox before this get() correctly emitted
+            # turn_signal_coalesced instead of duplicate policy_decision events.
+            self._decision_in_flight = False
             decision = await decision_future
 
             # Close the batch for T3.

@@ -647,12 +647,10 @@ async def test_coalescing_rapid_eou_signals(tmp_path: Path):
     )
     await orch.start()
 
-    # Directly inject two TurnSignals into turn_signals queue while
-    # _pending_decision_future is set to an unresolved Future.
-    # This simulates the coalescing scenario.
-    loop = asyncio.get_running_loop()
-    unresolved_future: asyncio.Future[SpeakDecision] = loop.create_future()
-    orch._pending_decision_future = unresolved_future
+    # Set _decision_in_flight to True to simulate a decision already in-flight.
+    # (Pre-fix this test manipulated _pending_decision_future directly; after the
+    # fix the coalescing guard uses _decision_in_flight instead — see Finding 9.)
+    orch._decision_in_flight = True
     orch._pending_signal_evt_id = "fake-evt-id-1"
 
     # Create a fake TurnSignal for the second signal.
@@ -669,16 +667,12 @@ async def test_coalescing_rapid_eou_signals(tmp_path: Path):
     # Let T2 process the signal.
     await asyncio.sleep(0.1)
 
-    # Resolve the pending future so stop() doesn't hang.
-    if not unresolved_future.done():
-        unresolved_future.cancel()
-
     await orch.stop()
 
     coalesced = [e for e in received if e.event_type == "turn_signal_coalesced"]
     assert len(coalesced) >= 1, (
         "turn_signal_coalesced event not emitted when second EOU arrived with "
-        "pending (unresolved) decision_future"
+        "_decision_in_flight=True"
     )
 
     # Assert only ONE decision_future was processed for this scenario
