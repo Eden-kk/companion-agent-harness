@@ -96,6 +96,15 @@ KEY_TTS_LABEL: web.AppKey[str] = web.AppKey("tts_label", str)
 KEY_VISION_ENABLED: web.AppKey[bool] = web.AppKey("vision_enabled", bool)
 KEY_CONFIG_STORE: web.AppKey[object] = web.AppKey("config_store", object)
 KEY_OPERATOR_SEQ: web.AppKey[dict] = web.AppKey("operator_seq", dict)
+# Optional real-adapter handles. None means the corresponding null stub is in use.
+# Wired via --enable-{clip-scene,grounding,av-conflict,deictic,urgency,embeddings}.
+KEY_SCENE_SCORER: web.AppKey[object] = web.AppKey("scene_scorer", object)
+KEY_GROUNDING_MODEL: web.AppKey[object] = web.AppKey("grounding_model", object)
+KEY_AV_CONFLICT_SCORER: web.AppKey[object] = web.AppKey("av_conflict_scorer", object)
+KEY_DEICTIC_MODEL: web.AppKey[object] = web.AppKey("deictic_model", object)
+KEY_URGENCY_SCORER: web.AppKey[object] = web.AppKey("urgency_scorer", object)
+KEY_EMBEDDER: web.AppKey[object] = web.AppKey("embedder", object)
+KEY_ADAPTER_LABELS: web.AppKey[dict] = web.AppKey("adapter_labels", dict)
 
 # Session id stamped onto operator_action + config_change events emitted from
 # the /config/* HTTP endpoints. These events are decoupled from any /ws/ingest
@@ -367,9 +376,11 @@ async def _handle_ingest_ws(request: web.Request) -> web.WebSocketResponse:
         sidecar: Any = None
         if request.app[KEY_VISION_ENABLED]:
             from companion_harness.vision_sidecar import VisionSidecar  # noqa: WPS433
+            scene_scorer = request.app[KEY_SCENE_SCORER] or _NullSceneScorer()
+            grounding_model = request.app[KEY_GROUNDING_MODEL] or _NullGroundingModel()
             sidecar = VisionSidecar(
-                scene_scorer=_NullSceneScorer(),
-                grounding_model=_NullGroundingModel(),
+                scene_scorer=scene_scorer,
+                grounding_model=grounding_model,
                 session_id=session.session_id,
                 logger=logger,
             )
@@ -389,6 +400,10 @@ async def _handle_ingest_ws(request: web.Request) -> web.WebSocketResponse:
             tts_adapter=request.app[KEY_TTS_ADAPTER],
             vision_sidecar=sidecar,
             blob_dir=request.app[KEY_BLOB_DIR],
+            av_conflict_scorer=request.app[KEY_AV_CONFLICT_SCORER],
+            urgency_scorer=request.app[KEY_URGENCY_SCORER],
+            deictic_model=request.app[KEY_DEICTIC_MODEL],
+            embedder=request.app[KEY_EMBEDDER],
         )
         active_pipelines[session.session_id] = pipeline
         await pipeline.start()
@@ -543,6 +558,7 @@ async def _handle_health(request: web.Request) -> web.Response:
             efid = p.vision_sidecar.last_frame_event_id()
             if efid is not None:
                 last_frame_event_id = efid
+    adapter_labels: dict[str, str] = request.app[KEY_ADAPTER_LABELS]
     return web.json_response({
         "status": "ok",
         "sessions_opened": chunk_counter.get("sessions_opened", 0),
@@ -563,6 +579,12 @@ async def _handle_health(request: web.Request) -> web.Response:
         "vision_enabled": vision_enabled,
         "frames_buffered": frames_buffered,
         "last_frame_event_id": last_frame_event_id,
+        "scene_scorer": adapter_labels.get("scene_scorer", "stub:_NullSceneScorer"),
+        "grounding_model": adapter_labels.get("grounding_model", "stub:_NullGroundingModel"),
+        "av_conflict_scorer": adapter_labels.get("av_conflict_scorer", "stub:_NullAudioVisualConflictScorer"),
+        "deictic_model": adapter_labels.get("deictic_model", "stub:_NullDeicticModel"),
+        "urgency_scorer": adapter_labels.get("urgency_scorer", "stub:_NullUrgencyScorer"),
+        "embedder": adapter_labels.get("embedder", "stub:_NullEmbeddingAdapter"),
     })
 
 
@@ -781,6 +803,12 @@ def build_app(
     tts_adapter_factory: Optional[Callable[[], Any]] = None,
     asr_model_factory: Optional[Callable[[], Any]] = None,
     vision_enabled: bool = False,
+    scene_scorer: Any = None,
+    grounding_model: Any = None,
+    av_conflict_scorer: Any = None,
+    deictic_model: Any = None,
+    urgency_scorer: Any = None,
+    embedder: Any = None,
 ) -> web.Application:
     """Build the aiohttp Application. Caller is responsible for run/cleanup.
 
@@ -847,6 +875,39 @@ def build_app(
     # we construct our own ConfigStore here so /config/{patch,reset} can run.
     app[KEY_CONFIG_STORE] = ConfigStore(ALLOWLIST)
     app[KEY_OPERATOR_SEQ] = {"seq": 0}
+    # Optional real-adapter wiring (default None → null stubs continue).
+    app[KEY_SCENE_SCORER] = scene_scorer
+    app[KEY_GROUNDING_MODEL] = grounding_model
+    app[KEY_AV_CONFLICT_SCORER] = av_conflict_scorer
+    app[KEY_DEICTIC_MODEL] = deictic_model
+    app[KEY_URGENCY_SCORER] = urgency_scorer
+    app[KEY_EMBEDDER] = embedder
+    app[KEY_ADAPTER_LABELS] = {
+        "scene_scorer": (
+            f"real:{type(scene_scorer).__name__}" if scene_scorer is not None
+            else "stub:_NullSceneScorer"
+        ),
+        "grounding_model": (
+            f"real:{type(grounding_model).__name__}" if grounding_model is not None
+            else "stub:_NullGroundingModel"
+        ),
+        "av_conflict_scorer": (
+            f"real:{type(av_conflict_scorer).__name__}" if av_conflict_scorer is not None
+            else "stub:_NullAudioVisualConflictScorer"
+        ),
+        "deictic_model": (
+            f"real:{type(deictic_model).__name__}" if deictic_model is not None
+            else "stub:_NullDeicticModel"
+        ),
+        "urgency_scorer": (
+            f"real:{type(urgency_scorer).__name__}" if urgency_scorer is not None
+            else "stub:_NullUrgencyScorer"
+        ),
+        "embedder": (
+            f"real:{type(embedder).__name__}" if embedder is not None
+            else "stub:_NullEmbeddingAdapter"
+        ),
+    }
 
     app.router.add_get("/", _handle_index)
     app.router.add_get("/healthz", _handle_health)
@@ -936,14 +997,58 @@ def build_app(
             _app[KEY_DETECTOR_LABELS][label_key] = f"{real_label} (loaded in {elapsed:.2f}s)"
             print(f"{real_label} loaded in {elapsed:.2f}s", flush=True)
 
+    async def _on_startup_finalize_deictic(_app: web.Application) -> None:
+        """If --enable-deictic was requested but no detector was injected,
+        try to construct MiniCPMDeicticDetector against the loaded foreground
+        model. Requires the foreground model to expose `chat()` (the
+        MiniCPMDuplexModel API). Falls back to null stub otherwise.
+        """
+        if _app[KEY_DEICTIC_MODEL] is not None:
+            return
+        # Only auto-construct when the operator opted in via labels
+        # (set by main() before build_app when --enable-deictic was passed).
+        labels = _app[KEY_ADAPTER_LABELS]
+        if labels.get("deictic_model", "").startswith("stub:"):
+            return
+        fg = _app[KEY_FOREGROUND_MODEL]
+        if fg is None or not hasattr(fg, "chat"):
+            print(
+                "--enable-deictic: foreground model lacks .chat(); "
+                "falling back to stub:_NullDeicticModel.",
+                flush=True,
+            )
+            labels["deictic_model"] = "stub:_NullDeicticModel"
+            return
+        try:
+            from companion_harness.deictic_detector_minicpm import (  # noqa: WPS433
+                MiniCPMDeicticDetector,
+            )
+            _app[KEY_DEICTIC_MODEL] = MiniCPMDeicticDetector(fg)
+            labels["deictic_model"] = "real:MiniCPMDeicticDetector"
+            print("MiniCPMDeicticDetector wired (reusing foreground model).", flush=True)
+        except Exception as exc:
+            print(
+                f"MiniCPMDeicticDetector wiring FAILED: {type(exc).__name__}: {exc} "
+                "— falling back to stub:_NullDeicticModel",
+                flush=True,
+            )
+            labels["deictic_model"] = "stub:_NullDeicticModel"
+
     async def _on_startup_summary(_app: web.Application) -> None:
         labels = _app[KEY_DETECTOR_LABELS]
+        adapter_labels = _app[KEY_ADAPTER_LABELS]
         print("-" * 72, flush=True)
-        print(f"  VAD:         {labels.get('vad', 'unknown')}", flush=True)
-        print(f"  SmartTurn:   {labels.get('smart_turn', 'unknown')}", flush=True)
-        print(f"  Backchannel: {labels.get('backchannel', 'unknown')}", flush=True)
-        print(f"  TTS:         {_app[KEY_TTS_LABEL]}", flush=True)
-        print(f"  ASR:         {labels.get('asr', 'unknown')}", flush=True)
+        print(f"  VAD:               {labels.get('vad', 'unknown')}", flush=True)
+        print(f"  SmartTurn:         {labels.get('smart_turn', 'unknown')}", flush=True)
+        print(f"  Backchannel:       {labels.get('backchannel', 'unknown')}", flush=True)
+        print(f"  TTS:               {_app[KEY_TTS_LABEL]}", flush=True)
+        print(f"  ASR:               {labels.get('asr', 'unknown')}", flush=True)
+        print(f"  SceneScorer:       {adapter_labels.get('scene_scorer', 'unknown')}", flush=True)
+        print(f"  GroundingModel:    {adapter_labels.get('grounding_model', 'unknown')}", flush=True)
+        print(f"  AVConflictScorer:  {adapter_labels.get('av_conflict_scorer', 'unknown')}", flush=True)
+        print(f"  DeicticModel:      {adapter_labels.get('deictic_model', 'unknown')}", flush=True)
+        print(f"  UrgencyScorer:     {adapter_labels.get('urgency_scorer', 'unknown')}", flush=True)
+        print(f"  Embedder:          {adapter_labels.get('embedder', 'unknown')}", flush=True)
         print("=" * 72, flush=True)
 
     async def _on_cleanup(_app: web.Application) -> None:
@@ -957,6 +1062,7 @@ def build_app(
         await logger.stop()
 
     app.on_startup.append(_on_startup)
+    app.on_startup.append(_on_startup_finalize_deictic)
     app.on_startup.append(_on_startup_summary)
     app.on_cleanup.append(_on_cleanup)
     return app
@@ -1091,6 +1197,54 @@ def main(argv: list[str] | None = None) -> int:
             "'native_minicpm': MiniCPM-o native duplex TTS via MiniCPMNativeTtsAdapter."
         ),
     )
+    # Real-adapter wiring flags. Default OFF — each flag swaps in the
+    # corresponding real impl for its null stub. See live_pipeline.py.
+    parser.add_argument(
+        "--enable-clip-scene",
+        dest="enable_clip_scene",
+        action="store_true",
+        default=False,
+        help="Wire CLIPSceneChangeScorer in place of _NullSceneScorer (issue #166).",
+    )
+    parser.add_argument(
+        "--enable-grounding",
+        dest="enable_grounding",
+        action="store_true",
+        default=False,
+        help="Wire GroundingDINOAdapter in place of _NullGroundingModel (issue #172).",
+    )
+    parser.add_argument(
+        "--enable-av-conflict",
+        dest="enable_av_conflict",
+        action="store_true",
+        default=False,
+        help="Wire HeuristicAVConflictScorer in place of _NullAudioVisualConflictScorer (issue #168).",
+    )
+    parser.add_argument(
+        "--enable-deictic",
+        dest="enable_deictic",
+        action="store_true",
+        default=False,
+        help=(
+            "Wire MiniCPMDeicticDetector in place of _NullDeicticModel (issue #169). "
+            "Reuses the already-loaded foreground model. No effect without a "
+            "foreground model that exposes .chat()."
+        ),
+    )
+    parser.add_argument(
+        "--enable-urgency",
+        dest="enable_urgency",
+        action="store_true",
+        default=False,
+        help="Wire ProsodyLexiconUrgencyScorer in place of _NullUrgencyScorer (issue #171).",
+    )
+    parser.add_argument(
+        "--enable-embeddings",
+        dest="enable_embeddings",
+        action="store_true",
+        default=False,
+        help="Wire SentenceTransformerEmbedder in place of _NullEmbeddingAdapter (issue #183).",
+    )
     args = parser.parse_args(argv)
 
     blob_dir: Path = args.blob_dir
@@ -1117,6 +1271,50 @@ def main(argv: list[str] | None = None) -> int:
     else:
         vad_factory = smart_turn_factory = backchannel_factory = tts_factory = asr_factory = None
 
+    # Construct opt-in real adapters. Each construction is eager so a startup
+    # failure surfaces immediately rather than at first session. Failures fall
+    # back to None (null stub continues). Deictic detector is deferred to
+    # startup because it depends on the loaded foreground model — see
+    # `_on_startup_finalize_deictic` in build_app.
+    real_scene_scorer: Any = None
+    real_grounding_model: Any = None
+    real_av_conflict_scorer: Any = None
+    real_urgency_scorer: Any = None
+    real_embedder: Any = None
+    real_deictic_model: Any = None
+
+    if args.live_pipeline and not args.use_stubs:
+        if args.enable_clip_scene:
+            try:
+                from companion_harness.clip_scene_scorer import CLIPSceneChangeScorer  # noqa: WPS433
+                real_scene_scorer = CLIPSceneChangeScorer()
+            except Exception as exc:
+                print(f"CLIPSceneChangeScorer init FAILED: {type(exc).__name__}: {exc}", flush=True)
+        if args.enable_grounding:
+            try:
+                from companion_harness.grounding_dino_adapter import GroundingDINOAdapter  # noqa: WPS433
+                real_grounding_model = GroundingDINOAdapter()
+            except Exception as exc:
+                print(f"GroundingDINOAdapter init FAILED: {type(exc).__name__}: {exc}", flush=True)
+        if args.enable_av_conflict:
+            try:
+                from companion_harness.av_conflict_scorer_heuristic import HeuristicAVConflictScorer  # noqa: WPS433
+                real_av_conflict_scorer = HeuristicAVConflictScorer()
+            except Exception as exc:
+                print(f"HeuristicAVConflictScorer init FAILED: {type(exc).__name__}: {exc}", flush=True)
+        if args.enable_urgency:
+            try:
+                from companion_harness.urgency_scorer_prosody_lexicon import ProsodyLexiconUrgencyScorer  # noqa: WPS433
+                real_urgency_scorer = ProsodyLexiconUrgencyScorer()
+            except Exception as exc:
+                print(f"ProsodyLexiconUrgencyScorer init FAILED: {type(exc).__name__}: {exc}", flush=True)
+        if args.enable_embeddings:
+            try:
+                from companion_harness.embedder_sentence_transformer import SentenceTransformerEmbedder  # noqa: WPS433
+                real_embedder = SentenceTransformerEmbedder()
+            except Exception as exc:
+                print(f"SentenceTransformerEmbedder init FAILED: {type(exc).__name__}: {exc}", flush=True)
+
     app = build_app(
         blob_dir,
         live_pipeline_enabled=args.live_pipeline,
@@ -1128,7 +1326,17 @@ def main(argv: list[str] | None = None) -> int:
         tts_adapter_factory=tts_factory,
         asr_model_factory=asr_factory,
         vision_enabled=args.enable_vision,
+        scene_scorer=real_scene_scorer,
+        grounding_model=real_grounding_model,
+        av_conflict_scorer=real_av_conflict_scorer,
+        deictic_model=real_deictic_model,
+        urgency_scorer=real_urgency_scorer,
+        embedder=real_embedder,
     )
+    # Stamp the deictic_model label as "pending-foreground-load" so
+    # _on_startup_finalize_deictic knows the operator asked for it.
+    if args.live_pipeline and not args.use_stubs and args.enable_deictic:
+        app[KEY_ADAPTER_LABELS]["deictic_model"] = "real:pending-foreground-load"
 
     if not args.live_pipeline:
         pipeline_label = "disabled"
@@ -1147,6 +1355,18 @@ def main(argv: list[str] | None = None) -> int:
     else:
         vision_label = "disabled"
 
+    adapter_flags = ", ".join(
+        name for flag, name in (
+            (args.enable_clip_scene, "clip-scene"),
+            (args.enable_grounding, "grounding"),
+            (args.enable_av_conflict, "av-conflict"),
+            (args.enable_deictic, "deictic"),
+            (args.enable_urgency, "urgency"),
+            (args.enable_embeddings, "embeddings"),
+        )
+        if flag
+    ) or "(none — all null stubs)"
+
     print("=" * 72)
     print("manual-test console — Phase 3 (live-loop pipeline wiring, no voice-back)")
     print("-" * 72)
@@ -1156,6 +1376,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  live loop:   {pipeline_label}")
     print(f"  sessions:    {lanes_label}")
     print(f"  Vision:      {vision_label}")
+    print(f"  adapters:    {adapter_flags}")
     print(f"  open page:   http://localhost:{args.port}/")
     print(f"  ingest WS:   ws://localhost:{args.port}/ws/ingest")
     print(f"  display WS:  ws://localhost:{args.port}/ws/display")
