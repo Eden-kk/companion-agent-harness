@@ -103,3 +103,6 @@ class CoreUserProfileStore:
         data = self._load()
         data.pop(item_id, None)
         self._save(data)
+
+    def retrieve_shared_moments(self, n: int = 5) -> list[MemoryItem]:
+        return []

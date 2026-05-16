@@ -53,3 +53,6 @@ class SessionStateStore:
 
     def hard_delete(self, item_id: str) -> None:
         self._items.pop(item_id, None)
+
+    def retrieve_shared_moments(self, n: int = 5) -> list[MemoryItem]:
+        return []
