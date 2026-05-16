@@ -68,7 +68,10 @@ def test_scene_change_score_producer_fires_at_least_once():
 
 
 def test_av_conflict_scorer_fires():
-    """policy_inputs_builder calls AudioVisualConflictScorer.score() at least once."""
+    """policy_inputs_builder calls AudioVisualConflictScorer.score() at least once.
+
+    # UNAVAILABLE: #168 — real cross-modal conflict scorer pending spec decision; null stub active.
+    """
     mock_scorer = MagicMock()
     mock_scorer.score.return_value = 0.3
 
@@ -106,7 +109,10 @@ def test_grounding_confidence_fires():
 
 
 def test_urgency_score_fires():
-    """_NullUrgencyScorer.score() is invoked by the policy_inputs_builder seam."""
+    """_NullUrgencyScorer.score() is invoked by the policy_inputs_builder seam.
+
+    # UNAVAILABLE: #171 — real safety-risk classifier pending model selection; null stub active.
+    """
     mock_scorer = MagicMock()
     mock_scorer.score.return_value = 0.0
 
