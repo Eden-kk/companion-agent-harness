@@ -585,10 +585,9 @@ def build_live_pipeline(
     )
 
     # Instantiate and subscribe the per-session attachment-risk monitor.
-    # SharedLoggerProxy.subscribe() uses the late-subscribe pattern from PR #194
-    # (appends directly to _inner._subscribers so the drain loop picks it up).
+    # Must use late_subscribe() (PR #241) because logger.start() has already run.
     arm = EventStreamAttachmentRiskMonitor()
-    shielded_logger.subscribe(arm.on_event)
+    shielded_logger.late_subscribe(arm.on_event)
 
     # Bind the audio_output.is_playing callback into the builder closure so
     # `PolicyInputs.assistant_speaking` reflects live playback state. The
