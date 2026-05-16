@@ -596,6 +596,12 @@ class StreamingRealtimeOrchestrator:
             # WakeWordAddressingClassifier is the safety-net, active when MiniCPM
             # returns None (unavailable — UNAVAILABLE: #157 libcudart blocker).
             # A signal_producer_fallback event is emitted whenever the safety-net fires.
+            # W-PR182-A: addressing_classified is emitted for EVERY classification
+            # call (primary and fallback) for invariant #1 audit.
+            _addressing_caused_by = (
+                [transcript_evt_id] if transcript_evt_id is not None else [signal_evt_id]
+            )
+            _confidence_float = {"explicit": 1.0, "implicit": 0.5, "background": 0.0}
             addressing_signal = None
             if self._minicpm_addressing_classifier is not None:
                 addressing_signal = self._minicpm_addressing_classifier(
@@ -603,6 +609,23 @@ class StreamingRealtimeOrchestrator:
                     speaker_count=None,
                     social_mode=inputs.social_mode,
                 )
+                if addressing_signal is not None:
+                    _addr_evt = self._make_event(
+                        event_id=self._new_event_id(),
+                        event_type="addressing_classified",
+                        caused_by=_addressing_caused_by,
+                        payload_kind="signal",
+                    )
+                    self._logger.log(dataclasses.replace(
+                        _addr_evt,
+                        retention_policy_id="signal_default_30d",
+                        payload_inline={
+                            "classifier_name": type(self._minicpm_addressing_classifier).__name__,
+                            "addressed": derive_user_addressed_agent(addressing_signal, inputs.social_mode),
+                            "confidence": _confidence_float.get(addressing_signal.confidence, 0.5),
+                            "evidence": addressing_signal.evidence,
+                        },
+                    ))
             if addressing_signal is None and self._addressing_classifier is not None:
                 addressing_signal = self._addressing_classifier(
                     transcript=transcript,
@@ -615,6 +638,22 @@ class StreamingRealtimeOrchestrator:
                     caused_by=[signal_evt_id],
                     payload_kind="signal",
                     extra_hash="addressing:wake_word_safety_net",
+                ))
+                _addr_evt = self._make_event(
+                    event_id=self._new_event_id(),
+                    event_type="addressing_classified",
+                    caused_by=_addressing_caused_by,
+                    payload_kind="signal",
+                )
+                self._logger.log(dataclasses.replace(
+                    _addr_evt,
+                    retention_policy_id="signal_default_30d",
+                    payload_inline={
+                        "classifier_name": type(self._addressing_classifier).__name__,
+                        "addressed": derive_user_addressed_agent(addressing_signal, inputs.social_mode),
+                        "confidence": _confidence_float.get(addressing_signal.confidence, 0.5),
+                        "evidence": addressing_signal.evidence,
+                    },
                 ))
             if addressing_signal is not None:
                 inputs.user_addressed_agent = derive_user_addressed_agent(

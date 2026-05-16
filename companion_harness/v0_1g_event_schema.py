@@ -53,6 +53,7 @@ class StageSixEventSchema:
     sensitivity:         Sensitivity  | None  # None -> DERIVED_FROM_PAYLOAD
     retention_policy_id: str
     notes:               str
+    required_fields:     tuple[str, ...] = ()
 
 
 EVENT_TYPE_SCHEMAS: dict[str, StageSixEventSchema] = {
@@ -118,6 +119,24 @@ EVENT_TYPE_SCHEMAS: dict[str, StageSixEventSchema] = {
             "stored as _last_native_duplex_event_id and surfaced via "
             "TurnSignal.evidence_event_ids[0] — this closes the causal DAG "
             "for native_duplex EOU signals (invariants #1 and #5)."
+        ),
+    ),
+
+    # W-PR182-A: addressing classifier result — emitted post-ASR, pre-policy
+    # for invariant #1 audit and Eval Phase C live-examiner gating.
+    "addressing_classified": StageSixEventSchema(
+        payload_kind="signal",
+        subject_class="self",
+        sensitivity="safe",
+        retention_policy_id="signal_default_30d",
+        required_fields=("classifier_name", "addressed", "confidence"),
+        notes=(
+            "Emitted once per addressing classification call (both primary "
+            "MiniCPM and fallback WakeWord paths).  Payload carries "
+            "classifier_name, addressed (bool), confidence (float), and "
+            "evidence (str).  caused_by[] closes through the "
+            "asr_transcript_emitted event_id when one was emitted, otherwise "
+            "through the TurnSignal evidence event."
         ),
     ),
 
