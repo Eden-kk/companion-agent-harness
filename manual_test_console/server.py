@@ -418,9 +418,8 @@ def _make_model_swap_completed_event(
 def _make_model_swap_rejected_event(
     *,
     seam: str,
-    attempted_enabled: bool,
+    attempted_enabled: bool | None,
     reason: str,
-    error_class: str | None,
     operator_action_event_id: str,
     seq_counter: dict,
 ) -> Event:
@@ -430,7 +429,6 @@ def _make_model_swap_rejected_event(
         "seam": seam,
         "attempted_enabled": attempted_enabled,
         "reason": reason,
-        "error_class": error_class,
         "operator_action_event_id": operator_action_event_id,
     }
     return Event(
@@ -990,19 +988,19 @@ async def _handle_post_model_swap(request: web.Request) -> web.Response:
     logger.log(op_event)
 
     ok, msg = validate_seam_patch(seam, enabled)
+    _is_unknown_seam = seam not in HOT_SEAMS
     if not ok:
         rej_event = _make_model_swap_rejected_event(
             seam=seam if isinstance(seam, str) else str(seam),
-            attempted_enabled=bool(enabled) if isinstance(enabled, bool) else False,
-            reason="unknown_seam" if seam not in HOT_SEAMS else "invalid_enabled",
-            error_class=None,
+            attempted_enabled=enabled if isinstance(enabled, bool) else None,
+            reason="unknown_seam" if _is_unknown_seam else "invalid_enabled",
             operator_action_event_id=op_event.event_id,
             seq_counter=seq_counter,
         )
         logger.log(rej_event)
         return web.json_response(
             {"error": msg, "model_swap_event_id": rej_event.event_id},
-            status=403 if seam not in HOT_SEAMS else 400,
+            status=403 if _is_unknown_seam else 400,
         )
 
     from_enabled = config_store.get_seam(seam)
@@ -1035,6 +1033,7 @@ async def _handle_post_model_swap(request: web.Request) -> web.Response:
     return web.json_response({
         "accepted": True,
         "model_swap_event_id": cc_event.event_id,
+        "restart_required": False,
         "requested_at_ms": req_event.payload_inline["requested_at_ms"],
         "applied_at_ms": applied_at_ms,
         "latency_ms": latency_ms,

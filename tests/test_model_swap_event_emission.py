@@ -199,6 +199,7 @@ async def test_swap_then_get_seams_reflects_new_state(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_non_bool_enabled_returns_400(tmp_path: Path) -> None:
     app = _make_app(tmp_path)
+    events = _subscribe_event_capture(app)
     server = TestServer(app)
     await server.start_server()
     try:
@@ -210,5 +211,12 @@ async def test_non_bool_enabled_returns_400(tmp_path: Path) -> None:
             )
             # validate_seam_patch rejects non-bool enabled; seam is valid so 400
             assert resp.status in (400, 403)
+
+        await _flush(app[KEY_LOGGER])
+
+        rej_events = [e for e in events if e.event_type == "model_swap_rejected"]
+        assert len(rej_events) == 1
+        rej_event = rej_events[0]
+        assert rej_event.payload_inline["attempted_enabled"] is None
     finally:
         await server.close()
