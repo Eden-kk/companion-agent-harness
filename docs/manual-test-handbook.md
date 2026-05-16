@@ -363,3 +363,26 @@ python -m companion_harness.evals run \
 - [`plan-memory-wiring-followup.md`](plan-memory-wiring-followup.md) — 4-store memory wiring.
 
 **Roadmap docs (chronological):** `roadmap-v0.1[a–j]-draft.md` — each milestone's locked anchors + OQ resolutions + tasks.
+
+---
+
+## 8. Default-on adapter history (v0.2e)
+
+The following 6 opt-in adapters were flipped to **default-ON** in v0.2e (2026-05-16). Each had previously required an explicit `--enable-X` flag; use `--no-enable-X` to revert to the null-stub posture.
+
+| Adapter | CLI flag | Default before v0.2e | Default since v0.2e | Rollback |
+|---|---|---|---|---|
+| `CLIPSceneChangeScorer` | `--enable-clip-scene` | OFF | **ON** | `--no-enable-clip-scene` |
+| `HeuristicAVConflictScorer` | `--enable-av-conflict` | OFF | **ON** | `--no-enable-av-conflict` |
+| `MiniCPMDeicticDetector` | `--enable-deictic` | OFF | **ON** | `--no-enable-deictic` |
+| `ProsodyLexiconUrgencyScorer` | `--enable-urgency` | OFF | **ON** | `--no-enable-urgency` |
+| `GroundingDINOAdapter` | `--enable-grounding` | OFF | **ON** | `--no-enable-grounding` |
+| `SentenceTransformerEmbedder` | `--enable-embeddings` | OFF | **ON** | `--no-enable-embeddings` |
+
+Timing instrumentation (Stage-2 escape valve per `docs/plan-v0.2e-execution.md §profiling rig`):
+- `scene_change_score_ms` — stored on `VisionSidecar._last_scene_change_score_ms`; accessible via `last_scene_change_score_ms()`.
+- `grounding_confidence_ms` — emitted in `deictic_grounding` event `payload_inline`.
+- `audio_visual_conflict_ms` — stored on `VisionSidecar._last_av_conflict_ms`; accessible via `last_av_conflict_ms()`.
+- `urgency_score_ms`, `deictic_reference_ms`, `embedding_ms` — wall-clock at call site (b200 profiling uses `time.monotonic()` around the respective `.score()` / `.classify()` / `.embed()` calls).
+
+Deferred to v0.3: `AttachmentRiskMonitor` default-on posture (OQ-3), `PyannoteDiarizationAdapter` (depends on v0.2b).
