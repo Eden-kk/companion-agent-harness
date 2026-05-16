@@ -10,6 +10,7 @@
 | Depends on prior plan | `docs/basic-stack-design-2026-05-16.md` §4 (basic-stack risks this plan addresses). |
 | Defers / does not regress | All 19/19 v0.2 readiness gates; `POLICY_VERSION = v0.2-final` not bumped. |
 | Sign-off table | __ plan-critic (READY)  __ Codex review  __ operator approval (`/plan-review` convergence) |
+| Pre-§3.5 gate | b200 verify that `MiniCPMODuplex.reset_audio_past_key_values()` (or equivalent) exists; record the verified API name in this plan before §3.5 PR opens. |
 
 **Argument for v0.3 over v0.2.1:** v0.2.1 is reserved (per `basic-stack-design-2026-05-16.md` §8) for F2 line-cap, G1/R2-3 sampled-event tombstones, and F0a driver re-verification — all small surgical fixes against the existing turn-batched code path. Path B is a structural change to T3/T4 and the proposer lifecycle, plus a new barge-in mechanism that crosses three modules. Squeezing it into the .1 patch milestone would blur the line between bug-fix and feature work and force regression-testing the entire v0.2 stack on every interim sub-PR. Slot it as v0.3 alongside the F1 voice-mode-addressing redesign already named there; the two share replay-determinism concerns.
 
@@ -205,6 +206,8 @@ Each sub-plan is independently dispatchable. Files are absolute relative to repo
   - Wrap the `streaming_generate` call (`:258-266`) with a pre-check. The current MiniCPM-o internal log `audio_past_key_values length 1502 exceed 1500, reset.` indicates the model is auto-resetting. Add a pre-call check: if `len(self._duplex.audio_past_key_values) > 1400` AND `self._last_is_listen is True` AND `self._committing_in_flight is False` (new flag, set by T4 before commit, cleared after Kokoro task complete), call `self._duplex.reset_audio_past_key_values()` ourselves and emit a `model_context_window_reset` event via `_emit_invocation`-style helper. If the cap is hit while `is_listen=False` (mid-response), **do not reset** — let the buffered token already in flight finish, then reset on the next listen cycle.
   - Add `self._committing_in_flight: bool = False` plus setters callable from the orchestrator's T4 (`set_committing(True/False)`).
 
+**API verification gate.** `self._duplex.reset_audio_past_key_values()` is asserted by this plan but not verified at the adapter layer (the current `MiniCPMStreamingModel` wrapper does not call it; MiniCPM-o auto-resets internally). Before §3.5 dispatches, a 30-min code-reading spike on b200 must confirm the exact API name and signature on the live `MiniCPMODuplex` object. If the method does not exist with that name, document the actual API surface and update the implementation sketch above. **Acceptance gate:** §3.5 PR description must include `git grep -nE 'reset_audio_past_key_values|reset_audio_kv|clear_audio_cache'` output proving the method (or its equivalent) exists.
+
 - `companion_harness/realtime_orchestrator.py`:
   - Around the Kokoro dispatch in `_synthesis_dispatch_task` (`:1124-1149`), bracket with `self._foreground_model._model.set_committing(True)` before `start_generation` and `set_committing(False)` in the `finally` block. Only active when Path B flag is ON.
 
@@ -230,7 +233,7 @@ Each sub-plan is independently dispatchable. Files are absolute relative to repo
 | Option | Pro | Con | Recommendation |
 |---|---|---|---|
 | (a) Record everything — every `proposer_token_buffered` event includes full text payload via `payload_ref` to a blob. | Replayer can bit-reconstruct the discarded content; perfect forensic story. | Blob volume ≈ KB/s of speculative tokens during conversation; under hour-long sessions this is 10s of MB additional blob storage, plus the EventLogger ring pressure. Invariant 10 risk. | Avoid as default. |
-| (b) Record decisions only — `commit_or_discard` carries `discarded_token_count` and `committed_token_count` (integers); `proposer_token_buffered` events carry only the ring_seq + is_listen + 32-char preview. | Minimal volume; replay reconstructs *that* tokens were discarded and *how many*, satisfying behavioral replay (invariant 6) but not byte-exact reconstruction of the discarded text. | Replay cannot byte-match a discarded token. **But: invariant 5 is about policy decisions being bit-identical, not about model proposals being bit-identical.** The policy decision is deterministic from `PolicyInputs`, which excludes the proposer's discarded tokens (proposer feeds T4, not T2). Replay match-rate is unaffected. | **Recommended default.** |
+| (b) Record decisions only — `commit_or_discard` carries `discarded_token_count` and `committed_token_count` (integers); `proposer_token_buffered` events carry only the ring_seq + is_listen + 32-char preview. | Minimal volume; replay reconstructs *that* tokens were discarded and *how many*, satisfying behavioral replay (invariant 6 — "End-to-end replay is behaviorally tolerance-based. Live ASR, model decoding, and network jitter vary. Agreement uses the behavioral tuple — `same_action_class` + `same_timing_bucket (+/-200ms)` + `same_interaction_intent` + `same_safety_class`. Text similarity is logged as advisory only, not a pass gate.") but not byte-exact reconstruction of the discarded text. | Replay cannot byte-match a discarded token. **But: invariant 5 is about policy decisions being bit-identical, not about model proposals being bit-identical.** The policy decision is deterministic from `PolicyInputs`, which excludes the proposer's discarded tokens (proposer feeds T4, not T2). Replay match-rate is unaffected. | **Recommended default.** |
 | (c) Hybrid: record-decisions-only by default + `--audit-speculations` debug flag that lights up option (a). | Operator can dial in full forensics for a specific session. | Code path divergence between modes — must be tested both ways. | Ship (b) + (c) together: (b) is the default; (c) is a `--audit-speculations` CLI flag on `manual_test_console.server` that, when set, also writes the speculative-token payloads to the blob store. |
 
 **Files touched.**
@@ -247,6 +250,8 @@ Each sub-plan is independently dispatchable. Files are absolute relative to repo
 **Dependencies.** 3.3 (the events being audited are introduced there).
 
 **Estimated LOC.** ~60 LOC in orchestrator + ~20 LOC in server + ~40 LOC tests. Net ≈ 100 LOC.
+
+**Invariant compliance argument.** Per CLAUDE.md invariant 6, text similarity is explicitly logged as **advisory only, not a pass gate**. Recording discarded speculative tokens by integer-count-only (not by reconstructable text) does not break Tier B replay because Tier B's behavioral tuple does not include token-text identity. The proposer is downstream of the policy decision (T3 feeds T4, not T2), so `PolicyInputs` — which is the input to the deterministic replay function — does not depend on discarded tokens. Invariant 5 (policy-layer replay bit-identical) is therefore satisfied without recording the discarded text.
 
 ---
 
@@ -268,6 +273,12 @@ Each sub-plan is independently dispatchable. Files are absolute relative to repo
 - `companion_harness/realtime_orchestrator.py`:
   - All Path B code branches are guarded by `if self._use_streaming_speculative:`; legacy Path A code remains untouched.
 
+**Constructor signature impact.** The new `use_streaming_speculative: bool = False` parameter is **defaulted to False**, so existing `StreamingRealtimeOrchestrator(...)` callers see no breakage. As a discipline check, PR 3 must include the output of:
+```
+git grep -nE 'StreamingRealtimeOrchestrator\(' --
+```
+and confirm every instantiation site either (a) does not specify the flag (default-False applies) or (b) is updated in the same PR if it wants Path B behavior. Known instantiation sites at HEAD `62a5196`: `companion_harness/realtime_loop.py`, `manual_test_console/live_pipeline.py`, and test fixtures under `tests/`.
+
 **Acceptance tests.**
 - `tests/test_streaming_speculative_flag.py::test_flag_off_preserves_v02_turn_batched_behavior` — instantiate orchestrator with flag OFF; run a recorded fixture; assert event stream is byte-identical to the v0.2 reference (which is captured at the same fixture in `tests/fixtures/v02_reference_events.jsonl` — to be generated at HEAD `0b49d54`).
 - `tests/test_streaming_speculative_flag.py::test_flag_on_uses_streaming_speculative_path` — instantiate with flag ON; assert at least one `proposer_token_buffered` event AND at least one `commit_or_discard` event appears in the captured stream.
@@ -288,11 +299,13 @@ Each sub-plan is independently dispatchable. Files are absolute relative to repo
 | EOU → first TTS chunk latency, p95 | Unmeasured numerically | **< 1500 ms** | Same test, p95. |
 | Barge-in window (`is_playing && not is_synthesizing`) | ~5 ms (broken — collapses for short Kokoro utterances) | **> 200 ms** | Existing barge-in test `tests/test_barge_in_*.py` re-run against sub-chunked Kokoro. |
 | Barge-in cancellation latency from user-speech onset | (not fired in practice) | **< 500 ms** to `assistant_audio_stop_completed` | New test in 3.4: `test_barge_in_cancels_active_tts_under_500ms`. |
-| `synthesis_skipped_no_proposal` rate under load | Non-zero under contention (F0c) | **0 (architecturally impossible — no grace window)** | Manual repro via `tests/manual/repro_f0a_f0b.py auto`; assert zero events. |
+| `synthesis_skipped_no_proposal` rate under load | Non-zero under contention (F0c) | **0 under flag ON** (Path B removes the grace window at `realtime_orchestrator.py:1096-1116`); **unchanged behavior under flag OFF** (Path A code path preserved bit-for-bit) | Manual repro via `tests/manual/repro_f0a_f0b.py auto --streaming-speculative`; assert zero events on flag ON; assert no regression on flag OFF. |
 | Tier-B replay match rate | 1.0 (existing gate) | **1.0** | `scripts/v0_2_replay_report.py` against a Path B session capture. |
 | Invariants 1, 4, 5, 8, 10 contract tests | All pass | **All pass under both flag values** | Matrix-parameterized invariant tests (3.7). |
 | Memory growth across 1-hour session | Unmeasured | **< 200 MB RSS delta** (foreground process) | New long-session test in 3.5: `test_long_session_no_unbounded_memory_growth` (gpu mark). |
 | `log_drop_or_degrade` rate under 2-utterance synthetic load | ~11-13/run after #305+#321 | **No regression** (≤ same rate) | `repro_f0a_f0b.py auto`, compare drops/run. |
+
+**Footnote: latency gates are subject to a measured baseline.** The "EOU → first TTS chunk p50 < 800 ms" and "p95 < 1500 ms" values above assume Kokoro on GPU emits its first sub-chunk in 50-200 ms (per §3.1 sub-chunking) and that the policy chain (ASR + addressing + policy decision) completes in ≤ 100 ms (per the logprob classifier merged in PR #322). **Before §3.3 dispatches**, run a 20-utterance baseline capture on b200 against HEAD `62a5196` with `--streaming-speculative=true` (after §3.1 + §3.7 land) and record the measured p50/p95. If the measured floor exceeds 800 ms (p50) or 1500 ms (p95), tighten or relax these gates accordingly and document the empirical reason in the §3.3 PR body. The 800/1500 values are operator-facing aspirations; the baseline measurement is the contractually-binding number.
 
 ---
 
@@ -362,6 +375,6 @@ These need explicit go/no-go before §3.3 dispatches. plan-critic should not VER
 5. **PR 5:** 3.4 (barge-in). Builds on 3.1 + 3.3.
 6. **PR 6:** 3.5 (KV reset coordination). Builds on 3.3.
 7. **PR 7:** 3.6 (audit instrumentation + `--audit-speculations`). Builds on 3.3.
-8. **PR 8 (flag-day cut-over):** flip `orchestrator.use_streaming_speculative` default from `False` → `True` in `config_schema.py`. This is the only PR that changes user-visible behavior in main; gate on operator sign-off after Open Question §6.5 is answered.
+8. **PR 8 (flag-day cut-over):** flip `orchestrator.use_streaming_speculative` default from `False` → `True` in `config_schema.py`. This is the only PR that changes user-visible behavior in main; gate on operator sign-off after Open Question §6.5 is answered. **Rollback plan:** PR 8 contains a single one-line schema change; rollback is a one-line revert of that PR. Detection window: 24-hour operator-watch post-flip; revert SLA: 15 minutes from confirmed regression. Tag the pre-flip commit as `v0.3-pre-flip` so revert can be cherry-picked cleanly even if intervening PRs land.
 
 Total approximate effort: ~1300 production LOC, ~650 test LOC, ~7 weeks across dev + review + manual-test cycles assuming one developer with operator gate at each PR boundary.
