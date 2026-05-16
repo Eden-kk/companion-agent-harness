@@ -6,6 +6,11 @@ and mute-window trailing-edge) are in test_pyannote_diarization_adapter.py.
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+from dataclasses import dataclass
+from datetime import datetime, timezone
+
 import pytest
 
 from companion_harness.addressing_classifier import derive_user_addressed_agent
@@ -15,6 +20,8 @@ from companion_harness.diarization_adapter import (
     DiarizationFrame,
     _NullDiarizationAdapter,
 )
+from companion_harness.event_logger import EventLogger
+from companion_harness.schemas import Event
 
 
 # ---------------------------------------------------------------------------
@@ -59,12 +66,12 @@ def test_diarization_frame_dataclass_is_frozen():
         frame.speaker_id = "spk-1"  # type: ignore[misc]
 
 
-def test_diarization_events_have_caused_by():
-    """Contract: every diarization_frame_produced event must carry a non-empty caused_by.
+def test_diarization_event_schema_has_required_payload_fields():
+    """Contract: diarization_frame_produced schema lists required payload fields.
 
     The null adapter does not emit events, so this test validates the schema
     contract by inspecting the v0_1g_event_schema required_fields sentinel.
-    Real-adapter emission is tested in test_pyannote_diarization_adapter.py.
+    Real-adapter caused_by propagation is tested in test_pyannote_diarization_adapter.py.
     """
     from companion_harness.v0_1g_event_schema import EVENT_TYPE_SCHEMAS
     assert "diarization_frame_produced" in EVENT_TYPE_SCHEMAS
@@ -73,6 +80,88 @@ def test_diarization_events_have_caused_by():
     assert "confidence" in schema.required_fields
     assert "is_new_speaker" in schema.required_fields
     assert "model_revision" in schema.required_fields
+
+
+# ---------------------------------------------------------------------------
+# caused_by propagation: fake adapter emits event with raw_audio_chunk_event_id
+# ---------------------------------------------------------------------------
+
+
+class _FakeEmittingAdapter:
+    """Minimal adapter that emits diarization_frame_produced with caused_by wired."""
+
+    SOURCE = "fake_diarization_adapter"
+    SCHEMA_VERSION = "0.1"
+
+    def __init__(self, session_id: str, logger: EventLogger) -> None:
+        self._session_id = session_id
+        self._logger = logger
+        self._seq = 0
+
+    def process_chunk(
+        self,
+        audio_bytes: bytes,
+        ts_mono_ms: int,
+        muted: bool,
+        raw_audio_chunk_event_id: str = "",
+    ) -> DiarizationFrame:
+        if muted or not audio_bytes:
+            return DiarizationFrame(speaker_id=None, confidence=0.0, is_new_speaker=False)
+        self._seq += 1
+        event_id = f"{self._session_id}-diar-{self._seq}-{ts_mono_ms}"
+        payload_hash = hashlib.sha256(
+            f"diarization_frame_produced:{event_id}:{ts_mono_ms}".encode()
+        ).hexdigest()[:16]
+        caused_by = [raw_audio_chunk_event_id] if raw_audio_chunk_event_id else []
+        evt = Event(
+            event_id=event_id,
+            session_id=self._session_id,
+            schema_version=self.SCHEMA_VERSION,
+            seq_no=self._seq,
+            event_type="diarization_frame_produced",
+            timestamp_mono_ms=ts_mono_ms,
+            timestamp_wall=datetime.now(timezone.utc).isoformat(),
+            source=self.SOURCE,
+            caused_by=caused_by,
+            payload_hash=payload_hash,
+            payload_ref=None,
+            payload_kind="signal",
+            subject_class="self",
+            sensitivity="safe",
+            retention_policy_id="signal_default_30d",
+            payload_inline={
+                "speaker_id": "spk-0",
+                "confidence": 0.9,
+                "is_new_speaker": False,
+                "model_revision": "fake/model",
+            },
+        )
+        self._logger.log(evt)
+        return DiarizationFrame(speaker_id="spk-0", confidence=0.9, is_new_speaker=False)
+
+
+@pytest.mark.asyncio
+async def test_diarization_caused_by_propagates_raw_audio_event_id() -> None:
+    """diarization_frame_produced.caused_by must contain the raw audio chunk event_id."""
+    received: list[Event] = []
+
+    async def sink(event: Event) -> None:
+        received.append(event)
+
+    logger = EventLogger(sink, maxsize=256)
+    await logger.start()
+
+    adapter = _FakeEmittingAdapter(session_id="test-session", logger=logger)
+    adapter.process_chunk(
+        b"\x00" * 320, ts_mono_ms=1000, muted=False,
+        raw_audio_chunk_event_id="raw-audio-evt-42",
+    )
+
+    await logger.stop()
+
+    diar_events = [e for e in received if e.event_type == "diarization_frame_produced"]
+    assert len(diar_events) == 1
+    assert diar_events[0].caused_by == ["raw-audio-evt-42"]
 
 
 # ---------------------------------------------------------------------------

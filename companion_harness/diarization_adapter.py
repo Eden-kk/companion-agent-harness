@@ -52,6 +52,7 @@ class DiarizationAdapter(Protocol):
         audio_bytes: bytes,
         ts_mono_ms: int,
         muted: bool,
+        raw_audio_chunk_event_id: str = "",
     ) -> DiarizationFrame: ...
 
 
@@ -68,5 +69,6 @@ class _NullDiarizationAdapter:
         audio_bytes: bytes,
         ts_mono_ms: int,
         muted: bool,
+        raw_audio_chunk_event_id: str = "",
     ) -> DiarizationFrame:
         return DiarizationFrame(speaker_id=None, confidence=0.0, is_new_speaker=False)

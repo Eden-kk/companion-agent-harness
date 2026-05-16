@@ -40,7 +40,6 @@ _FALLBACK_MODEL = "pyannote/speaker-diarization-3.0"
 @dataclass
 class _SpeakerEntry:
     speaker_id: str
-    embedding: Any  # numpy array
 
 
 class PyannoteDiarizationAdapter:
@@ -73,11 +72,6 @@ class PyannoteDiarizationAdapter:
         self._pipeline, self._model_revision = self._load_pipeline(token)
 
         self._registry: list[_SpeakerEntry] = []
-        print(
-            f"PyannoteDiarizationAdapter: loaded {self._model_revision} "
-            f"on {self._device}",
-            flush=True,
-        )
 
     @staticmethod
     def _load_pipeline(token: str | None) -> tuple[Any, str]:
@@ -85,7 +79,7 @@ class PyannoteDiarizationAdapter:
 
         for model_id in (_PRIMARY_MODEL, _FALLBACK_MODEL):
             try:
-                kwargs: dict[str, Any] = {"use_auth_token": token} if token else {}
+                kwargs: dict[str, Any] = {"token": token} if token else {}
                 pipeline = Pipeline.from_pretrained(model_id, **kwargs)
                 return pipeline, model_id
             except Exception:
@@ -104,6 +98,7 @@ class PyannoteDiarizationAdapter:
         audio_bytes: bytes,
         ts_mono_ms: int,
         muted: bool,
+        raw_audio_chunk_event_id: str = "",
     ) -> DiarizationFrame:
         """Diarize one audio chunk.
 
@@ -147,7 +142,7 @@ class PyannoteDiarizationAdapter:
             confidence=min(1.0, best_duration / max(0.001, len(audio_bytes) / 32000.0)),
             is_new_speaker=is_new,
         )
-        self._emit_frame_event(frame, ts_mono_ms)
+        self._emit_frame_event(frame, ts_mono_ms, raw_audio_chunk_event_id)
         return frame
 
     def _resolve_speaker(self, pyannote_label: str) -> tuple[str, bool]:
@@ -160,7 +155,7 @@ class PyannoteDiarizationAdapter:
         # New speaker — register if below cap.
         is_new = True
         if len(self._registry) < MAX_SPEAKERS_PER_SESSION:
-            self._registry.append(_SpeakerEntry(speaker_id=pyannote_label, embedding=None))
+            self._registry.append(_SpeakerEntry(speaker_id=pyannote_label))
 
         return pyannote_label, is_new
 
@@ -168,13 +163,16 @@ class PyannoteDiarizationAdapter:
     # Event emission
     # ------------------------------------------------------------------
 
-    def _emit_frame_event(self, frame: DiarizationFrame, ts_mono_ms: int) -> None:
+    def _emit_frame_event(
+        self, frame: DiarizationFrame, ts_mono_ms: int, raw_audio_chunk_event_id: str
+    ) -> None:
         self._seq += 1
         event_id = f"{self._session_id}-diar-{self._seq}-{ts_mono_ms}"
         payload_hash = hashlib.sha256(
             f"diarization_frame_produced:{event_id}:{ts_mono_ms}".encode()
         ).hexdigest()[:16]
         wall = datetime.now(timezone.utc).isoformat()
+        caused_by = [raw_audio_chunk_event_id] if raw_audio_chunk_event_id else []
         evt = Event(
             event_id=event_id,
             session_id=self._session_id,
@@ -184,7 +182,7 @@ class PyannoteDiarizationAdapter:
             timestamp_mono_ms=ts_mono_ms,
             timestamp_wall=wall,
             source=self.SOURCE,
-            caused_by=[],  # caller must patch with raw_audio_chunk.event_id
+            caused_by=caused_by,
             payload_hash=payload_hash,
             payload_ref=None,
             payload_kind="signal",

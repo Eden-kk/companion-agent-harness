@@ -597,7 +597,7 @@ async def _handle_ingest_ws(request: web.Request) -> web.WebSocketResponse:
                 evt = ingest.ingest_chunk(session, payload_bytes, meta)
                 chunk_counter["chunks_ingested"] = chunk_counter.get("chunks_ingested", 0) + 1
                 if pipeline is not None:
-                    pipeline.push_audio(payload_bytes, evt.event_id)
+                    pipeline.push_audio(payload_bytes, evt.event_id, ts_mono)
             else:  # raw_video
                 video_evt = ingest.ingest_video_frame(session, payload_bytes, meta)
                 chunk_counter["frames_ingested"] = chunk_counter.get("frames_ingested", 0) + 1

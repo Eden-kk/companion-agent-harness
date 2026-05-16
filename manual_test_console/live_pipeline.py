@@ -27,7 +27,7 @@ import array
 import asyncio
 import math
 from collections.abc import AsyncIterator, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -430,6 +430,7 @@ class LivePipeline:
     urgency_scorer: UrgencyScorer | None = None
     deictic_model: DeicticModel | None = None
     embedder: EmbeddingAdapter | None = None
+    _diarization_fn: Callable[[bytes, int, str], None] | None = field(default=None, repr=False)
 
     async def start(self) -> None:
         await self.orchestrator.start()
@@ -441,13 +442,17 @@ class LivePipeline:
             await self.sleep_time_agent.stop()
         await self.orchestrator.stop()
 
-    def push_audio(self, frame_bytes: bytes, raw_audio_event_id: str) -> None:
+    def push_audio(
+        self, frame_bytes: bytes, raw_audio_event_id: str, ts_mono_ms: int = 0
+    ) -> None:
         """Enqueue an audio frame onto the orchestrator's audio_in queue.
 
         Drop-oldest on overflow so the realtime ingest path is never blocked
         (invariant #10). The orchestrator's internal queues then fan out via
         _audio_tee_task.
         """
+        if self._diarization_fn is not None:
+            self._diarization_fn(frame_bytes, ts_mono_ms, raw_audio_event_id)
         try:
             self.audio_in.put_nowait((frame_bytes, raw_audio_event_id))
         except asyncio.QueueFull:
@@ -657,9 +662,14 @@ def build_live_pipeline(
     # Track the latest non-null speaker_id for PolicyInputs.current_speaker_id.
     _latest_speaker_id: list[str | None] = [None]
 
-    def _process_audio_chunk_for_diarization(audio_bytes: bytes, ts_mono_ms: int) -> None:
+    def _process_audio_chunk_for_diarization(
+        audio_bytes: bytes, ts_mono_ms: int, raw_audio_chunk_event_id: str
+    ) -> None:
         muted = audio_output.is_synthesizing
-        frame = _diarization_adapter.process_chunk(audio_bytes, ts_mono_ms, muted=muted)
+        frame = _diarization_adapter.process_chunk(
+            audio_bytes, ts_mono_ms, muted=muted,
+            raw_audio_chunk_event_id=raw_audio_chunk_event_id,
+        )
         if frame.speaker_id is not None:
             _latest_speaker_id[0] = frame.speaker_id
 
@@ -749,6 +759,7 @@ def build_live_pipeline(
         urgency_scorer=urgency_scorer,
         deictic_model=deictic_model,
         embedder=embedder,
+        _diarization_fn=_process_audio_chunk_for_diarization,
     )
 
 
