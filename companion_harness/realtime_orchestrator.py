@@ -214,6 +214,7 @@ class StreamingRealtimeOrchestrator:
         deictic_detector: "DeicticDetector | None" = None,
         tool_router: "Any | None" = None,
         tool_progress_emitter: "Any | None" = None,
+        background_reasoner: "Any | None" = None,
     ) -> None:
         self._session_id = session_id
         self._logger = logger
@@ -288,6 +289,10 @@ class StreamingRealtimeOrchestrator:
         self._deictic_detector = deictic_detector
         self._tool_router = tool_router
         self._tool_progress_emitter = tool_progress_emitter
+        self._background_reasoner = background_reasoner
+        # Asyncio queue for smart-path requests (OQ-12). Unbounded: smart-path
+        # calls are rare (one per tool dispatch decision with routing_tier="smart").
+        self._smart_path_queue: asyncio.Queue[ToolDispatchRequest] = asyncio.Queue()
         # Last-applied policy thresholds (read from config_store at EOU); when
         # config_store is None we fall back to speak_policy.decide()'s defaults
         # by leaving these as None and not passing kwargs.
@@ -325,6 +330,10 @@ class StreamingRealtimeOrchestrator:
             loop.create_task(self._foreground_stream_task(), name="T3_foreground_stream"),
             loop.create_task(self._synthesis_dispatch_task(), name="T4_synthesis_dispatch"),
         ]
+        if self._background_reasoner is not None:
+            self._tasks.append(
+                loop.create_task(self._smart_path_task(), name="T5_smart_path")
+            )
 
     async def stop(self) -> None:
         """Cancel all tasks (including barge-in watchdogs), emit orchestrator_stopped, drain logger."""
@@ -359,6 +368,14 @@ class StreamingRealtimeOrchestrator:
             await asyncio.gather(*self._tasks)
         except (asyncio.CancelledError, Exception):
             pass
+
+    def dispatch_smart(self, request: ToolDispatchRequest) -> None:
+        """Enqueue a smart-path tool dispatch request (non-blocking, invariant #10).
+
+        No-op when background_reasoner is None (fast-path / no smart path wired).
+        """
+        if self._background_reasoner is not None:
+            self._smart_path_queue.put_nowait(request)
 
     # ------------------------------------------------------------------
     # Internal tasks
@@ -918,6 +935,25 @@ class StreamingRealtimeOrchestrator:
                     self._audio_output.request_stop(caused_by=[gen_event_id])
             finally:
                 self._audio_output.set_generation_task(None)
+
+    async def _smart_path_task(self) -> None:
+        """T5: Drain smart_path_queue; drive BackgroundReasoner; inject context (OQ-12)."""
+        from companion_harness.background_reasoner import ToolReasonerResult
+        while True:
+            request = await self._smart_path_queue.get()
+            event_iter = self._background_reasoner.select_and_call(request)
+            last_event_id = request.caused_by[0] if request.caused_by else ""
+            async for evt in event_iter:
+                self._logger.log(evt)
+                last_event_id = evt.event_id
+            result = ToolReasonerResult(
+                tool_call_id=request.tool_name,
+                tool_name=request.tool_name,
+                summary_text=f"completed:{request.tool_name}",
+                caused_by=[last_event_id] if last_event_id else list(request.caused_by),
+            )
+            memory_items = self._background_reasoner.summarize(result)
+            self._foreground_model.set_context(memory_items)
 
     def _speak_policy_decide(
         self,
