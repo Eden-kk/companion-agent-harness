@@ -76,6 +76,10 @@ __all__ = ["build_app", "main"]
 # Per-display-WS queue depth. Drops oldest on overflow.
 _DISPLAY_QUEUE_DEPTH = 256
 
+# Event types that are high-rate frame signals — sampled before display fanout.
+# The EventLogger ring still records every event (audit invariant #1).
+_HIGH_RATE_DISPLAY_TYPES = frozenset({"raw_audio_chunk", "vad_frame"})
+
 # Per-audio_out-WS queue depth. Drops oldest on overflow (invariant #10).
 # Synthesized audio is bursty; 256 chunks ≈ several seconds of buffer.
 _AUDIO_OUT_QUEUE_DEPTH = 256
@@ -206,11 +210,21 @@ class DisplayBroker:
     drain task and must not block — it does put_nowait per subscriber and
     drops on QueueFull (per-viewer backpressure isolation; the realtime
     ingest path is never blocked).
+
+    High-rate frame events (raw_audio_chunk, vad_frame) are sampled before
+    fanout — only every Nth event reaches subscribers. The EventLogger ring
+    still records all events (audit invariant #1). High-signal events are
+    always forwarded regardless of sampling rate.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, sampling_rate: int = 5) -> None:
         self._queues: list[asyncio.Queue[dict]] = []
         self._drops_by_queue: dict[int, int] = {}
+        self._sampling_rate = max(1, sampling_rate)
+        self._counters: dict[str, int] = {}  # per event_type seen count
+        self._sampled_in: dict[str, int] = {}   # forwarded this window
+        self._sampled_out: dict[str, int] = {}  # dropped-by-sampling this window
+        self._window_start_ms: float = time.monotonic() * 1000
 
     def add(self) -> asyncio.Queue[dict]:
         q: asyncio.Queue[dict] = asyncio.Queue(maxsize=_DISPLAY_QUEUE_DEPTH)
@@ -223,7 +237,35 @@ class DisplayBroker:
             self._queues.remove(q)
         self._drops_by_queue.pop(id(q), None)
 
+    def _should_forward(self, event_type: str) -> bool:
+        if event_type not in _HIGH_RATE_DISPLAY_TYPES:
+            return True
+        n = self._counters.get(event_type, 0) + 1
+        self._counters[event_type] = n
+        forward = (n - 1) % self._sampling_rate == 0
+        if forward:
+            self._sampled_in[event_type] = self._sampled_in.get(event_type, 0) + 1
+        else:
+            self._sampled_out[event_type] = self._sampled_out.get(event_type, 0) + 1
+        return forward
+
+    def sampling_summary(self) -> dict:
+        """Return and reset the per-window sampling counters."""
+        now_ms = time.monotonic() * 1000
+        elapsed_s = (now_ms - self._window_start_ms) / 1000
+        summary = {
+            "elapsed_s": elapsed_s,
+            "forwarded": dict(self._sampled_in),
+            "sampled_out": dict(self._sampled_out),
+        }
+        self._sampled_in.clear()
+        self._sampled_out.clear()
+        self._window_start_ms = now_ms
+        return summary
+
     async def on_event(self, event: Event) -> None:
+        if not self._should_forward(event.event_type):
+            return
         payload = _event_to_json(event)
         msg = {"kind": "event", "event": payload}
         for q in list(self._queues):
@@ -1190,6 +1232,8 @@ def build_app(
     streaming_raw_mode: bool = False,
     seam_defaults: dict[str, bool] | None = None,
     blob_retention_days: int = 30,
+    event_log_maxsize: int = 16384,
+    display_sampling_rate: int = 5,
 ) -> web.Application:
     """Build the aiohttp Application. Caller is responsible for run/cleanup.
 
@@ -1218,8 +1262,8 @@ def build_app(
             fire.
     """
     app = web.Application()
-    broker = DisplayBroker()
-    logger = EventLogger(_null_sink, maxsize=4096)
+    broker = DisplayBroker(sampling_rate=display_sampling_rate)
+    logger = EventLogger(_null_sink, maxsize=event_log_maxsize)
     logger.subscribe(broker.on_event)
     event_rate_counter = _EventRateCounter(window_seconds=60)
     logger.subscribe(event_rate_counter.on_event)
@@ -1500,6 +1544,44 @@ def build_app(
                     except Exception:
                         pass
 
+    async def _display_sampling_reporter() -> None:
+        """Every 60s emit a display_event_sampled summary event so the dashboard
+        can show how many high-rate events were sampled out of the display fanout.
+        The EventLogger ring still received every event (audit invariant #1).
+        """
+        while True:
+            await asyncio.sleep(60)
+            summary = broker.sampling_summary()
+            total_in = sum(summary["forwarded"].values())
+            total_out = sum(summary["sampled_out"].values())
+            if total_in + total_out == 0:
+                continue
+            now_ms = int(time.monotonic() * 1000)
+            evt = Event(
+                event_id=f"display-sampled-{now_ms}",
+                session_id="",
+                schema_version="0.1",
+                seq_no=0,
+                event_type="display_event_sampled",
+                timestamp_mono_ms=now_ms,
+                timestamp_wall=_now_wall(),
+                source="display_broker",
+                caused_by=[],
+                payload_hash="",
+                payload_ref=None,
+                payload_kind="signal",
+                subject_class="unknown",
+                sensitivity="safe",
+                retention_policy_id="default",
+                payload_inline={
+                    "forwarded": summary["forwarded"],
+                    "sampled_out": summary["sampled_out"],
+                    "elapsed_s": round(summary["elapsed_s"], 1),
+                    "sampling_rate": display_sampling_rate,
+                },
+            )
+            logger.log(evt)
+
     async def _on_cleanup(_app: web.Application) -> None:
         # Stop any still-active live pipelines first (they share the logger).
         for pipeline in list(_app[KEY_ACTIVE_PIPELINES].values()):
@@ -1517,6 +1599,7 @@ def build_app(
     async def _on_startup_rotation(_app: web.Application) -> None:
         if blob_retention_days > 0:
             asyncio.get_running_loop().create_task(_blob_rotation_worker())
+        asyncio.get_running_loop().create_task(_display_sampling_reporter())
 
     app.on_startup.append(_on_startup_rotation)
     app.on_cleanup.append(_on_cleanup)
@@ -1758,6 +1841,25 @@ def main(argv: list[str] | None = None) -> int:
             "rotating blobs still referenced by live event-log entries breaks replay."
         ),
     )
+    parser.add_argument(
+        "--event-log-maxsize",
+        dest="event_log_maxsize",
+        type=int,
+        default=16384,
+        help="EventLogger internal ring size (default 16384). Raise if log_drop_or_degrade rate is high.",
+    )
+    parser.add_argument(
+        "--display-sampling-rate",
+        dest="display_sampling_rate",
+        type=int,
+        default=5,
+        help=(
+            "Display-broker sampling rate N for high-rate frame events "
+            "(raw_audio_chunk, vad_frame): only 1-in-N forwarded to dashboard subscribers. "
+            "Default 5. Set to 1 to disable sampling (backward-compat). "
+            "The EventLogger ring always records every event."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if args.minicpm_only and args.use_stubs:
@@ -1931,6 +2033,8 @@ def main(argv: list[str] | None = None) -> int:
         streaming_raw_mode=args.minicpm_streaming_raw,
         seam_defaults=seam_defaults,
         blob_retention_days=args.blob_retention_days,
+        event_log_maxsize=args.event_log_maxsize,
+        display_sampling_rate=args.display_sampling_rate,
     )
     # Stamp the deictic_model label as "pending-foreground-load" so
     # _on_startup_finalize_deictic knows the operator asked for it.
