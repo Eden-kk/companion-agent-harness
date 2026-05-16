@@ -802,6 +802,7 @@ def build_app(
     backchannel_model_factory: Optional[Callable[[], Any]] = None,
     tts_adapter: Any = None,
     tts_adapter_factory: Optional[Callable[[], Any]] = None,
+    tts_adapter_name: str = "Kokoro-82M-ONNX",
     asr_model_factory: Optional[Callable[[], Any]] = None,
     vision_enabled: bool = False,
     scene_scorer: Any = None,
@@ -943,16 +944,16 @@ def build_app(
                 _app[KEY_TTS_LABEL] = "stub:NoopTtsAdapter"
             return
 
-        # Load TTS singleton (Kokoro by default). Falls back to NoopTtsAdapter
-        # on failure so the server still starts (voice-back simply silent).
+        # Load TTS singleton. Falls back to NoopTtsAdapter on failure so the
+        # server still starts (voice-back simply silent).
         if _app[KEY_TTS_ADAPTER] is None and tts_adapter_factory is not None:
-            print("Loading Kokoro-82M-ONNX TTS adapter...", flush=True)
+            print(f"Loading {tts_adapter_name} TTS adapter...", flush=True)
             t0 = time.monotonic()
             try:
                 _app[KEY_TTS_ADAPTER] = tts_adapter_factory()
             except Exception as exc:
                 print(
-                    f"Kokoro TTS load FAILED: {type(exc).__name__}: {exc} "
+                    f"{tts_adapter_name} TTS load FAILED: {type(exc).__name__}: {exc} "
                     "— falling back to stub:NoopTtsAdapter (voice-back disabled)",
                     flush=True,
                 )
@@ -961,8 +962,8 @@ def build_app(
                 _app[KEY_TTS_LABEL] = "stub:NoopTtsAdapter"
             else:
                 elapsed = time.monotonic() - t0
-                _app[KEY_TTS_LABEL] = f"Kokoro-82M-ONNX (loaded in {elapsed:.2f}s)"
-                print(f"Kokoro-82M-ONNX loaded in {elapsed:.2f}s", flush=True)
+                _app[KEY_TTS_LABEL] = f"{tts_adapter_name} (loaded in {elapsed:.2f}s)"
+                print(f"{tts_adapter_name} loaded in {elapsed:.2f}s", flush=True)
         elif _app[KEY_TTS_ADAPTER] is None:
             from manual_test_console.live_pipeline import NoopTtsAdapter  # noqa: WPS433
             _app[KEY_TTS_ADAPTER] = NoopTtsAdapter()
@@ -1343,6 +1344,7 @@ def main(argv: list[str] | None = None) -> int:
             except Exception as exc:
                 print(f"SentenceTransformerEmbedder init FAILED: {type(exc).__name__}: {exc}", flush=True)
 
+    tts_name = "MiniCPM-o native TTS" if args.tts_adapter == "native_minicpm" else "Kokoro-82M-ONNX"
     app = build_app(
         blob_dir,
         live_pipeline_enabled=args.live_pipeline,
@@ -1352,6 +1354,7 @@ def main(argv: list[str] | None = None) -> int:
         smart_turn_model_factory=smart_turn_factory,
         backchannel_model_factory=backchannel_factory,
         tts_adapter_factory=tts_factory,
+        tts_adapter_name=tts_name,
         asr_model_factory=asr_factory,
         vision_enabled=args.enable_vision,
         scene_scorer=real_scene_scorer,
