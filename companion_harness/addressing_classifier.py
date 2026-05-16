@@ -34,8 +34,10 @@ heuristics; they belong to a later phase (see issue #139).
 
 from __future__ import annotations
 
+import time
+import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from companion_harness.foreground_model_minicpm import MiniCPMDuplexModel
@@ -179,7 +181,38 @@ class _NullMiniCPMAddressingClassifier:
 
     Always returns `None` so the orchestrator falls back to
     `WakeWordAddressingClassifier` (safety-net).
+
+    Emits a `signal_producer_fallback` event once at construction when a
+    logger is provided, so replay knows MiniCPM addressing was unavailable
+    for the entire session.
     """
+
+    def __init__(self, logger: Any = None, session_id: str = "") -> None:
+        if logger is not None:
+            from companion_harness.schemas import Event  # local import avoids circularity
+            now_ms = int(time.monotonic() * 1000)
+            logger.log(Event(
+                event_id=f"null-minicpm-addressing-{uuid.uuid4().hex[:8]}",
+                session_id=session_id,
+                schema_version="0.1",
+                seq_no=0,
+                event_type="signal_producer_fallback",
+                timestamp_mono_ms=now_ms,
+                timestamp_wall="",
+                source="addressing_classifier",
+                caused_by=["session_open"],
+                payload_hash="",
+                payload_ref=None,
+                payload_kind="signal",
+                subject_class="unknown",
+                sensitivity="safe",
+                retention_policy_id="signal_default_30d",
+                payload_inline={
+                    "primary_producer": "MiniCPMAddressingClassifier",
+                    "fallback_producer": "WakeWordAddressingClassifier",
+                    "reason": "minicpm_text_model not wired",
+                },
+            ))
 
     def __call__(
         self,

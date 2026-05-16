@@ -616,6 +616,7 @@ async def _handle_ingest_ws(request: web.Request) -> web.WebSocketResponse:
             logger=logger,
             ingest_session=session,
             foreground_duplex_model=foreground_model,
+            minicpm_text_model=foreground_model,
             decision_trace_dir=request.app[KEY_BLOB_DIR] / "decision_traces",
             vad_model=request.app[KEY_VAD_MODEL],
             smart_turn_model=request.app[KEY_SMART_TURN_MODEL],
