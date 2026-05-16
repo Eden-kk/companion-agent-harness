@@ -1,293 +1,271 @@
 # Manual-test handbook
 
-Last updated: **2026-05-15** (post-manual-test-session). Originally written alongside Phase 1 service build; rewritten after the 2026-05-15 session against the live b200 deployment to reflect what actually happens.
+Last updated: **2026-05-15** (post-v0.1j stub-realization sweep). This is the runbook for actually using the harness with your voice + camera. It is not a substitute for the architecture spec.
 
-> ## Finding 6 — CLOSED by PR #149
->
-> Finding 6 (`user_addressed_agent` never flipping True) was resolved by PR #149, which wired `AddressingClassifier` into `StreamingRealtimeOrchestrator._policy_gate_task` (lines 423–431). The 3-tier classifier behavior:
->
-> 1. **Wake-word tier**: `user_addressed_agent = True` iff "Claude" / "Claudia" is detected in the utterance (`AddressingClassifier` wake-word path; see `companion_harness/addressing_classifier.py`).
-> 2. **Diarization-derived `social_mode` tier**: when no wake-word is found, `user_addressed_agent` uses diarization-derived `social_mode` to infer whether the agent is the intended recipient.
-> 3. **Mechanical fallback**: when no wake-word and `social_mode` is `solo`, `user_addressed_agent = True` (single-human session; agent is the only available listener).
->
-> Scenarios B, D, E no longer carry the "⚠️ Finding-6 affected" caveat. Use the wake-word ("Claude" or "Claudia") to address the agent and expect `action_type=full_response` when EOU is confirmed and the utterance is addressed.
+If you want *what the harness is for*: read [`architecture-v0.1.md`](architecture-v0.1.md).
+If you want *the model + flow at a glance*: read [`model-stack.md`](model-stack.md).
+If you want *how to run a session and what to expect*: keep reading.
 
-This handbook is what the project lead reads when they want to actually use the harness with their voice (Phase 1: audio-only) and later with their voice + camera (Phase 2: audio + video). It is **not** a substitute for the architecture spec — it is the runbook that complements it.
-
-If you are looking for *what the harness is for*, read `docs/architecture-v0.1.md`. If you are looking for *how to run a session and what to expect*, read this.
+> ## Status banner — 2026-05-15
+>
+> - Addressing classifier (Finding 6) **is wired and live**: MiniCPM-driven primary path + wake-word ("Claude" / "Claudia") safety net + mechanical `solo` fallback. `user_addressed_agent=True` now fires for addressed utterances.
+> - Voice-back path **works end-to-end**: Silero VAD → SmartTurn v3 → faster-whisper-tiny → MiniCPM addressing → 4-store memory retrieve → SpeakPolicy v0.1j → MiniCPM-o proposal → Kokoro TTS → browser playback.
+> - Tier-B tuning dashboard is live in the right panel of the console.
+> - 8 model stubs still return neutral values; see `model-stack.md` for the catalog. Replacement PRs for #166/#168/#169/#171/#172/#183/#188/#213 are in flight.
 
 ---
 
-## 0. Scope and honesty
+## 0. What you can validate today
 
-**Phase 1 — Audio-only manual test.** You speak into your laptop mic. The harness on b200 ingests audio, runs real VAD + Smart Turn + ASR + backchannel classification, runs SpeakPolicy, emits SpeakDecisions, generates speech with Kokoro TTS, and streams audio back to the browser. The plumbing for **voice-back is wired end-to-end** as of PRs #125/#127/#132/#135. The console shows you everything, including inline `action_type` + `primary_reason_code` on every decision row (PR #133).
-
-The catch: as of the 2026-05-15 session, **the policy never selects `full_response`** (see headline box above — Finding 6). So although the TTS/audio-out path is wired and tested, in practice you will hear silence. Diagnosis of that gap is a follow-up.
-
-What you can validate in Phase 1 today:
+**Phase 1 — Audio-only.** You speak into your laptop mic. The harness on this machine (b200) ingests audio, runs the full T1→T2→T3→T4 pipeline, and streams Kokoro-synthesized audio back to the browser. The console event panel shows every step with its `caused_by[]` predecessor.
 
 | Capability | Status | Notes |
 |---|---|---|
-| Causal graph closure (`harness_init → session_open → raw_audio → vad_turn_signal → SpeakDecision`) | ✅ Validates | Orphan count should stay at 0. |
-| Real Silero VAD (ONNX) emitting `vad_turn_signal` with `p_done` / `p_continue` | ✅ Validates | PR #126. Replaces the energy stub. |
-| Real Pipecat Smart Turn v3 (ONNX, CPU) suppressing mid-pause EOU | ✅ Validates | PR #126. |
-| Real whisper-tiny.en ASR (faster-whisper) populating `user_transcript` on EOU | ✅ Validates | PR #136. Deterministic: temperature=0, beam_size=1. |
-| Real backchannel classifier (whisper-tiny + lexicon, `emit_threshold=0.3`) | ✅ Validates | PRs #126, #134. Drain-storm fixed. |
-| Inline `action_type` + `primary_reason_code` on `policy_decision` rows in console | ✅ Validates | PR #133. No need to fetch the blob. |
-| Panel routing (left = `raw_audio`/`raw_video`; right = everything else) | ✅ Documented | §2.4, per PR #131. |
-| Real MiniCPM-o 4.5 foreground on b200 GPU | ✅ Loaded | PR #125 wired the orchestrator. |
-| Real Kokoro-82M-ONNX TTS + `WebSocketAudioSink → /ws/audio_out → browser AudioContext` | ✅ Wired | PRs #127, #132, #135. |
-| EventLogger non-blocking on realtime path | ✅ Validates | Backpressure surfaces as `log_drop_or_degrade`. |
-| Policy actually selecting `full_response` end-to-end | ❌ **Blocked by Finding 6** | All upstream signals fire, but `user_addressed_agent` never asserts. See headline box. |
-| Privacy gates writing to a real memory store | ⚠️ Partial | Gates fire (`memory_commit_skipped` observable); persistent store wiring is a separate follow-up. |
-| Direct-question latency end-to-end | ❌ Unmeasurable today | No `full_response` → no end-to-end timing yet. |
-| Barge-in cutting voice mid-utterance | ❌ Unmeasurable today | Requires `full_response` to interrupt. |
+| Causal graph closure (`harness_init → session_open → raw_audio → ... → SpeakDecision`) | ✅ | Orphan count stays at 0. |
+| Silero VAD (real, ONNX) — `vad_turn_signal` with `p_done`/`p_continue` | ✅ | |
+| Pipecat SmartTurn v3 (real, ONNX, CPU) — mid-pause EOU suppression | ✅ | |
+| MiniCPM native_duplex EOU (final primary EOU producer) | ✅ | Wired by v0.1j Task 8. `signal_producer_fallback` emits on fallback. |
+| Backchannel classifier (real, whisper-tiny + lexicon, `emit_threshold=0.3`) | ✅ | |
+| ASR (real, faster-whisper-tiny) — populates `user_transcript` on EOU | ✅ | Deterministic: temperature=0, beam_size=1. |
+| MiniCPM addressing classifier (real, primary) + WakeWord (real, safety net) | ✅ | Wired by v0.1j Task 9. |
+| SpeakPolicy.decide() v0.1j (8 paths, RUBRIC + ATTACHMENT_RISK gates, tool_status path) | ✅ | POLICY_VERSION = `v0.1j`. Bit-identical Tier-B replay. |
+| MiniCPM-o-2.6 foreground proposal generation | ✅ | `init_vision`/`init_audio`/`init_tts` all True. |
+| Kokoro-82M-ONNX TTS → `/ws/audio_out` → browser `AudioContext` | ✅ | Default. Switch via `--tts-adapter native_minicpm`. |
+| 4-store memory (session/core/episodic/semantic) per session | ✅ | Per-session dirs under `<blob_dir>/<session_id>/memory/`. |
+| Lexical memory retrieval populating `context_items` into foreground | ✅ | Embedding-based retrieval pending PR for #183. |
+| SleepTimeAgent (opt-in) batches `memory_write_candidate` → commits | ✅ | Wire via `wire_sleep_time_agent=True`. Provenance = stub or MiniCPM (#188 PR in flight). |
+| `forget that` / `remember X` detection in transcript | ✅ | Wired in v0.1h Task 1. Persisted tombstone wiring pending. |
+| Tool-routing fast path + 300ms barge-in cancellation | ✅ | v0.1f. `tool_call_*` event chain closes. |
+| Filler-budget state machine (2 fillers, 4s gap, evidence-bound) | ✅ | `ToolProgressEmitter` with pure `evidence_at()` for replay. |
+| RegexAestheticRubric gate (8 violation IDs) | ✅ | v0.1g. `RUBRIC_VIOLATION` ReasonCode. |
+| EventStreamAttachmentRiskMonitor → `ATTACHMENT_RISK_DAMPEN` | ✅ | v0.1g + #213 wiring (PR #234 in flight; pre-wire returns 0.0). |
+| Tier-B threshold dashboard (12 knobs, live patch, audit events) | ✅ | Right column of console. |
+| EventLogger async non-blocking + `log_drop_or_degrade` on backpressure | ✅ | Realtime path never waits on log durability. |
+| `EventLogger.late_subscribe()` API for off-stream subscribers | 🟡 | Recovery PR #241 in flight; legacy `.subscribe()` still works. |
+| Tier-B replay (`run_tier_b_replay()`, `assert_bit_identical()`) | ✅ | `companion_harness/replay.py`. |
+| Eval Phase A (harness_native adapter + CLI + reporters) | ✅ | `pip install -e .[eval]` → `python -m companion_harness.evals run --adapter harness_native`. |
+| Eval Phase A.5 (synthetic clock + fixture driver) | ✅ | |
+| Eval Phase B1/B2 (CANDOR + FullDuplexBench synthetic case sources) | ✅ | Real data adapters deferred. |
+| Eval Phase D (VoiceBench + VocalBench + HumDial-FDBench, synthetic-mode) | 🟡 | VocalBench merged (#232). VoiceBench (#233), HumDial-FDBench in flight. |
 
-**Phase 2 — Audio + video manual test.** Vision capture works (PR #123 — `raw_video_frame` events emitted). VisionSidecar wiring into the foreground model is **landed** (v0.1h Task 2). Pass `--enable-vision` (default OFF) to enable a per-session `VisionSidecar` that buffers the most-recent frame and pairs it with the next audio chunk so MiniCPM-o's vision tower runs once per frame. Scene-change scoring and deictic grounding return stub values (0.0 / False) until v0.1j.
+**Phase 2 — Audio + video.** Same audio path plus per-session `VisionSidecar`. Enable with `--enable-vision` (default OFF; loads MiniCPM-o with `init_vision=True`, +18 GB VRAM).
+
+| Vision capability | Status | Notes |
+|---|---|---|
+| Frame capture → `raw_video_frame` events | ✅ | |
+| `VisionSidecar` per-session buffer (consume-once, last-writer-wins) | ✅ | v0.1h Task 2. |
+| `vision_frame` events with `caused_by=[raw_video_frame.event_id]` | ✅ | |
+| Video frame reaches MiniCPM-o vision tower (paired with next audio chunk) | ✅ | |
+| `no_camera_memory` privacy gate (first-line check in `ingest_frame_bytes`) | ✅ | |
+| Scene-change scorer | 🟡 stub returns 0.0 | Real CLIP impl in flight (#166). |
+| Grounding model | 🟡 stub returns 0.0 | Real Grounding-DINO impl in flight (#172). |
+| Audio-visual conflict scorer | 🟡 stub returns 0.0 | Heuristic impl in flight (#168). |
+| Deictic reference detector | 🟡 stub returns `(False, 0.0)` | MiniCPM-reused impl in flight (#169). |
+| Urgency scorer | 🟡 stub returns 0.0 | Prosody+lexicon impl in flight (#171). |
 
 ---
 
 ## 1. Prerequisites
 
-- **A working b200 SSH connection.** `ssh b200` should succeed without a password prompt for everyday use. Verify on first use; see `docs/remote-dev.md`.
-- **A laptop with a working mic** (and webcam for Phase 2). Browser permissions for mic/camera will be requested on first open.
-- **Chrome, Firefox, or Safari (recent).** The console uses `getUserMedia` + `WebSocket`; the audio-out path additionally uses `AudioContext`.
-- **The canonical venv on b200** at `/raid/yid042/venvs/companion-harness/` with all `requirements.txt` deps installed. Confirm with `/raid/yid042/venvs/companion-harness/bin/python3 -c "import websockets, aiohttp, faster_whisper, onnxruntime"`.
-- **The repo on b200** at `~/companion-agent-harness/` at a recent commit. After a relevant PR merges, `git pull origin main` on b200 + restart is enough.
+- **Working canonical venv** at `/raid/yid042/venvs/companion-harness/`. Confirm with:
+  ```bash
+  /raid/yid042/venvs/companion-harness/bin/python3 -c "import websockets, aiohttp, faster_whisper, onnxruntime"
+  ```
+- **Recent main checkout** of the repo. After a relevant PR merges, `git pull origin main` and restart the server.
+- **Laptop with working mic** (and webcam for Phase 2). Browser asks for permissions on first open.
+- **Chrome, Firefox, or Safari (recent).** Uses `getUserMedia` + WebSocket; audio-out uses `AudioContext`.
 
-If any prerequisite is not in place, fix it before continuing. Don't paper over it.
+If anything is missing, fix it before continuing.
 
 ---
 
 ## 2. Phase 1 — Audio-only walkthrough
 
-### 2.1 Start the server on b200
+### 2.1 Start the server
 
-As of 2026-05-15, the server is **already running** on b200 as PID `1851682`, port 8800. You normally don't need to restart it. Confirm with:
-
-```sh
-ssh b200 ss -ltnp | grep :8800
+```bash
+/raid/yid042/venvs/companion-harness/bin/python3 \
+    -m manual_test_console.server \
+    --host 0.0.0.0 --port 8800 \
+    --blob-dir /tmp/manual_test_blobs
 ```
 
-The startup banner (visible in the server log) should show real-model labels:
+Default flags load MiniCPM-o (vision off, +0 GB extra), real Silero/SmartTurn/whisper-tiny detectors, and Kokoro TTS. The startup banner reports:
 
 ```
-VAD: Silero (ONNX)
-SmartTurn: Pipecat Smart Turn v3 (ONNX, CPU)
-Backchannel: whisper-tiny + lexicon (emit_threshold=0.3)
-ASR: whisper-tiny.en (faster-whisper)
-TTS: Kokoro-82M-ONNX
-Foreground: MiniCPM-o 4.5 (b200 GPU)
+manual-test console — Phase 3 (live-loop pipeline wiring, no voice-back)
+  bind:        0.0.0.0:8800
+  blob store:  /tmp/manual_test_blobs
+  live loop:   ENABLED (loading MiniCPM-o + real detectors at startup)
+  sessions:    VAD, SmartTurn, Backchannel, SpeakPolicy, MiniCPM proposals
+  Vision:      disabled
+  open page:   http://localhost:8800/
 ```
 
-If any line says "stub" or "constant", a PR didn't deploy correctly — see §6 for the restart command.
+Cold load takes ~60–120 s (MiniCPM-o checkpoint + Silero/SmartTurn ONNX + Kokoro). After "live pipeline ready" is printed, the server is responsive.
 
-### 2.2 Forward the port to your laptop
-
-In a local terminal:
-
-```sh
-ssh -L 8800:localhost:8800 b200
+To check whether it's already running:
+```bash
+ss -ltnp | grep :8800     # or: lsof -i :8800
 ```
 
-This forwards local `:8800` → b200's `:8800`. Keep this shell open. (Cloudflare quick tunnel is the alternative if `ssh -L` is inconvenient — see `docs/manual-test-module-plan-draft.md` §6.)
+### 2.2 Open the console
 
-### 2.3 Open the console
+Browser → `http://localhost:8800/` (or via SSH port-forward if you're on a laptop: `ssh -L 8800:localhost:8800 b200`).
 
-In your browser: `http://localhost:8800/`.
+Click **Grant mic** when prompted. PCM16 audio starts streaming over the WebSocket; rows appear in the event panel. If a `full_response` decision fires, the page also plays synthesized audio via `AudioContext` — grant any audio-autoplay prompt the browser raises.
 
-You should see the manual-test console page. Click **Grant mic** when prompted. The page should immediately start streaming PCM16 audio over the WebSocket and showing rows in the event panel. If audio-back works (i.e., Finding 6 has been fixed and policy approves a `full_response`), the page will also play synthesized audio through `AudioContext` — grant any audio-autoplay prompts the browser raises.
+### 2.3 What you see
 
-### 2.4 What you should see
+**3-column layout** (right column collapses on smaller screens):
 
-The page renders two panels:
+| Panel | Content |
+|---|---|
+| **Left** — ingested input events | `raw_audio_chunk` (`seq_no`, `payload_hash`, `caused_by[]`), `raw_video_frame` when vision enabled. ~10 rows/sec for audio. |
+| **Middle** — display panel | Causal-chain events: `vad_frame`, `vad_turn_signal` (with `p_done`/`p_continue`/`confidence`), `smart_turn_signal`, `backchannel_classification`, `asr_transcript_emitted`, `addressing_classified`, `memory_retrieval_event`, `policy_decision` (with inline `action_type` + `primary_reason_code`), `foreground_proposal`, `tts_audio_emitted`, `log_drop_or_degrade`, `signal_producer_fallback`. Video tile + thumbnail strip when vision enabled. |
+| **Right** — tuning dashboard | 12 Tier-B knobs (3 policy / 5 detectors / 4 orchestrator). Slider patch → `POST /config/patch` → `operator_action` + `config_change` events. See §2.8. |
 
-1. **Ingested input events (left panel)** — `payload_kind ∈ {raw_audio, raw_video}`. So: `raw_audio_chunk` rows with `seq_no`, `payload_hash`, and `caused_by[]`. New rows arrive ~10×/second. Once Phase 2 wiring lands, `raw_video_frame` rows appear here too.
-2. **TurnSignals / SpeakDecisions / causal chain (right panel)** — everything else: `vad_frame`, `vad_turn_signal` (with `p_done`, `p_continue`, `confidence`), `smart_turn_signal`, `backchannel_classification`, `asr_transcript`, `policy_decision` (with **inlined** `action_type` + `primary_reason_code` per PR #133), foreground proposals, memory events, `log_drop_or_degrade`.
+**Causal trace.** Each `policy_decision` row is clickable: opens the DecisionTrace blob with `PolicyInputs` snapshot, proposal candidates, gate evaluations. The DAG must close — if orphan count climbs above 0, it's an invariant #1 violation worth reporting.
 
-**Panel routing.** The split is by `payload_kind` (PR #131). If you're watching for a `SpeakDecision` or `vad_turn_signal`, look right. If you're watching mic capture, look left.
+### 2.4 Scripted scenarios
 
-**Causal graph trace.** Each decision row is clickable and opens its decision_trace blob. The DAG must close — orphan count stays at zero. If it climbs, that's an invariant #1 violation worth reporting.
+Each scenario is meant to take 1–3 minutes. Watch the event panel and decision rows.
 
-### 2.5 Scripted scenarios to try
+**A. Silence.** Don't talk for 30 seconds. Expected: many `raw_audio_chunk`; few `vad_frame`; no `vad_turn_signal` with `p_done≥0.5`; `policy_decision` rows show `action_type=silence` with `primary_reason_code=NOT_ADDRESSED_TO_AGENT` (or no decisions at all). Orphan count stays 0.
 
-These are the manual flows worth running. Each is meant to take 1–3 minutes; do not over-engineer. The **⚠️ Finding-6 affected** marker means the upstream signals are observable today but the final `full_response` action will never fire until Finding 6 is diagnosed.
+**B. Address the agent (wake-word path).** Say "Claude, what's the weather like?" Expected: `vad_turn_signal` with rising `p_done` → `asr_transcript_emitted` with `user_transcript` populated → `addressing_classified` event with `user_addressed_agent=True` (wake-word tier) → `policy_decision` with `action_type=full_response` and `primary_reason_code=EOU_CONFIRMED` → `foreground_proposal` → `tts_audio_emitted` → Kokoro audio plays in the browser.
 
-**A. Silence.** Don't talk for 30 seconds. Expected (no change pre/post Finding 6): many `raw_audio_chunk` events; a few `vad_frame`; **no** `vad_turn_signal`-with-`p_done≥0.5`; `policy_decision` rows show `action_type=silence` with `primary_reason_code=NOT_ADDRESSED_TO_AGENT`. The graph closes; orphan count stays at zero.
+**C. Address the agent (MiniCPM tier).** Say "hey, can you summarize what I just read?" (no wake-word). Expected: same as B but `addressing_classified` cites the MiniCPM-derived primary path. If MiniCPM is unavailable, `signal_producer_fallback` fires and the wake-word/safety-net path takes over.
 
-**B. Address the agent.** Say "hey companion, what's the weather like?" Expected (pre-Finding-6): a `SpeakDecision` row with `action_type=full_response` and `primary_reason_code=EOU_CONFIRMED`. Actual today: `vad_turn_signal` with rising `p_done` fires correctly; Smart Turn fires; `asr_transcript` populates `user_transcript`; but the `policy_decision` row shows `action_type=silence / NOT_ADDRESSED_TO_AGENT`. ⚠️ **Finding-6 affected.** Verify the upstream signals fire; mark the gap.
+**D. Talk past the agent.** Say "ugh, this code is broken" (not addressed). Expected: `addressing_classified` returns `user_addressed_agent=False` → `policy_decision` shows `action_type=silence` with `NOT_ADDRESSED_TO_AGENT`.
 
-**C. Talk past the agent (not addressed).** Say "ugh, this code is broken" — addressed to yourself, not the agent. Expected: `action_type=silence / NOT_ADDRESSED_TO_AGENT`. ⚠️ **Finding-6 affected** (correct outcome reached, but vacuously — every utterance currently produces this).
+**E. Thinking pause.** Say "I was thinking... [1.5 s silence] ...maybe we should." Expected: SmartTurn v3 observably suppresses mid-pause EOU — watch for a `smart_turn_signal` with `p_done < 0.5` during the pause. Final EOU on the continuation fires `full_response` if addressed.
 
-**D. Thinking pause.** Say "I was thinking... [1.5s silence] ...maybe we should." Expected: Smart Turn v3 IS real now (PR #126) and observably suppresses the mid-pause EOU — watch for a `smart_turn_signal` event with `p_done < 0.5` on the pause. ⚠️ **Finding-6 affected**: the `full_response` on the continuation won't fire. Smart Turn behavior is observable; `full_response` gating is not verifiable end-to-end.
+**F. Backchannel.** Say "mm-hmm" or "yeah". Expected: `backchannel_classification` with a non-zero `p_backchannel`. The `emit_threshold=0.3` gate keeps noise out. Policy treats it as non-interrupting acknowledgement.
 
-**E. Backchannel.** Say "mm-hmm" or "yeah". Expected: a `backchannel_classification` event with a non-zero `p_backchannel` value. The `emit_threshold=0.3` gate (PR #134) keeps noise-floor frames out, so any event you see is a real classification, not chatter. ⚠️ **Finding-6 affected** for the policy action — you will not see the agent treat it as a non-interrupting acknowledgement, because no `full_response` is in flight to acknowledge.
+**G. Privacy mode `guest_present`.** Toggle the privacy mode in the dashboard. Say "my favorite color is teal." Expected: a `memory_commit_skipped` row with `CommitResult.SKIPPED_PRIVACY` cited. SleepTimeAgent batches but doesn't commit.
 
-**F. Privacy mode.** Set the privacy-mode toggle to `guest_present`. Say something memorable ("my favorite color is teal"). Expected: a `memory_commit_skipped` row, with the gate cited in the event payload. ⚠️ Caveat: the persistent memory store is **not yet wired into the live pipeline** — gates fire and emit the skip event, but there is no live writer to skip past. This is a separate follow-up.
+**H. Forget command.** Say "Claude, forget that." Expected: `explicit_forget` event fires. Tombstone persistence is wired via SleepTimeAgent path.
 
-**G. Forget command.** Say "forget that". Expected: ASR now populates `_detect_explicit_remember`/`_detect_explicit_forget` (PR #136), so an `explicit_forget` event should fire if the parser matches. ⚠️ Partial: as with F, the memory store wiring is still pending, so no tombstone is persisted. The detection event is the observable signal.
+**I. "Why did you say that?"** Click any `policy_decision` row. Expected: the row opens its DecisionTrace blob — `PolicyInputs` snapshot, proposal candidates, gate evaluations, `retrieval_used` field (populated from real ASR transcript per v0.1j Task 11).
 
-**H. "Why did you say that?"** After any `policy_decision` row (today: only `silence` or `backchannel`), click it. Expected: the row opens its decision_trace blob and shows the `PolicyInputs` snapshot, the proposal candidates, and the gate evaluations. Decision traces ARE persisted and clickable. ⚠️ Caveat: retrieval is wired but the query string is empty in the live path — the "why did you say that?" utterance isn't yet tied to a retrieval query, so `retrieval_used` will be empty. The wiring is what matters; the query routing is a follow-up.
+**J. Tool call.** Ask something that routes to a tool (the FastToolDispatcher fakes the tool surface in this rig; see `companion_harness/fast_tool_dispatcher.py` for the local-tool registry). Expected: `tool_call_requested → tool_call_dispatched → tool_progress_event* → tool_call_completed` chain; if you interrupt mid-tool by speaking, `tool_call_cancelled` fires within 300 ms.
 
-### 2.6 Things to record
+### 2.5 Things to record
 
-If you find a session interesting (good or bad), record three things:
-- The session ID (printed in the startup banner and visible in the console).
-- A quick description of what you did and what surprised you.
-- The path to the blob store on b200 (e.g., `/tmp/manual_test_blobs/<session_id>/`). For the 2026-05-15 session, decision traces live at `/tmp/manual_test_blobs/decision_traces/`. Don't `rm` them; we may want to replay.
+Per session, save:
+- **Session ID** (printed in the startup banner; visible in the console).
+- **Blob path** on disk (e.g., `/tmp/manual_test_blobs/<session_id>/`). Don't `rm` if you may want to replay.
+- **One-line description** of what you tried and what surprised you.
 
-Open an issue per surprising finding. Tag it `manual-test-finding`. Don't bundle multiple findings into one issue.
+Open one issue per surprising finding. Tag `manual-test-finding`. Don't bundle multiple findings.
+
+### 2.6 Memory hygiene
+
+Each session creates per-session memory dirs under `<blob_dir>/<session_id>/memory/{session,core,episodic,semantic}/`. To start completely clean:
+
+```bash
+rm -rf /tmp/manual_test_blobs/*
+```
+
+Operator-managed; the server does not auto-clean between sessions.
 
 ### 2.7 Tearing down
 
-Phase 1 server: it normally stays running. If you do need to stop it, `kill <PID>` on b200 (current PID is `1851682`). `ssh -L` tunnel: `Ctrl-C` in the local terminal.
-
-The blob store does not auto-clean. Delete `/tmp/manual_test_blobs/<session_id>/` on b200 once you no longer need replay; it is ephemeral.
-
-**Memory slate hygiene.** Each session now creates per-session memory directories under `<blob_dir>/<session_id>/memory/{session,core,episodic,semantic}/`. If you want a completely clean memory slate before a new session (no residual store directories from prior runs), run:
-
 ```bash
-rm -rf /tmp/manual_test_blobs/*   # before each session
+ss -ltnp | grep :8800     # find the PID
+kill <PID>                # graceful
 ```
 
-This is operator-managed; the server does not auto-clean between sessions.
+If unresponsive: `kill -9 <PID>`.
 
----
+### 2.8 Tuning dashboard (right column)
 
-### 2.8 Threshold-tuning dashboard
+Live Tier-B threshold tuning, served at the same `http://localhost:8800/`. Every change emits an auditable `config_change` + `operator_action` event pair — the dashboard is a first-class audit surface.
 
-The dashboard is a collapsible tuning panel served at `http://localhost:8800/` alongside the main event console (PR #153). It lets you adjust the 12 Tier-B runtime thresholds without restarting the server. Every change is recorded as an auditable `config_change` event — the dashboard is a first-class audit surface, not a side-channel.
+#### 2.8.1 Sections
 
-### 2.8.1 Opening the panel
+The 12 keys group as:
 
-Navigate to `http://localhost:8800/` (same URL as the main console; port 8800 is canonical — do not use 8000). The tuning panel appears in the right column by default. To collapse it, click `[≪ hide]`; the panel shrinks to a `[⚙ Tuning]` header button. Click it again to expand. On screens ≤ 1024 px the panel slides over the right column; press `Esc` to close.
-
-On load the panel issues `GET /config` to populate each slider with the server's current live value. If the panel shows dashes instead of numbers, the server isn't responding — check the `ssh -L` tunnel and the server process (`ss -ltnp | grep :8800` on b200).
-
-### 2.8.2 The three sections
-
-The panel has three sections. The 3-section grouping (Policy / Detectors / Orchestrator) is defined in the dashboard UI source at `manual_test_console/index.html` (search for `const TUNING_SECTIONS`); the canonical key list + ranges live in `manual_test_console/config_schema.py::ALLOWLIST` (12 knobs total; the set is spec-locked per Anchor 1 — see `docs/roadmap-v0.1i-draft.md`):
-
-| Section | Count | Keys | Default expand |
-|---|---|---|---|
-| **Policy** | 3 | `policy.backchannel_threshold`, `policy.audio_visual_conflict_threshold`, `policy.grounding_confidence_threshold` | expanded |
-| **Detectors** | 5 | `detectors.vad.speech_threshold`, `detectors.vad.silence_onset_ms`, `detectors.smart_turn.silence_onset_ms`, `detectors.smart_turn.silence_rms_threshold`, `detectors.backchannel.emit_threshold` | expanded |
-| **Orchestrator** | 4 | `orchestrator.proposal_batch_window_ms`, `orchestrator.hard_cancel_after_ms`, `orchestrator.p_speech_thresh`, `orchestrator.p_backchannel_thresh` | collapsed |
-
-Each slider row shows: label, current numeric value, and `[min … max]` range (from `GET /config`).
-
-### 2.8.3 Drag-to-tune semantics
-
-Drag the slider thumb to a new position. The readout updates locally as you drag; the `POST /config/patch` fires on mouse/touch release. Visual states during a drag-and-release cycle:
-
-- **At default (gray):** value matches schema default.
-- **Modified (blue + bold + `(modified)` badge + active `[↺]`):** value differs from default; not yet submitted.
-- **Pending (`⏳` + knob pulse):** `POST /config/patch` in flight.
-- **Accepted:** server returned 200; row returns to normal color with `(modified)` badge if the new value is still non-default.
-- **Rejected (red row-flash + toast for 3 s + revert):** patch was refused. The slider reverts to the previous value.
-
-Rejection routing (PR #151):
-
-| Rejection reason | HTTP status | Toast message |
+| Section | Keys | Default expand |
 |---|---|---|
-| Key is in Tier-A list (spec-pinned) | 403 | `Tier A — key not tunable` |
-| Key unknown (not in Tier-B allowlist) | 403 | `Unknown key` |
-| Value out of `[min, max]` range | 400 | `Out of range: [min, max]` |
+| **Policy** (3) | `policy.backchannel_threshold`, `policy.audio_visual_conflict_threshold`, `policy.grounding_confidence_threshold` | expanded |
+| **Detectors** (5) | `detectors.vad.speech_threshold`, `detectors.vad.silence_onset_ms`, `detectors.smart_turn.silence_onset_ms`, `detectors.smart_turn.silence_rms_threshold`, `detectors.backchannel.emit_threshold` | expanded |
+| **Orchestrator** (4) | `orchestrator.proposal_batch_window_ms`, `orchestrator.hard_cancel_after_ms`, `orchestrator.p_speech_thresh`, `orchestrator.p_backchannel_thresh` | collapsed |
 
-Important: rejected patches emit **neither** `operator_action` nor `config_change` — all three rejection branches (Tier-A 403 / unknown-key 403 / out-of-range 400) return before the event-emission call in `manual_test_console/server.py`. Only the HTTP status code signals rejection; the event log is silent. To know whether a patch was rejected, check the HTTP response — not the audit tail.
+Canonical key list + ranges: `manual_test_console/config_schema.py::ALLOWLIST`.
 
-### 2.8.4 Audit tail click-to-jump
+#### 2.8.2 Drag semantics
 
-The panel footer shows the last 5 `config_change` events as a scrollable audit tail (most-recent first). Each entry is clickable: clicking it jumps to the corresponding event row in the right-column event log and highlights it.
+Drag thumb → readout updates locally → `POST /config/patch` fires on release. Visual states:
+- **At default (gray)** — value matches schema default.
+- **Modified (blue + bold + `(modified)` badge + active `[↺]`)** — diverges from default; not yet submitted.
+- **Pending (`⏳` + pulsing knob)** — patch in flight.
+- **Accepted** — server returned 200.
+- **Rejected (red row-flash + toast 3 s + revert)** — patch refused.
 
-Event emission contract (one per accepted patch, per PR #151 numeric gate):
+Rejection routing:
 
-- **Every accepted `POST /config/patch` emits exactly one `operator_action` followed by exactly one `config_change`.** The `config_change` payload carries `{key, previous_value, new_value, applied_at_ms, operator_action_event_id}`. The `operator_action` carries `{endpoint, client_ip, request_id, action_type, rejection_reason?}`. Both events use `retention_policy_id="config_change_30d"`.
-- The `config_change` event's `caused_by[]` includes the `operator_action` event's `event_id`, so the DAG closes (invariant #1).
+| Reason | HTTP status | Toast |
+|---|---|---|
+| Tier-A key (spec-pinned) | 403 | `Tier A — key not tunable` |
+| Unknown key | 403 | `Unknown key` |
+| Out of `[min, max]` | 400 | `Out of range: [min, max]` |
 
-### 2.8.5 Reset semantics
+**Rejected patches emit no events.** Only the HTTP status signals rejection.
 
-Three granularities of reset:
+#### 2.8.3 Reset
 
-- **Per-slider `[↺]`** — reverts one key to its schema default. Visible only when the slider is in the modified state.
-- **Per-section `[reset]`** — reverts all keys in the section.
-- **Global `[reset all]`** — issues `POST /config/reset` and reverts every Tier-B key.
+- **Per-slider `[↺]`** — revert one key to its default.
+- **Per-section `[reset]`** — revert all keys in a section.
+- **Global `[reset all]`** — `POST /config/reset` reverts every Tier-B key.
 
-Asymmetric event emission on reset (PR #151 contract):
+Already-default keys still emit one `operator_action` on reset (request is recorded) but no `config_change` (nothing changed).
 
-- A key that is already at its default when reset fires still emits one `operator_action` (the request is recorded) but **no** `config_change` (nothing changed).
-- A key that was modified emits `operator_action` + `config_change` exactly once each.
-- A `POST /config/reset` that reverts N modified keys emits N `config_change` events plus a single summary `operator_action`.
+#### 2.8.4 Propagation timing
 
-### 2.8.6 When a key change does not take effect immediately
-
-The three sections have different propagation timing (PR #152 adapter wiring):
-
-- **Policy thresholds** (`policy.*`, 3 keys): apply within the **current EOU decision** — the orchestrator reads the ConfigStore with a no-await snapshot at EOU time, so the new value is live before the `SpeakDecision` is emitted.
-- **Detector thresholds** (`detectors.*`, 5 keys): apply starting on the **next frame after the current EOU** — the detectors snapshot the store once per frame, not mid-frame.
-- **Orchestrator timing** (`orchestrator.*`, 4 keys): apply at the **next batch boundary** — the orchestrator reads these at the start of each proposal-batch window.
-
-For manual testing this is rarely noticeable, but if you change a threshold and the next event doesn't reflect the new value, wait one more turn and check again.
-
-### 2.8.7 Finding the audit trail after a session
-
-Decision trace blobs at `/tmp/manual_test_blobs/<session_id>/` include `config_change` events in the same event log as `policy_decision` events. When a `config_change` is in scope at decision time, its `event_id` appears in the `caused_by[]` of subsequent `policy_decision` events — the causal chain is closed. To walk the chain:
-
-```sh
-# On b200, list the event log for a session:
-ls /tmp/manual_test_blobs/<session_id>/
-
-# Grep for config_change entries:
-grep '"event_type": "config_change"' /tmp/manual_test_blobs/<session_id>/events.jsonl
-```
-
-The `operator_action_event_id` field in each `config_change` payload points back to the HTTP request that triggered it.
+- **Policy thresholds** apply within the **current EOU decision** (no-await snapshot at EOU time).
+- **Detector thresholds** apply on the **next frame** (snapshot once per frame).
+- **Orchestrator timing** applies at the **next batch boundary** (read at start of proposal-batch window).
 
 ---
 
 ## 3. Phase 2 — Audio + video walkthrough
 
-> Status (2026-05-15): vision capture works (PR #123 — `raw_video_frame` events emit). VisionSidecar wiring into the foreground model is **landed** (v0.1h Task 2). Start the server with `--enable-vision` (default OFF) to activate per-session sidecar pairing. Scene-change scoring and deictic grounding return stub values (0.0 / False) until v0.1j real models land.
+### 3.1 What changes
 
-### 3.1 What changes from Phase 1
+- Capture page requests both `audio: true` and `video: true`.
+- New video panel renders thumbnail strip — last N frames with `event_id` + `payload_hash`.
+- `raw_video_frame` events appear in left panel.
+- **`--enable-vision` OFF** (default): frames captured + `raw_video_frame` events emit, but no `vision_frame` follow-ups; foreground receives `video=None`.
+- **`--enable-vision` ON**: right panel gains `vision_frame` events (one per frame, `caused_by=[raw_video_frame.event_id]`). MiniCPM-o vision tower runs once per buffered frame (consume-once). Scene/AV-conflict/deictic/grounding still stub-return 0.0/False until #166/#168/#169/#172 PRs merge.
 
-- The capture page requests both `audio: true` and `video: true`.
-- A new video panel renders a thumbnail strip — the last N frames sent to the server, with their `event_id` and `payload_hash`.
-- `raw_video_frame` events appear in the left panel.
-- When `--enable-vision` is **OFF** (default): frames are captured and `raw_video_frame` events emitted, but no `vision_frame` events follow — the foreground model receives `video=None` on every audio chunk.
-- When `--enable-vision` is **ON**: the right panel gains `vision_frame` events (one per ingested frame, `caused_by=[raw_video_frame.event_id]`). The foreground model receives `(audio, video_bytes)` pairs — the most-recent frame fires once then is cleared (consume-once semantics). Scene-change scoring (`scene_change_score`) and deictic grounding (`deictic_reference`) return stub values (0.0 / False) until v0.1j.
-- The video frame rate is intentionally low (~1 fps initially) — this is a manual-test rig, not a production camera path. Bandwidth is the constraint when streaming through `ssh -L`.
+### 3.2 Start command (vision-on)
 
-### 3.2 Start command
-
-Same as Phase 1 with `--enable-vision` added:
-
-```sh
-HF_HUB_CACHE=/raid/huggingface/hub /raid/yid042/venvs/companion-harness/bin/python3 \
+```bash
+HF_HUB_CACHE=/raid/huggingface/hub \
+/raid/yid042/venvs/companion-harness/bin/python3 \
     -m manual_test_console.server --host 0.0.0.0 --port 8800 \
     --blob-dir /tmp/manual_test_blobs --enable-vision
 ```
 
-The startup banner reports `Vision: ENABLED (init_vision=True, +~18 GB VRAM)`. The `/healthz` endpoint reports `vision_enabled`, `frames_buffered` (count across active sessions), and `last_frame_event_id`. Omit `--enable-vision` to stay on the audio-only path (startup banner shows `Vision: disabled`).
+Banner reports `Vision: ENABLED (init_vision=True, +~18 GB VRAM)`. `/healthz` reports `vision_enabled`, `last_frame_event_id`, `frames_buffered`.
 
-### 3.3 New scenarios to try
+### 3.3 Scenarios
 
-Scenarios I–L require `--enable-vision`. Without it you will see `raw_video_frame` events in the left panel but no `vision_frame` events and no vision-derived signals on the right. With `--enable-vision`, the expected behavior below is reachable (scoring/grounding stubs return 0.0/False until v0.1j).
+**K. Deictic without visual context.** Speak only (no camera grant). Say "what is this?" Expected: Phase 1 flow; `deictic_reference=False`.
 
-**I. Deictic reference with no visual context.** Speak only — no camera grant. Say "what is this?" Expected: the same Phase-1 behavior; no visual signal flows; `deictic_reference=False` or a fallback. ⚠️ **Finding-6 affected**: even with no visual ambiguity, `full_response` will not fire today.
+**L. Deictic with visual context.** Grant camera, hold up an object, say "what is this?" Expected: `vision_frame` row arrives; foreground proposal may carry deictic reference (when #169 lands real impl).
 
-**J. Deictic reference with visual context.** Grant the camera, hold up an object, say "what is this?" Expected (post-VisionSidecar-merge): a `vision_frame` row arrives; the foreground model's proposals may carry `deictic_reference=True`; the trace view shows the `caused_by[]` chain extending into a `vision_frame` predecessor. ⚠️ **Finding-6 affected** for the final policy action.
+**M. Audio-visual conflict.** Show camera one thing while saying another ("look at this red apple" while holding a green one). Expected (post-#168 merge): `audio_visual_conflict_score` rises; if it crosses `0.7`, SpeakDecision flips to `action_type=clarification` with `primary_reason_code=AUDIO_VISUAL_CONFLICT`. Today: stub returns 0.0.
 
-**K. Audio-visual conflict.** Show the camera one thing while saying another ("look at this red apple" while holding a green one). Expected (post-VisionSidecar-merge): `audio_visual_conflict_score` rises; if it crosses `0.7`, the SpeakDecision should be `action_type=clarification` with `primary_reason_code=AUDIO_VISUAL_CONFLICT`. ⚠️ **Finding-6 affected**: today the policy never approves a non-silent action, so clarification won't fire either.
-
-**L. Privacy gate `no_camera_memory`.** Toggle privacy mode to `no_camera_memory`. Hold up something memorable. Expected (post-VisionSidecar-merge): the visual content does **not** enter memory; you should see either a `memory_commit_skipped` row or a complete absence of `memory_write_candidate` for visual content, per the privacy_gates contract in `companion_harness/privacy_gates.py`. ⚠️ Same caveat as scenario F — persistent memory store wiring is pending.
+**N. `no_camera_memory` privacy gate.** Toggle privacy to `no_camera_memory`. Hold up something memorable. Expected: visual content does not enter memory; `memory_commit_skipped` with `CommitResult.SKIPPED_CAMERA` fires OR no `memory_write_candidate` for visual content.
 
 ### 3.4 Known limitations
 
-- Frame rate is artificially low. Realistic vision performance is gated on the live-loop milestone, not this rig.
-- No video output panel (e.g., a "this is what the agent thinks it sees" overlay). That's a v-future enhancement.
-- VisionSidecar runs on b200 — the local browser only captures and sends. Browser CPU stays low.
-- `--enable-vision` loads MiniCPM-o with `init_vision=True` (+~18 GB VRAM on b200). Default OFF preserves the audio-only path unchanged.
+- Frame rate intentionally low (~1 fps) — manual-test rig, not a production camera path.
+- No "what the agent thinks it sees" overlay.
+- `--enable-vision` is +18 GB VRAM on top of the audio-only baseline (~28 GB). Total ~46 GB on b200.
 
 ---
 
@@ -295,92 +273,93 @@ Scenarios I–L require `--enable-vision`. Without it you will see `raw_video_fr
 
 | Symptom | Likely cause | Action |
 |---|---|---|
-| **Every utterance comes back as `silence`** | **Known: Finding 6.** Open architectural issue. 530/588 silence rows in the 2026-05-15 session; `user_addressed_agent` never flips True. Path of investigation: `proposals_to_signals` in `companion_harness/realtime_orchestrator.py` and the proposal-text inspection in `companion_harness/foreground_model_minicpm.py`. ASR is wired (PR #136) but the proposal path may not be consuming it. | Don't file a new bug — track Finding 6 instead. Save the session blob path so it can be cross-referenced. |
-| `backchannel_classification` rows with `p_backchannel=0` | Shouldn't happen: emit threshold (0.3) suppresses noise-floor frames (PR #134). | If you do see them, the threshold is misconfigured. Check the server config and file a bug. |
-| Browser plays nothing even when a `full_response` fires | Check `/healthz` for `audio_out_chunks_sent`. If 0, policy never approved speech (likely Finding 6). If > 0 but silent: check the browser console for `AudioContext` permission/decode errors; some browsers block autoplay until user interaction. | Reload the page, click somewhere on it first, retry. |
-| Page loads but no events appear | WebSocket didn't connect; check browser devtools Network → WS | Re-grant mic permission, check the `ssh -L` tunnel is still up |
-| `vad_turn_signal` never fires | Mic gain too low; or silence sustained beyond Silero's window | Verify mic input in browser; check `companion_harness/turn_detector_vad.py` config; speak louder/closer |
-| Lots of `log_drop_or_degrade` events | EventLogger backpressure — drain not keeping up. **Note:** the drain-storm bug from earlier sessions was fixed in PR #134; if you see this now, it's a NEW bug. | Save the session and file. Don't dismiss as the old issue. |
-| Orphan count > 0 in trace view | Invariant #1 violation — an event has no `caused_by[]` predecessor in the log | Save the session, file as a bug with the orphan event_ids |
-| Server banner shows a "stub" label for any model | The deployed commit predates the relevant real-model PR (#126/#127/#136 etc.) | `git pull` on b200 and restart per §6 |
-| Server prints "EventLogger drain: blocked" | Drain task didn't start | Restart server; if it persists, the bug is in `event_logger.py` startup |
-| Browser blocks mic for `http://localhost` | Some browsers require HTTPS for `getUserMedia` | Use Chrome; or set `chrome://flags/#unsafely-treat-insecure-origin-as-secure` for `http://localhost:8800` |
-| `ssh -L` connects but page won't load | Port forward established but server isn't bound to `0.0.0.0` | Verify the `--host 0.0.0.0` flag; `--host localhost` only binds to b200's loopback |
-| Slider rejects with a red flash / toast says `Tier A` | You hit the Tier-A allowlist guard (PR #151). Tier-A keys are spec-pinned. | See `docs/design-config-and-dashboard.md` §1 Tier A. Making a key tunable means moving it to the Tier-B allowlist, which requires an event-schema migration and a new `ALLOWLIST` entry. |
+| Every utterance comes back as `silence / NOT_ADDRESSED_TO_AGENT` | Wake-word path needs literal "Claude" or "Claudia". MiniCPM addressing path may be returning No. | Try wake-word scenario (B). Check `addressing_classified` event payload + `signal_producer_fallback` for the reason. |
+| `backchannel_classification` rows with `p_backchannel=0` | Shouldn't happen — `emit_threshold=0.3` should suppress noise. | If you see them, check `detectors.backchannel.emit_threshold` in the dashboard; file a bug if at default. |
+| Browser plays nothing on `full_response` | Check `/healthz` for `audio_out_chunks_sent`. If 0, no chunks left the harness. If >0, browser autoplay block likely. | Reload, click somewhere on the page first, retry. |
+| Page loads but no events appear | WebSocket didn't connect; check browser devtools Network → WS | Re-grant mic permission; check SSH tunnel if used. |
+| `vad_turn_signal` never fires | Mic gain too low; or silence too long | Verify mic input in browser; speak louder/closer; check `detectors.vad.speech_threshold`. |
+| Lots of `log_drop_or_degrade` events | EventLogger backpressure | Save session; file a bug. The drain-storm bug from earlier sessions was fixed in PR #134. |
+| Orphan count > 0 in trace view | Invariant #1 violation | Save session; file as bug with the orphan event_ids. |
+| Server banner shows a "stub" label for any model | Deployed commit predates the relevant real-model PR | `git pull` and restart. |
+| Slider rejects with red flash / `Tier A` toast | Key is Tier-A (spec-pinned, not tunable at runtime) | Make it tunable would require schema migration + new ALLOWLIST entry. See `design-config-and-dashboard.md` §1. |
+| `vision_frame` events absent with `--enable-vision` ON | Camera not granted, or `_pending_frame` cleared by privacy gate transition | Check browser camera permission; check `/healthz` for `frames_buffered`. |
 
-If you see something not listed: save the session ID + blob store path + browser console log, and file an issue with all three.
+If you see something not listed: save session ID + blob path + browser console log; file an issue with all three.
 
 ---
 
 ## 5. What this rig is and isn't
 
-**It is:** a low-fidelity, low-stakes observability surface so the lead can *experience* the harness running against live input and *see the events* the spec says should appear. It is the cheapest possible substitute for a "watch the flight recorder fly" view.
+**It is:** a low-fidelity, low-stakes observability surface so the lead can experience the harness running against live input and see the events the spec says should appear.
 
 **It is not:**
-- A demo. The console is technical; it is not designed for anyone but the lead.
-- A latency benchmark. Network jitter on `ssh -L` will dominate any timing. Latency is measured against fixtures in the replay tests, not here.
-- A test substitute. Contract tests still gate. A passing manual-test session is informational, not evidence of correctness. A failing one is evidence of a bug worth investigating.
-- A spec milestone. Like `docs/manual-test-module-plan-draft.md` and `docs/visionclaw-adaptation-plan-draft.md`, this rig is parallel to the spec milestones — it doesn't move any gate. Invariants still bind.
+- A demo (technical UI, not designed for non-leads).
+- A latency benchmark (network jitter dominates; latency measured in replay tests).
+- A test substitute (contract tests still gate; a passing session is informational, a failing one is evidence of a bug).
+- A spec milestone (parallel to spec milestones; doesn't move any gate; invariants still bind).
 
 ---
 
 ## 6. Appendix — exact commands
 
-```sh
-# b200 — server is already running as of 2026-05-15.
-# Banner should show:
-#   VAD: Silero (ONNX) ... SmartTurn: Pipecat Smart Turn v3 (ONNX, CPU)
-#   Backchannel: whisper-tiny + lexicon (emit_threshold=0.3)
-#   TTS: Kokoro-82M-ONNX ... ASR: whisper-tiny.en (faster-whisper)
-#   Foreground: MiniCPM-o 4.5 (b200 GPU)
-# Confirm running:
-ss -ltnp | grep :8800   # current PID is 1851682
-
-# If you need to restart (after a PR merge):
-kill <PID>   # e.g. kill 1851682
-HF_HUB_CACHE=/raid/huggingface/hub /raid/yid042/venvs/companion-harness/bin/python3 \
+```bash
+# Start the server (audio-only, default)
+/raid/yid042/venvs/companion-harness/bin/python3 \
     -m manual_test_console.server --host 0.0.0.0 --port 8800 \
     --blob-dir /tmp/manual_test_blobs
 
-# With VisionSidecar (v0.1h Task 2 — landed), enable via:
-HF_HUB_CACHE=/raid/huggingface/hub /raid/yid042/venvs/companion-harness/bin/python3 \
+# Start with vision enabled (+18 GB VRAM)
+HF_HUB_CACHE=/raid/huggingface/hub \
+/raid/yid042/venvs/companion-harness/bin/python3 \
     -m manual_test_console.server --host 0.0.0.0 --port 8800 \
     --blob-dir /tmp/manual_test_blobs --enable-vision
 
-# local — port-forward
+# Start with native MiniCPM TTS instead of Kokoro
+/raid/yid042/venvs/companion-harness/bin/python3 \
+    -m manual_test_console.server --host 0.0.0.0 --port 8800 \
+    --blob-dir /tmp/manual_test_blobs --tts-adapter native_minicpm
+
+# CPU-only stubs (no MiniCPM, no Silero — fastest startup)
+/raid/yid042/venvs/companion-harness/bin/python3 \
+    -m manual_test_console.server --host 0.0.0.0 --port 8800 \
+    --blob-dir /tmp/manual_test_blobs --use-stubs
+
+# Check it's running
+ss -ltnp | grep :8800        # Linux
+lsof -i :8800                 # macOS / portable
+
+# Local SSH port-forward (if laptop)
 ssh -L 8800:localhost:8800 b200
 
-# local — open in browser
+# Open in browser
 xdg-open http://localhost:8800/   # Linux
 open http://localhost:8800/        # macOS
 
-# b200 — smoke test (no browser; scripted WebSocket client)
-/raid/yid042/venvs/companion-harness/bin/python3 \
-    -m manual_test_console.smoke_client --chunks 100
+# Stop the server
+kill <PID>      # see ss/lsof above
+```
+
+Eval CLI (separate from console):
+
+```bash
+pip install -e .[eval]      # optional extra
+python -m companion_harness.evals run \
+    --adapter harness_native \
+    --output reports/
 ```
 
 ---
 
 ## 7. Where this fits
 
-- `docs/manual-test-module-plan-draft.md` — the build plan this handbook operationalizes.
-- `docs/visionclaw-adaptation-plan-draft.md` — the wire contract (§4) the ingest endpoint follows.
-- `docs/milestone-live-loop-integration-draft.md` — the milestone that wired voice-back end-to-end. Voice-back is now present in the harness; the speak-decision gating (Finding 6) is the remaining open issue.
-- `docs/research-asr-models-2026-05-15.md` — the ASR-model selection rationale behind PR #136.
-- `docs/plan-vision-sidecar-wiring.md` — the converged VisionSidecar plan; implemented by v0.1h Task 2.
-- `docs/architecture-v0.1.md` — the frozen spec. Everything in this handbook is consistent with it; nothing in this handbook overrides it.
-- `docs/remote-dev.md` — the local↔b200 workflow this handbook depends on.
-- `docs/design-config-and-dashboard.md` — the design doc behind the threshold-tuning dashboard (PR #143 is open; once merged, the doc will live at that path).
+- [`architecture-v0.1.md`](architecture-v0.1.md) — frozen spec.
+- [`model-stack.md`](model-stack.md) — every model + Protocol seam in one table; audio flow figure.
+- [`project-progress-2026-05-15.md`](project-progress-2026-05-15.md) — current state of all milestones + in-flight work; intended for session handoff.
+- [`eval-quickstart.md`](eval-quickstart.md) — eval CLI + output tree.
+- [`eval-subsystem-spec.md`](eval-subsystem-spec.md) — eval design (Phases A/A.5/B1/B2/C/D + reporters).
+- [`remote-dev.md`](remote-dev.md) — local↔b200 workflow.
+- [`design-config-and-dashboard.md`](design-config-and-dashboard.md) — Tier A/B/C config + dashboard design.
+- [`plan-vision-sidecar-wiring.md`](plan-vision-sidecar-wiring.md) — vision sidecar plan (v0.1h Task 2 implemented).
+- [`plan-memory-wiring-followup.md`](plan-memory-wiring-followup.md) — 4-store memory wiring.
 
-**Relevant PRs that turned components real:**
-- PR #123 — vision capture (`raw_video_frame` events emitted).
-- PR #125 — orchestrator wired into the manual-test server; VAD signals + SpeakDecisions reach the right panel.
-- PR #126 — real Silero VAD (ONNX), Pipecat Smart Turn v3 (ONNX, CPU), whisper-tiny + lexicon backchannel.
-- PR #127 — Kokoro-82M-ONNX TTS adapter wired.
-- PR #131 — panel-routing documentation in §2.4.
-- PR #132 — `WebSocketAudioSink → /ws/audio_out → browser AudioContext` audio-out path.
-- PR #133 — inlined `action_type` + `primary_reason_code` on `policy_decision` event rows.
-- PR #134 — backchannel `emit_threshold=0.3` gate; fixes drain-storm.
-- PR #135 — closed the live-loop integration between policy → TTS → audio sink.
-- PR #136 — `whisper-tiny.en` ASR via faster-whisper; populates `PolicyInputs.user_transcript` on EOU.
-- v0.1h Task 2 — VisionSidecar per-session wiring + `--enable-vision` flag (landed).
+**Roadmap docs (chronological):** `roadmap-v0.1[a–j]-draft.md` — each milestone's locked anchors + OQ resolutions + tasks.
