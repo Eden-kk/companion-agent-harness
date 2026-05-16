@@ -80,8 +80,13 @@ class AudioOutputController:
     # ------------------------------------------------------------------
 
     def start_generation(self, caused_by: list[str]) -> str:
-        """Signal that TTS generation has started. Returns the generation event_id."""
+        """Signal that TTS generation has started. Returns the generation event_id.
+
+        Emits both ``assistant_generation_start`` (existing, for backward compat)
+        and ``tts_synthesis_started`` (observability anchor for Finding 10 diagnosis).
+        """
         evt = self._emit("assistant_generation_start", caused_by, payload_kind="model_output")
+        self._emit("tts_synthesis_started", [evt.event_id], payload_kind="signal")
         self._playing = True
         self._stop_event.clear()
         return evt.event_id
@@ -94,6 +99,7 @@ class AudioOutputController:
     def _flush(self, caused_by: list[str]) -> None:
         """Log that the audio buffer has been fully flushed (utterance complete)."""
         self._emit("assistant_audio_buffer_flushed", caused_by, payload_kind="model_output")
+        self._emit("tts_synthesis_completed", caused_by, payload_kind="signal")
         self._playing = False
 
     def request_stop(self, caused_by: list[str]) -> str:
@@ -123,6 +129,7 @@ class AudioOutputController:
     def cancel_generation(self, caused_by: list[str]) -> None:
         """Cancel any in-flight generation task and log it."""
         self._emit("assistant_generation_cancel_requested", caused_by, payload_kind="signal")
+        self._emit("tts_synthesis_cancelled", caused_by, payload_kind="signal")
         if self._generation_task is not None and not self._generation_task.done():
             self._generation_task.cancel()
             self._generation_task = None
@@ -135,6 +142,11 @@ class AudioOutputController:
         forwarded to the sink as it arrives without waiting for the full utterance
         to buffer. Emits assistant_audio_stop_completed if stopped mid-stream,
         or assistant_audio_buffer_flushed when the stream runs to completion.
+
+        Emits assistant_audio_buffer_queued per chunk (invariant #1: every action
+        logged). This makes the per-chunk count visible in the event log so the
+        ratio of chunks-attempted vs chunks-sent to the WS sink can be diagnosed
+        without sampling /healthz counters.
         """
         async for chunk in chunks:
             if self._stop_event.is_set():
@@ -145,6 +157,7 @@ class AudioOutputController:
                 )
                 self._playing = False
                 return
+            self.queue_buffer(chunk, caused_by=[generation_event_id])
             await self._sink(chunk)
 
         self._flush([generation_event_id])
