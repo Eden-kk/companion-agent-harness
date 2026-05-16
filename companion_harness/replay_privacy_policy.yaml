@@ -108,3 +108,10 @@ retention_policies:
       text is wrapped in SensitiveField on the event payload for redaction
       routing.
     ttl_days_or_indefinite: 30
+
+  signal_default_30d:
+    description: |
+      Default retention for safe, non-PII signal events (e.g.
+      native_duplex_invocation). 30 days is sufficient for replay and
+      "why did you say that?" lookback; no sensitive content in payload.
+    ttl_days_or_indefinite: 30

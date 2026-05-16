@@ -28,13 +28,19 @@ Usage:
 
 from __future__ import annotations
 
-from typing import AsyncGenerator, AsyncIterator
+import hashlib
+import time
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, AsyncGenerator, AsyncIterator
 
 import numpy as np
 import torch
 from transformers import AutoModel, AutoTokenizer
 
-from companion_harness.schemas import MemoryItem, ThinkerProposal
+from companion_harness.schemas import Event, MemoryItem, ThinkerProposal
+
+if TYPE_CHECKING:
+    from companion_harness.event_logger import EventLogger
 
 __all__ = ["MiniCPMDuplexModel", "MiniCPMStreamingModel"]
 
@@ -105,7 +111,16 @@ class MiniCPMStreamingModel:
     audio-only manual-test pipeline.
     """
 
-    def __init__(self, *, init_vision: bool = False) -> None:
+    SOURCE = "minicpm_streaming"
+    SCHEMA_VERSION = "0.1"
+
+    def __init__(
+        self,
+        *,
+        init_vision: bool = False,
+        logger: "EventLogger | None" = None,
+        session_id: str = "",
+    ) -> None:
         base = AutoModel.from_pretrained(
             _MODEL_ID,
             trust_remote_code=True,
@@ -120,6 +135,12 @@ class MiniCPMStreamingModel:
         # Tracks is_listen from the most recent streaming_generate call.
         # True (listen) is the safe default — EOU has not fired yet.
         self._last_is_listen: bool = True
+        # event_id of the most recent native_duplex_invocation event.
+        # None until the first streaming_generate call completes.
+        self._last_native_duplex_event_id: str | None = None
+        self._logger = logger
+        self._session_id = session_id
+        self._seq = 0
 
     def infer(self, audio_frame: bytes, video_frame: bytes | None = None) -> ThinkerProposal | None:
         """DuplexModel Protocol stub — single-frame path not used for streaming."""
@@ -170,6 +191,10 @@ class MiniCPMStreamingModel:
                     text_repetition_window_size=duplex.text_repetition_window_size,
                 )
                 self._last_is_listen = bool(result.get("is_listen", True))
+                invocation_evt = self._emit_invocation(
+                    self._last_is_listen, caused_by
+                )
+                self._last_native_duplex_event_id = invocation_evt.event_id
                 text = result.get("text", "")
                 if not self._last_is_listen and text:
                     return ThinkerProposal(
@@ -216,3 +241,38 @@ class MiniCPMStreamingModel:
                     yield proposal
 
         return _gen()
+
+    # ------------------------------------------------------------------
+
+    def _next_seq(self) -> int:
+        self._seq += 1
+        return self._seq
+
+    def _emit_invocation(self, is_listen: bool, caused_by: list[str]) -> Event:
+        now_ms = int(time.monotonic() * 1000)
+        seq = self._next_seq()
+        event_id = f"{self._session_id}-nd-{seq}-{now_ms}"
+        payload_hash = hashlib.sha256(
+            f"native_duplex_invocation:{event_id}:{is_listen}:{now_ms}".encode()
+        ).hexdigest()[:16]
+        evt = Event(
+            event_id=event_id,
+            session_id=self._session_id,
+            schema_version=self.SCHEMA_VERSION,
+            seq_no=seq,
+            event_type="native_duplex_invocation",
+            timestamp_mono_ms=now_ms,
+            timestamp_wall=datetime.now(timezone.utc).isoformat(),
+            source=self.SOURCE,
+            caused_by=caused_by,
+            payload_hash=payload_hash,
+            payload_ref=None,
+            payload_kind="signal",
+            subject_class="self",
+            sensitivity="safe",
+            retention_policy_id="signal_default_30d",
+            payload_inline={"is_listen": is_listen, "ts_mono_ms": now_ms},
+        )
+        if self._logger is not None:
+            self._logger.log(evt)
+        return evt

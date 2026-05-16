@@ -12,7 +12,6 @@ EOU signal.  `MiniCPMStreamingModel._last_is_listen` is updated after each
 
 from __future__ import annotations
 
-import uuid
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from companion_harness.schemas import TurnSignal
@@ -66,11 +65,12 @@ class MiniCPMNativeDuplexEouSource:
     def get_eou_signal(self) -> TurnSignal | None:
         if self._model._last_is_listen:
             return None
+        evt_id = self._model._last_native_duplex_event_id or ""
         return TurnSignal(
             detector="native_duplex",
             p_done=1.0,
             p_continue=0.0,
             p_backchannel=0.0,
             confidence=0.95,
-            evidence_event_ids=[str(uuid.uuid4())],
+            evidence_event_ids=[evt_id] if evt_id else [],
         )

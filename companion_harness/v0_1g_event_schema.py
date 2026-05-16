@@ -104,6 +104,23 @@ EVENT_TYPE_SCHEMAS: dict[str, StageSixEventSchema] = {
         ),
     ),
 
+    # v0.1j Task 8 invariant fix: emitted from MiniCPMStreamingModel._process_chunk
+    # each time is_listen is updated.  event_id becomes the evidence_event_ids[0]
+    # for the TurnSignal returned by MiniCPMNativeDuplexEouSource — closes the DAG.
+    "native_duplex_invocation": StageSixEventSchema(
+        payload_kind="signal",
+        subject_class="self",
+        sensitivity="safe",
+        retention_policy_id="signal_default_30d",
+        notes=(
+            "Emitted once per streaming_generate call in MiniCPMStreamingModel. "
+            "Payload carries is_listen (bool) and ts_mono_ms.  Its event_id is "
+            "stored as _last_native_duplex_event_id and surfaced via "
+            "TurnSignal.evidence_event_ids[0] — this closes the causal DAG "
+            "for native_duplex EOU signals (invariants #1 and #5)."
+        ),
+    ),
+
     # Task 9 (Wave 5): receipt for user reduction command compliance
     # (spec line 678-680).  Reuses commit_audit_30d retention.
     "user_reduction_command_applied": StageSixEventSchema(

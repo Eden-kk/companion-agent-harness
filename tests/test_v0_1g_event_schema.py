@@ -51,10 +51,11 @@ EXPECTED_EVENT_TYPES = {
     "attachment_risk_signal",
     "recent_shared_moment_referenced",
     "user_reduction_command_applied",
+    "native_duplex_invocation",
 }
 
 
-def test_event_type_schemas_cover_all_four_new_types() -> None:
+def test_event_type_schemas_cover_all_new_types() -> None:
     assert set(EVENT_TYPE_SCHEMAS.keys()) == EXPECTED_EVENT_TYPES
 
 
