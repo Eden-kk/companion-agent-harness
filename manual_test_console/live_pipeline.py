@@ -38,6 +38,7 @@ from companion_harness.backchannel_classifier import BackchannelClassifier
 from companion_harness.event_logger import EventLogger
 from companion_harness.foreground_model import ForegroundModel
 from companion_harness.input_ingest import IngestSession
+from companion_harness.native_duplex_eou import _NullNativeDuplexEouSource
 from companion_harness.realtime_orchestrator import StreamingRealtimeOrchestrator
 from companion_harness.schemas import MemoryItem, PolicyInputs, ThinkerProposal, TurnSignal
 from companion_harness.turn_detector_smart import SmartTurnDetector
@@ -579,6 +580,10 @@ def build_live_pipeline(
         vision_sidecar=vision_sidecar,
         addressing_classifier=addressing_classifier,
         config_store=config_store,
+        # UNAVAILABLE: #157 — libcudart blocker; null source routes every EOU
+        # decision through SmartTurn/VAD fallback (signal_producer_fallback
+        # event emitted per decision).
+        native_duplex_eou_source=_NullNativeDuplexEouSource(),
         episodic_store=episodic_store,
         semantic_store=semantic_store,
     )
