@@ -144,6 +144,22 @@ class MiniCPMStreamingModel:
         self._session_id = session_id
         self._seq = 0
 
+    def set_session(self, session_id: str, logger: "EventLogger") -> None:
+        """Bind this singleton model to a new ingest session.
+
+        Called by ForegroundModel.__init__ when the injected model is a
+        MiniCPMStreamingModel so that _emit_invocation logs its events under
+        the correct session_id and to the correct per-session EventLogger.
+        Overwrites any previous binding — safe because the server allows only
+        one active streaming session at a time (the model is a singleton).
+        """
+        self._session_id = session_id
+        self._logger = logger
+        # Reset per-session sequence so event IDs do not bleed across sessions.
+        self._seq = 0
+        self._last_native_duplex_event_id = None
+        self._last_is_listen = True
+
     def chat(self, text: str, max_new_tokens: int = 8) -> str:
         """Send a text question and return the model's text response.
 
