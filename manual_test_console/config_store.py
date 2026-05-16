@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from manual_test_console.config_schema import HOT_SEAMS
+
 _log = logging.getLogger(__name__)
 
 
@@ -26,6 +28,15 @@ class ConfigChange:
     key: str
     previous_value: Any
     new_value: Any
+
+
+@dataclass(frozen=True)
+class SeamStateChange:
+    """Returned by ConfigStore.set_seam() for the caller to log as an event."""
+
+    seam: str
+    previous_enabled: bool
+    new_enabled: bool
 
 
 class ConfigStore:
@@ -48,12 +59,21 @@ class ConfigStore:
     logging.
     """
 
-    def __init__(self, allowlist: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        allowlist: dict[str, Any],
+        seam_defaults: dict[str, bool] | None = None,
+    ) -> None:
         # The allowlist entry is treated structurally: every value must expose
         # a ``.default`` attribute (and, in production, also ``.min`` /
         # ``.max`` / ``.value_type`` used by validate_patch elsewhere).
         self._allowlist = allowlist
         self._state: dict[str, Any] = {k: v.default for k, v in allowlist.items()}
+        self._seam_state: dict[str, bool] = {seam: True for seam in HOT_SEAMS}
+        if seam_defaults:
+            for seam, enabled in seam_defaults.items():
+                if seam in self._seam_state:
+                    self._seam_state[seam] = enabled
 
     def get(self, key: str) -> Any:
         """Return the current effective value for ``key``.
@@ -67,6 +87,30 @@ class ConfigStore:
     def current_state(self) -> dict[str, Any]:
         """Snapshot of all key→value pairs. Used by the ``GET /config`` endpoint."""
         return dict(self._state)
+
+    def current_seam_state(self) -> dict[str, bool]:
+        """Snapshot of all seam→enabled pairs."""
+        return dict(self._seam_state)
+
+    def get_seam(self, seam: str) -> bool:
+        """Return the current enabled state for ``seam``.
+
+        Raises ``KeyError`` if the seam is not in ``HOT_SEAMS``.
+        """
+        if seam not in self._seam_state:
+            raise KeyError(seam)
+        return self._seam_state[seam]
+
+    def set_seam(self, seam: str, enabled: bool) -> SeamStateChange:
+        """Set the enabled state for ``seam``.
+
+        Raises ``KeyError`` if the seam is not in ``HOT_SEAMS``.
+        """
+        if seam not in self._seam_state:
+            raise KeyError(seam)
+        previous = self._seam_state[seam]
+        self._seam_state[seam] = enabled
+        return SeamStateChange(seam=seam, previous_enabled=previous, new_enabled=enabled)
 
     def set(self, key: str, value: Any) -> ConfigChange:
         """Apply a runtime override.

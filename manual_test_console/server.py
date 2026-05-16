@@ -51,8 +51,14 @@ from aiohttp import WSMsgType, web
 from companion_harness.event_logger import EventLogger
 from companion_harness.input_ingest import CaptureMetadata, InputIngest
 from companion_harness.schemas import Event
-from manual_test_console.config_schema import ALLOWLIST, tier_a_keys, validate_patch
-from manual_test_console.config_store import ConfigChange, ConfigStore
+from manual_test_console.config_schema import (
+    ALLOWLIST,
+    HOT_SEAMS,
+    tier_a_keys,
+    validate_patch,
+    validate_seam_patch,
+)
+from manual_test_console.config_store import ConfigChange, ConfigStore, SeamStateChange
 from manual_test_console.live_pipeline import (
     LivePipeline,
     StreamingRawPipeline,
@@ -647,6 +653,62 @@ async def _handle_get_config(request: web.Request) -> web.Response:
     return web.json_response({
         "values": config_store.current_state(),
         "schema": {key: _schema_entry_dict(key) for key in ALLOWLIST.keys()},
+        "seams": config_store.current_seam_state(),
+    })
+
+
+async def _handle_get_config_seams(request: web.Request) -> web.Response:
+    """Return the enabled/disabled state of all 12 hot seams."""
+    config_store: ConfigStore = request.app[KEY_CONFIG_STORE]  # type: ignore[assignment]
+    seam_state = config_store.current_seam_state()
+    return web.json_response({
+        "seams": [{"seam": seam, "enabled": seam_state[seam]} for seam in HOT_SEAMS],
+    })
+
+
+async def _handle_post_model_swap(request: web.Request) -> web.Response:
+    """Toggle a hot seam enabled/disabled.
+
+    Body: {seam: str, enabled: bool}.
+
+    On success, mutates ConfigStore and returns accepted=True.
+    The swap takes effect at the next session-construction boundary (F4).
+
+    Event emission (model_swap_requested / model_swap_completed /
+    model_swap_rejected) is wired in D2. Placeholder returned for now.
+    """
+    config_store: ConfigStore = request.app[KEY_CONFIG_STORE]  # type: ignore[assignment]
+
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response(
+            {"error": "request body is not valid JSON"},
+            status=400,
+        )
+
+    if not isinstance(body, dict) or "seam" not in body or "enabled" not in body:
+        return web.json_response(
+            {"error": "body must be {seam, enabled}"},
+            status=400,
+        )
+
+    seam = body["seam"]
+    enabled = body["enabled"]
+
+    ok, msg = validate_seam_patch(seam, enabled)
+    if not ok:
+        if "unknown seam" in msg:
+            return web.json_response({"error": msg, "seam": seam}, status=403)
+        return web.json_response({"error": msg, "seam": seam}, status=400)
+
+    config_store.set_seam(seam, enabled)
+    # TODO(D2): emit operator_action + model_swap_requested + model_swap_completed events
+    return web.json_response({
+        "accepted": True,
+        "seam": seam,
+        "enabled": enabled,
+        "model_swap_event_id": "pending-d2-wiring",
     })
 
 
@@ -842,6 +904,7 @@ def build_app(
     urgency_scorer: Any = None,
     embedder: Any = None,
     streaming_raw_mode: bool = False,
+    seam_defaults: dict[str, bool] | None = None,
 ) -> web.Application:
     """Build the aiohttp Application. Caller is responsible for run/cleanup.
 
@@ -907,7 +970,7 @@ def build_app(
     # owns the write side (HTTP endpoints below); Task D will wire the same
     # singleton into the orchestrator's read side once it merges. Until then
     # we construct our own ConfigStore here so /config/{patch,reset} can run.
-    app[KEY_CONFIG_STORE] = ConfigStore(ALLOWLIST)
+    app[KEY_CONFIG_STORE] = ConfigStore(ALLOWLIST, seam_defaults=seam_defaults)
     app[KEY_OPERATOR_SEQ] = {"seq": 0}
     # Optional real-adapter wiring (default None → null stubs continue).
     app[KEY_SCENE_SCORER] = scene_scorer
@@ -951,6 +1014,8 @@ def build_app(
     app.router.add_get("/config", _handle_get_config)
     app.router.add_post("/config/patch", _handle_post_config_patch)
     app.router.add_post("/config/reset", _handle_post_config_reset)
+    app.router.add_get("/config/seams", _handle_get_config_seams)
+    app.router.add_post("/config/model-swap", _handle_post_model_swap)
 
     async def _on_startup(_app: web.Application) -> None:
         await logger.start()

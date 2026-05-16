@@ -60,7 +60,7 @@ async def test_get_config_returns_values_and_schema(tmp_path: Path) -> None:
             assert resp.status == 200
             body = await resp.json()
 
-        assert set(body.keys()) == {"values", "schema"}
+        assert {"values", "schema"}.issubset(body.keys())
         assert len(body["values"]) == 12
         assert len(body["schema"]) == 12
 
