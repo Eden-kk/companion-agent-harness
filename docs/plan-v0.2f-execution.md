@@ -67,7 +67,7 @@ A reviewer who sees any of the above in a v0.2f PR should reject and route to v0
 |---|---|---|---|
 | A | **2×** | T1, T2 | T2 reuses T1's manifest shape; if T1 in flight, T2 author should align manifest fields. Lean: T1 lands first to set the manifest contract, T2 follows. |
 | B | **1×** | T3 | Standalone CLI flag + rotation worker. No coupling to Wave A or C. |
-| C | **3×** | T4, T5, T6 | All extend the existing `_handle_health` JSON. Conflicts are textual (same function body); coordinator should serialize merges OR ship as one PR. Lean: one PR for all three to avoid rebase tax. |
+| C | **3×** | T4, T5, T6 | All extend the existing `_handle_health` JSON. Conflicts are textual (same function body). **Decision: ONE PR for T4 + T5 + T6 combined; the T4 author owns the combined PR and is the single merge point.** If split PRs are unavoidable, the coordinator serializes them (T4 → T5 → T6) with no parallel merges. |
 | D | sequential | T7 → T8 | T7 lands last among code PRs. T8 is operator-only (git tag); no PR. |
 
 **Max realistic concurrency: 3 agents** (Wave A × 2 + Wave B × 1, OR Wave C × 3 as one combined PR). Realistic peak: 4 PRs in flight if Wave C is split.
@@ -92,7 +92,7 @@ A reviewer who sees any of the above in a v0.2f PR should reject and route to v0
 ## Task 1 — Replay-report export hardening (deterministic paths + JSON manifest)
 
 **Files touched**
-- `companion_harness/replay.py` — currently a 7-line module docstring stub. Add an `export_replay_report(session_id, out_dir)` function that walks the EventLogger's persisted JSONL, emits deterministic file paths (`{out_dir}/{session_id}/events.jsonl`, `{out_dir}/{session_id}/manifest.json`, `{out_dir}/{session_id}/blobs/`), and writes a structured JSON manifest.
+- `companion_harness/replay.py` — currently a ~62-line working implementation that includes `run_tier_b_replay` and `assert_bit_identical`. Add an `export_replay_report(session_id, out_dir)` function that walks the EventLogger's persisted JSONL, emits deterministic file paths (`{out_dir}/{session_id}/events.jsonl`, `{out_dir}/{session_id}/manifest.json`, `{out_dir}/{session_id}/blobs/`), and writes a structured JSON manifest. Do not disturb the existing `run_tier_b_replay` / `assert_bit_identical` surface.
 - `tests/test_replay_report_export.py` — NEW. Contract test: given a fixture session log, `export_replay_report()` produces a deterministic directory tree whose file paths and manifest JSON match a golden snapshot byte-for-byte.
 
 **Implementation sketch**
@@ -108,6 +108,7 @@ A reviewer who sees any of the above in a v0.2f PR should reject and route to v0
    - `manifest_schema_version: str` literal `"replay-report-manifest/v1"`
    - `generated_at_wall: str` (ISO 8601 UTC; the ONLY non-deterministic field — segregated so callers can normalize for snapshot tests)
 2. `export_replay_report(session_id, source_log_path, out_dir, *, blob_source_dir)`:
+   - **`source_log_path` caller contract:** callers pass the path written by EventLogger's blob-dir JSONL sink. The canonical path scheme is `{blob_dir}/events.jsonl` as written by EventLogger when `--blob-dir` is set. This is NOT a new persisted sink; it is the existing file that the blob-dir sink already writes. Callers who do not use `--blob-dir` must provide their own path; `export_replay_report` does not infer it. No changes to EventLogger are required for T1.
    - Reads `source_log_path` (JSONL), filters to `event.session_id == session_id`.
    - Writes events to `{out_dir}/{session_id}/events.jsonl` preserving original line order (do NOT re-serialize; copy lines verbatim).
    - Copies each `payload_ref` blob from `blob_source_dir` into `{out_dir}/{session_id}/blobs/` (filename = basename of `payload_ref`).
@@ -145,7 +146,7 @@ pytest tests/test_replay_report_export.py -q  # under canonical venv, all green
 
 **Implementation sketch**
 1. Reuse `export_replay_report` (T1) by writing to a `tempfile.TemporaryDirectory()`, then `tarfile.open(out_path, "w")` and `add()` the tree with a deterministic walk order (sorted by name).
-2. Set deterministic tarinfo attributes: `uid=0`, `gid=0`, `uname=""`, `gname=""`, `mtime=0`. (This guarantees byte-stable archive content across machines and runs.)
+2. Set deterministic tarinfo attributes: `uid=0`, `gid=0`, `uname=""`, `gname=""`, `mtime=0`. (This guarantees byte-stable archive content across machines and runs.) **`generated_at_wall` normalization MUST happen BEFORE the tar write** — pass a fixed sentinel value (e.g. `"1970-01-01T00:00:00Z"`) when calling `export_replay_report` in the tar-generation path, then write the tar. Do not patch the manifest inside the archive post-hoc; that approach is fragile and breaks byte-stability if tar metadata changes.
 3. Tar format: **plain `.tar`** (uncompressed). Operators compress externally if needed.
    - Rationale: byte-stable across runs is easier without compression (gzip embeds a wall-clock by default unless caller sets `mtime=0` on the gzip header).
    - Reversal cost: low — adding `.tar.gz` later is one parameter.
@@ -185,6 +186,7 @@ python -c "import tarfile; print(sorted(tarfile.open('/tmp/foo.tar').getnames())
 1. CLI: `parser.add_argument("--blob-retention-days", type=int, default=30, help="Delete blob files older than N days. Default 30. Set to 0 to disable rotation.")`.
 2. If `args.blob_retention_days > 0`: start an asyncio task in `build_app` that wakes every `min(3600, retention_seconds // 24)` seconds, walks `blob_dir`, and `Path.unlink()`s files with `mtime` older than `now - retention_days * 86400`.
 3. Rotation worker is **idempotent**, **single-pass per wake**, and **never blocks the realtime path** (per invariant #10 — same async-friendly posture).
+   - **Blob–event-log retention alignment (invariant #1 guard):** The blob retention window MUST equal or exceed the event-log retention window. Rotating a blob that is still referenced by an event-log entry breaks replay (invariant #1: no unlogged behavior). The architectural justification: blobs are payload attachments to events; an event without its blob is an orphan. For v0.2f, document this constraint in `--blob-retention-days` help text: "Blob retention window should be >= event-log retention; rotating blobs that are still referenced by live event-log entries breaks replay." No cross-reference scan is implemented in v0.2f (that is v0.3 scope); the operator is responsible for aligning windows. A future v0.3 task can add a pre-deletion cross-reference check against the event log.
 4. On wake, emit a `log_drop_or_degrade`-style operator-action event? **Lean: NO** — rotation is operator policy, not signal degradation. A simple log line via the existing print path is enough; richer telemetry lives in v0.3.
 5. Contract test uses `os.utime()` to backdate file mtimes; asserts the post-rotation set matches expectations.
 
@@ -219,7 +221,7 @@ python -m manual_test_console.server --help | grep -- "--blob-retention-days"  #
 - `tests/test_healthz_per_adapter_readiness.py` — NEW. Contract test: hit `/healthz` against a `build_app(...)` instance with mocked factories; assert each `*_ready` key is `True` when the adapter is loaded, `False` when it's `None`.
 
 **Implementation sketch**
-1. The existing `_handle_health` already exposes adapter labels (`vad_model`, `smart_turn_model`, etc.). Extend with boolean readiness derived from factory output: an adapter is "ready" iff its `KEY_*` value is not `None` (loaded successfully).
+1. The existing `_handle_health` already exposes adapter labels via the `detector_labels` string dict (e.g. `vad_model`, `smart_turn_model`) and checks `foreground_model is not None` for the FG adapter. **T4 MUST derive readiness from these existing app-state surfaces, not by adding new `KEY_*` dict entries.** Concretely: an adapter is "ready" iff its label in `detector_labels` is a non-stub string (not `None`, not `""`, not the fallback stub label) AND — for the foreground model — `app["foreground_model"] is not None`. No new app-state keys are added (that would be a scope addition requiring separate review). **Choice: option (a) — read from existing `detector_labels` string dict + heuristically detect stub labels.**
 2. For per-call health (has the adapter raised recently?): out of scope for v0.2f. Lean: bool-from-loaded suffices. A future v0.3 task can add rolling failure-rate tracking.
 3. The `/healthz` response stays **additive** — no existing key is renamed or removed.
 4. Test asserts:
@@ -296,7 +298,7 @@ pytest tests/test_healthz_gpu_memory.py -q  # under canonical venv, all green
    - `async def on_event(self, event: Event) -> None` — appends `event.timestamp_mono_ms` to an internal deque, trims entries older than `window_seconds * 1000` ms.
    - `def rate_per_second(self) -> float` — `len(deque) / window_seconds`.
    - `def total_count(self) -> int` — monotonic counter incremented on each `on_event`.
-2. In `build_app`, instantiate one counter; subscribe via `logger.subscribe(counter.on_event)`.
+2. In `build_app`, instantiate one counter; call `logger.subscribe(counter.on_event)` BEFORE `logger.start()`. (Per `event_logger.py:41`, subscribers added after `start()` miss events already in the drain loop. The ordering constraint is: subscribe → start, not start → subscribe.)
 3. `_handle_health` reads `counter.rate_per_second()` (rounded to int) and `counter.total_count()`.
 4. Window is **fixed at 60s** (no flag) — matches the OQ lean below.
 5. Contract test injects synthetic events with monotonically-increasing `timestamp_mono_ms`; asserts trim and rate math.
@@ -332,6 +334,11 @@ pytest tests/test_healthz_event_rate.py -q  # under canonical venv, all green
 - `ROADMAP.md` — bump the CURRENT-MILESTONE pointer to v0.2-final (one-line edit).
 - `README.md` — bump the milestone pointer if present (one-line edit).
 
+**Pre-flight gate (MUST complete before dispatching T7)**
+- Run: `grep -nE 'POLICY_VERSION\s*=' companion_harness/speak_policy.py`
+- Expected result: exactly one line whose value is `"v0.1k"`.
+- If the value is anything other than `"v0.1k"` (e.g. still `"v0.1j"` because v0.2b has not merged), **BLOCK T7 and wait for v0.2b to land**. Do not proceed.
+
 **Implementation sketch**
 1. **Pre-flight grep**: `grep -rn '"v0.1k"' tests/ companion_harness/ scripts/ docs/ ROADMAP.md README.md` to enumerate every occurrence. Expect ~10–30 lines; v0.1j had a similar count.
 2. **Bump the literal first** in `companion_harness/speak_policy.py`. Run `pytest tests/ -q` under canonical venv; expect failures equal to the count of pinning fixtures.
@@ -342,7 +349,9 @@ pytest tests/test_healthz_event_rate.py -q  # under canonical venv, all green
    - Numeric gates verification (every gate from roadmap-v0.2-draft.md "Numeric gates table" gets one line: pass/fail/informational).
    - POLICY_VERSION verification block: `assert POLICY_VERSION == "v0.2-final"` and replay-exact gate result.
    - Milestone-tag readiness: print "READY FOR `git tag v0.2`" if all blocking gates pass.
-5. **Smoke run** the new script: `python scripts/v0_2_replay_report.py` under canonical venv; assert it prints the readiness banner.
+5. **Smoke run** the new script: `python scripts/v0_2_replay_report.py` under canonical venv; assert it prints the readiness banner. The banner output MUST clearly distinguish two categories of gates:
+   - **Locally-verifiable gates** (run by any developer with the canonical venv): all `pytest` gates, the `POLICY_VERSION` literal check, the `grep` zero-match check, and `v0_2_replay_report_readiness_banner`. These are evaluated inline by the script.
+   - **b200-operator-scheduled gates** (require GPU hardware): `remote_smoke_pass_rate`, T5 GPU memory smoke. The script prints these as `[b200-required] PENDING` and does NOT block the `READY FOR git tag v0.2` banner on them — the operator verifies them separately on b200 before running T8.
 6. Run the full test suite under canonical venv; assert green.
 
 **Test plan**
