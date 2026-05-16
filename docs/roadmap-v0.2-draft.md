@@ -2,7 +2,7 @@
 
 ## Status: **DRAFT** — 2026-05-15
 
-> v0.2 scope is **production-quality, not skeleton-completion**. v0.1a → v0.1j shipped the spec's full Stage 0–6 stack: every signal seam, every adapter Protocol, every policy path, every gate, the dashboard, the replayer, the 4-store memory, the 8-rubric, the attachment-risk monitor, all 8 stubs now have real backends. The pinned v0.1 success criterion ("explain every utterance, replay every policy decision, stop when interrupted, wait through thinking pauses, answer direct questions promptly") is met.
+> v0.2 scope is **production-quality, not skeleton-completion**. v0.1a → v0.1j shipped the spec's full Stage 0–6 stack: every signal seam, every adapter Protocol, every policy path, every gate, the dashboard, the replayer, the 4-store memory, the 8-rubric, the attachment-risk monitor, v0.1j locked the no-unmarked-stub discipline (real producer populated OR deterministic default stub tagged `# UNAVAILABLE:`). Real-adapter implementations + live-pipeline wiring for the 8 seams shipped across PRs #234-#266 and the post-Round-4 sweep (see `docs/model-stack.md`). The pinned v0.1 success criterion ("explain every utterance, replay every policy decision, stop when interrupted, wait through thinking pauses, answer direct questions promptly") is met.
 >
 > v0.2 takes the harness from *demonstrable* to *host-ready*. Each task is a capability-upgrade to an existing v0.1 stage, replacing a placeholder or mechanical fallback with a production-quality backend. No new spec stages are introduced. The spec remains FROZEN.
 >
@@ -13,7 +13,7 @@
 > **v0.2 succeeds when the harness is host-ready — real reasoning, real attribution, real benchmarks, real persistence — without operator workarounds. (Production deployment posture is deferred to v0.3 per Anchor 5.) Specifically:**
 > 1. The smart-path tool router (`BackgroundReasoner`) ships **MCP-primary and LLM-direct backends behind the `BACKGROUND_REASONER` flag**. Default backend remains `fake` until rollout gates (`background_reasoner_budget_exhaustion_rate < 0.05` for 24 hours of production use) pass. Default flip is a v0.2-final task, not a v0.2 entry gate.
 > 2. The addressing classifier consumes real speaker-diarization output, not the mechanical `solo` social-mode fallback.
-> 3. Eval Phase C (live examiner) is exercisable against real diarized recordings.
+> 3. Eval Phase C (live examiner) ships both synthetic-mode framework AND a small real-diarized fixture pack (3+ multi-speaker recordings); real-mode against live operator recordings beyond this fixture pack is deferred to v0.3.
 > 4. Real CANDOR and FullDuplexBench data flow through the existing `CaseSource` Protocols without `NotImplementedError`.
 > 5. The `forget that` command persists a bi-temporal tombstone visible in `retrieve()` queries (shipped via PR #253 — backfilled into v0.2 scope).
 > 6. The 6 opt-in real adapters from the post-v0.1j stub-replacement sweep (CLIP, GroundingDINO, AV-conflict, MiniCPM-deictic, prosody-urgency, sentence-transformer) have an explicit default-on / default-off decision recorded.
@@ -69,7 +69,7 @@ v0.2 does NOT ship a production deployment posture (Docker, systemd, k8s, secret
 - **OQ-1**: Bundle v0.2 as a single milestone? **YES** — coherent theme (production quality), shared anchor decisions, two-step POLICY_VERSION cadence is natural. But each task ships as its own PR; the milestone is a banner, not a bundled merge.
 - **OQ-2**: Include Eval Phase C in v0.2 scope? **YES** — gated on diarization (#8) anyway, completes the eval-subsystem story. Live examiner becomes exercisable.
 - **OQ-3**: Bump POLICY_VERSION once or twice? **TWICE** (Anchor 1) — let non-policy PRs ship continuously.
-- **OQ-4**: Default opt-in for the 6 v0.1j real adapters? **DEFER per-adapter** to v0.2 Task 12 (review acceptance criteria per adapter; flip defaults only where the adapter has proven low-risk on hardware budget AND high signal value).
+- **OQ-4**: Default opt-in for the 6 v0.1j real adapters? **DEFER per-adapter** to v0.2 Task 16 (review acceptance criteria per adapter; flip defaults only where the adapter has proven low-risk on hardware budget AND high signal value).
 - **OQ-5**: Tombstone for `forget that` in v0.2 scope? **YES** — already shipped via PR #253 on 2026-05-15; backfill into v0.2 scope as Task 0.
 - **OQ-6**: Real BackgroundReasoner backend choice — MCP or LLM-direct? **BOTH** (Anchor 2) — MCP primary, LLM fallback, fake preserved.
 - **OQ-7**: Production deployment in v0.2? **NO** (Anchor 5) — separate v0.3 scope.
@@ -82,7 +82,7 @@ v0.2 does NOT ship a production deployment posture (Docker, systemd, k8s, secret
 ### Wave 0 — Already shipped (backfilled into v0.2 scope)
 
 - **Task 0a (shipped).** `forget that` → bi-temporal tombstone via SleepTimeAgent. PR #253.
-- **Task 0b (shipped).** 6 real-adapter opt-in CLI flags for the live pipeline (live-wiring PR in flight at time of v0.2 draft).
+- **Task 0b (shipped, PR #255 merged).** 6 real-adapter opt-in CLI flags for the live pipeline.
 
 ### Wave 0′ — Prerequisite: Eval Phase A.5 (must complete before Wave 1+)
 
@@ -167,7 +167,7 @@ Carry forward all v0.1a–v0.1j gates verbatim. v0.2 adds:
 | `diarization_latency_ms_p95` | < 50ms | Wave 2 task owner | Per-chunk wall-clock measured at `DiarizationAdapter.process_chunk()` boundary | ≥ 1000 chunks (≥ 1 session) | blocking |
 | `diarization_speaker_continuity_addressing_accuracy` | > 0.85 (vs Phase C ground truth) | Wave 2 + Wave 4 owners | Per-utterance addressing decision vs `live_examiner_diarized_session_001` ground-truth labels | All Phase C fixture utterances | blocking |
 | `diarization_false_speaker_change_rate` | < 0.05 | Wave 2 task owner | Speaker-id transitions in adapter output / total chunks, on TTS-feedback fixture | All `diarization_acoustic_feedback_001` chunks | blocking |
-| `tombstone_provenance_chain_closure_rate` | == 1.0 | Task 0a (already shipped, PR #253) | Every tombstone retrievable from the source memory item's `superseded_by` chain end-to-end | All tombstones in test corpus | blocking |
+| `tombstone_provenance_chain_closure_rate` | == 1.0 | Task 0a (already shipped, PR #253) | Every tombstoned `MemoryItem` has `valid_to` set with a timestamp ≤ now; tombstoned items are filtered from `retrieve()` queries; the original `source_event_id` (not `superseded_by`) is the audit-trail link back to the triggering `explicit_forget` event | All tombstones in test corpus | blocking |
 | `real_mode_eval_score_replay_match_rate` | == 1.0 (deterministic given pinned `revision=`) | Wave 3 task owner | Two real-mode runs of same fixture, same `revision=`, exact score match | All real-mode smoke fixtures | blocking |
 
 **Harness-derived (production-quality):**
@@ -210,7 +210,7 @@ Carry forward all v0.1a–v0.1j gates verbatim. v0.2 adds:
 - Design drafts (PR #251): `docs/plan-real-background-reasoner-draft.md`, `docs/plan-real-diarization-adapter-draft.md`, `docs/plan-real-benchmark-data-loaders-draft.md`.
 - Predecessor: `docs/roadmap-v0.1j-draft.md` (final v0.1 milestone).
 - Tombstone (Task 0a): PR #253 merged 2026-05-15.
-- Live-wiring (Task 0b): coder in flight at time of draft (post-v0.1j sweep).
+- Live-wiring (Task 0b): PR #255 merged.
 - Model-stack reference: `docs/model-stack.md`.
 - Manual-test handbook: `docs/manual-test-handbook.md` (post-v0.1j refresh).
 - Session-handoff doc: `docs/project-progress-2026-05-15.md`.
