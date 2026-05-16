@@ -22,13 +22,23 @@ from __future__ import annotations
 
 import hashlib
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Protocol, runtime_checkable
 
 from companion_harness.event_logger import EventLogger
 from companion_harness.schemas import Event
 
-__all__ = ["DeicticModel", "DeicticDetector"]
+__all__ = ["DeicticModel", "DeicticDetector", "DeicticResult", "_NullDeicticModel"]
+
+
+@dataclass(frozen=True)
+class DeicticResult:
+    is_deictic: bool
+    confidence: float
+    is_ambiguous: bool
+    candidates: list[tuple[str, float]]
+    event_id: str
 
 
 @runtime_checkable
@@ -45,13 +55,18 @@ class DeicticModel(Protocol):
     def __call__(self, transcript: str, audio_buffer: bytes | None) -> tuple[bool, float]: ...
 
 
+class _NullDeicticModel:
+    def __call__(self, transcript: str, audio_buffer: bytes | None) -> tuple[bool, float]:
+        return (False, 0.0)  # UNAVAILABLE: #169 — real XLLM 2025 lightweight pending
+
+
 class DeicticDetector:
     """Classifies whether the current utterance contains a deictic reference.
 
     Invokes the injected DeicticModel on the turn transcript (and optionally
     the audio buffer), logs every invocation as an event (invariant #1), and
-    returns the (is_deictic, confidence) result that populates
-    PolicyInputs.deictic_reference.
+    returns a DeicticResult that populates PolicyInputs.deictic_reference
+    and PolicyInputs.deictic_ambiguous.
     """
 
     SOURCE = "deictic_detector"
@@ -73,17 +88,30 @@ class DeicticDetector:
         transcript: str,
         caused_by: list[str],
         audio_buffer: bytes | None = None,
-    ) -> tuple[bool, float, str]:
+    ) -> DeicticResult:
         """Classify a completed utterance for deictic references.
 
         Calls self._model, logs a deictic_classification event (invariant #1),
-        and returns (is_deictic, confidence, event_id).
+        and returns a DeicticResult.
         """
         if not caused_by:
             raise ValueError("caused_by must be non-empty")
         is_deictic, confidence = self._model(transcript, audio_buffer)
+        candidates: list[tuple[str, float]] = []
+        if hasattr(self._model, "top_k"):
+            candidates = self._model.top_k(transcript, audio_buffer)
+        is_ambiguous = (
+            len(candidates) >= 2
+            and candidates[0][1] - candidates[1][1] < 0.1
+        )
         evt = self._emit("deictic_classification", caused_by, is_deictic, confidence)
-        return is_deictic, confidence, evt.event_id
+        return DeicticResult(
+            is_deictic=is_deictic,
+            confidence=confidence,
+            is_ambiguous=is_ambiguous,
+            candidates=candidates,
+            event_id=evt.event_id,
+        )
 
     # ------------------------------------------------------------------
 
