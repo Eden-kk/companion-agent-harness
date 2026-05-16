@@ -1,8 +1,8 @@
-"""Contract tests: --minicpm-streaming-raw must not produce concurrent TTS output.
+"""Contract tests: --minicpm-streaming-raw dedup uses cancel-previous (Option A).
 
-When MiniCPM emits multiple proposals in rapid succession, only one TTS task
-should run at a time (Option B: skip-if-busy). Concurrent proposals are dropped
-and logged as raw_proposal_dropped_during_synthesis for audit (invariant #1).
+When MiniCPM emits multiple proposals in rapid succession, each new proposal
+cancels the in-flight TTS task (newest wins). Superseded proposals are logged
+as raw_proposal_superseded_by_newer for audit (invariant #1).
 """
 
 from __future__ import annotations
@@ -69,6 +69,7 @@ class _SlowTtsAdapter:
         self._delay = delay
         self._chunk = chunk
         self.calls: list[str] = []
+        self.completed: list[str] = []
         self.max_concurrent: int = 0
         self._concurrent: int = 0
 
@@ -79,6 +80,7 @@ class _SlowTtsAdapter:
             self.max_concurrent = self._concurrent
         try:
             await asyncio.sleep(self._delay)
+            self.completed.append(text)
             yield self._chunk
         finally:
             self._concurrent -= 1
@@ -118,8 +120,8 @@ class _FakeLogger:
 
 
 @pytest.mark.asyncio
-async def test_concurrent_proposals_only_one_tts_runs() -> None:
-    """Three proposals arrive back-to-back; only the first TTS synthesis runs."""
+async def test_concurrent_proposals_latest_wins() -> None:
+    """Three proposals arrive back-to-back; only the LAST one's TTS completes."""
     proposals = [_make_proposal(f"text-{i}") for i in range(3)]
     fg = _FakeForegroundMultiProposal(proposals)
     tts = _SlowTtsAdapter(delay=0.05)
@@ -136,19 +138,19 @@ async def test_concurrent_proposals_only_one_tts_runs() -> None:
 
     await driver.start()
     driver.push_audio(b"\x00" * 32, "evt-001")
-    # Wait long enough for all proposals to be processed and TTS to complete.
+    # Wait long enough for all proposals to be processed and final TTS to complete.
     await asyncio.sleep(0.3)
     await driver.stop()
 
-    # Only 1 TTS synthesis call — concurrent ones were dropped.
-    assert len(tts.calls) == 1
-    # Peak concurrency never exceeded 1.
+    # The last proposal's TTS completes; earlier ones are cancelled mid-synthesis.
+    assert "text-2" in tts.completed
+    # Peak concurrency never exceeded 1 (cancel-previous serializes synthesis).
     assert tts.max_concurrent <= 1
 
 
 @pytest.mark.asyncio
-async def test_dropped_proposals_emit_audit_event() -> None:
-    """Proposals dropped while TTS is in-flight emit raw_proposal_dropped_during_synthesis."""
+async def test_superseded_proposals_emit_audit_event() -> None:
+    """Proposals cancelled by a newer proposal emit raw_proposal_superseded_by_newer."""
     proposals = [_make_proposal(f"p{i}") for i in range(3)]
     fg = _FakeForegroundMultiProposal(proposals)
     tts = _SlowTtsAdapter(delay=0.05)
@@ -156,7 +158,7 @@ async def test_dropped_proposals_emit_audit_event() -> None:
     logger = _FakeLogger()
 
     driver = MiniCPMRawStreamingDriver(
-        session_id="test-drop-audit",
+        session_id="test-supersede-audit",
         foreground_model=fg,
         tts_adapter=tts,
         audio_out_broker=broker,
@@ -168,12 +170,12 @@ async def test_dropped_proposals_emit_audit_event() -> None:
     await asyncio.sleep(0.3)
     await driver.stop()
 
-    dropped_events = [
+    superseded_events = [
         e for e in logger.logged
-        if e.event_type == "raw_proposal_dropped_during_synthesis"
+        if e.event_type == "raw_proposal_superseded_by_newer"
     ]
-    # 3 proposals, 1 runs → 2 dropped.
-    assert len(dropped_events) == 2
+    # 3 proposals back-to-back: proposal 0 superseded by 1, proposal 1 superseded by 2.
+    assert len(superseded_events) == 2
 
 
 @pytest.mark.asyncio
@@ -224,15 +226,15 @@ async def test_sequential_proposals_after_synthesis_complete_both_run() -> None:
     await asyncio.sleep(0.3)
     await driver.stop()
 
-    # Both proposals ran — no drops because first TTS finishes before second arrives.
+    # Both proposals ran — no supersession because first TTS finishes before second arrives.
     assert len(tts.calls) == 2
     assert "first" in tts.calls
     assert "second" in tts.calls
-    dropped_events = [
+    superseded_events = [
         e for e in logger.logged
-        if e.event_type == "raw_proposal_dropped_during_synthesis"
+        if e.event_type == "raw_proposal_superseded_by_newer"
     ]
-    assert len(dropped_events) == 0
+    assert len(superseded_events) == 0
 
 
 @pytest.mark.asyncio
