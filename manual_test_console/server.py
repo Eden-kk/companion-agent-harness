@@ -39,6 +39,7 @@ import asyncio
 import base64
 import dataclasses
 import json
+import os
 import sys
 import time
 import uuid
@@ -119,6 +120,7 @@ KEY_ADAPTER_LABELS: web.AppKey[dict] = web.AppKey("adapter_labels", dict)
 # True when --minicpm-streaming-raw is set. Mutually exclusive with
 # --minicpm-only and --use-stubs. DEMO MODE: bypasses SpeakPolicy + audit gates.
 KEY_STREAMING_RAW_MODE: web.AppKey[bool] = web.AppKey("streaming_raw_mode", bool)
+KEY_BACKGROUND_REASONER: web.AppKey[object] = web.AppKey("background_reasoner", object)
 
 # Session id stamped onto operator_action + config_change events emitted from
 # the /config/* HTTP endpoints. These events are decoupled from any /ws/ingest
@@ -552,6 +554,7 @@ async def _handle_ingest_ws(request: web.Request) -> web.WebSocketResponse:
             urgency_scorer=request.app[KEY_URGENCY_SCORER],
             deictic_model=request.app[KEY_DEICTIC_MODEL],
             embedder=request.app[KEY_EMBEDDER],
+            background_reasoner=request.app[KEY_BACKGROUND_REASONER],
         )
         active_pipelines[session.session_id] = pipeline
         await pipeline.start()
@@ -953,15 +956,6 @@ async def _handle_post_config_reset(request: web.Request) -> web.Response:
     })
 
 
-async def _handle_get_config_seams(request: web.Request) -> web.Response:
-    """Return current enabled state for all 12 hot seams."""
-    config_store: ConfigStore = request.app[KEY_CONFIG_STORE]  # type: ignore[assignment]
-    seam_state = config_store.current_seam_state()
-    return web.json_response({
-        "seams": [{"seam": s, "enabled": seam_state[s]} for s in HOT_SEAMS],
-    })
-
-
 async def _handle_post_model_swap(request: web.Request) -> web.Response:
     """Toggle a hot-seam enabled/disabled state.
 
@@ -1051,6 +1045,35 @@ async def _handle_post_model_swap(request: web.Request) -> web.Response:
 
 
 # ---------------------------------------------------------------------------
+# Background reasoner env-var dispatcher (v0.2a T4)
+# ---------------------------------------------------------------------------
+
+
+def _construct_background_reasoner() -> "Any | None":
+    """Construct the background reasoner from BACKGROUND_REASONER env var.
+
+    BACKGROUND_REASONER=fake (default) → FakeBackgroundReasoner
+    BACKGROUND_REASONER=mcp           → MCPBackgroundReasoner (requires MCP_SERVER_URL)
+    Absent env var                    → None (orchestrator uses no smart-path reasoner)
+
+    Fails loudly on unknown choice or missing MCP_SERVER_URL — no silent fallback.
+    """
+    choice = os.environ.get("BACKGROUND_REASONER", "fake").lower()
+    if choice == "fake":
+        from companion_harness.background_reasoner import FakeBackgroundReasoner
+        return FakeBackgroundReasoner()
+    if choice == "mcp":
+        url = os.environ.get("MCP_SERVER_URL")
+        if not url:
+            raise RuntimeError(
+                "BACKGROUND_REASONER=mcp requires MCP_SERVER_URL env var"
+            )
+        from companion_harness.background_reasoner import MCPBackgroundReasoner
+        return MCPBackgroundReasoner(mcp_server_url=url)
+    raise RuntimeError(f"Unknown BACKGROUND_REASONER={choice!r}")
+
+
+# ---------------------------------------------------------------------------
 # App factory + lifecycle
 # ---------------------------------------------------------------------------
 
@@ -1126,6 +1149,7 @@ def build_app(
     app[KEY_ACTIVE_PIPELINES] = {}
     app[KEY_USE_STUBS] = use_stubs
     app[KEY_STREAMING_RAW_MODE] = streaming_raw_mode
+    app[KEY_BACKGROUND_REASONER] = _construct_background_reasoner()
     app[KEY_VAD_MODEL] = None
     app[KEY_SMART_TURN_MODEL] = None
     app[KEY_BACKCHANNEL_MODEL] = None

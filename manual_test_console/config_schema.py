@@ -175,6 +175,33 @@ ALLOWLIST: dict[str, TierBSchemaEntry] = {
         value_type=float,
         description="Post-onset gate to avoid stopping playback on backchannel",
     ),
+    # --- Background reasoner budgets (background_reasoner.py — v0.2a T3) ---
+    "reasoner.budget_wall_clock_s": TierBSchemaEntry(
+        key="reasoner.budget_wall_clock_s",
+        code_location="companion_harness/background_reasoner.py:201",
+        default=30.0,
+        min=1.0,
+        max=300.0,
+        step=1.0,
+        value_type=float,
+        description=(
+            "Wall-clock budget (seconds) per BackgroundReasoner.select_and_call() "
+            "invocation; exceed raises BackgroundReasonerBudgetExhausted."
+        ),
+    ),
+    "reasoner.budget_step_count": TierBSchemaEntry(
+        key="reasoner.budget_step_count",
+        code_location="companion_harness/background_reasoner.py:202",
+        default=8,
+        min=1,
+        max=64,
+        step=1,
+        value_type=int,
+        description=(
+            "Maximum MCP steps per BackgroundReasoner.select_and_call() "
+            "invocation; exceed raises BackgroundReasonerBudgetExhausted."
+        ),
+    ),
 }
 
 

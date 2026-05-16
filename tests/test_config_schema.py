@@ -30,10 +30,10 @@ from manual_test_console.config_schema import (
 # --- ALLOWLIST shape ---------------------------------------------------------
 
 
-def test_allowlist_has_exactly_twelve_entries():
-    """Design doc §1 Tier B audit table = 12 keys."""
-    assert len(ALLOWLIST) == 12, (
-        f"expected 12 Tier-B entries, got {len(ALLOWLIST)}: "
+def test_allowlist_has_exactly_fourteen_entries():
+    """Tier-B allowlist: 12 original keys + 2 reasoner budget keys added in v0.2a T3."""
+    assert len(ALLOWLIST) == 14, (
+        f"expected 14 Tier-B entries, got {len(ALLOWLIST)}: "
         f"{sorted(ALLOWLIST.keys())}"
     )
 

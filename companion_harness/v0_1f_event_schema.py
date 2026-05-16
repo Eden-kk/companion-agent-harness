@@ -226,4 +226,40 @@ EVENT_TYPE_SCHEMAS: dict[str, ToolEventSchema] = {
             "scope for v0.1f; subject_class=\"self\" is the single-user lean."
         ),
     ),
+
+    # v0.2a: formalise the existing signal_producer_fallback event type that
+    # realtime_orchestrator already emits for EOU + addressing routing fallbacks
+    # (lines 528 and 703).  MCPBackgroundReasoner extends use to unknown_mcp_tool
+    # and unknown_mcp_progress_stage.  caused_by[] closes through the upstream
+    # signal that triggered the fallback.
+    "signal_producer_fallback": ToolEventSchema(
+        payload_kind="signal",
+        subject_class="self",
+        sensitivity="safe",
+        retention_policy_id="signal_default_30d",
+        required_fields=("primary_producer", "fallback_producer", "reason"),
+        notes=(
+            "Producer-routing fallback telemetry. Already emitted from "
+            "realtime_orchestrator (EOU + addressing fallbacks); v0.2a "
+            "extends use to MCPBackgroundReasoner (unknown_mcp_tool, "
+            "unknown_mcp_progress_stage). caused_by[] closes through "
+            "the upstream signal that triggered the fallback."
+        ),
+    ),
+
+    # v0.2a: emitted by the orchestrator's _smart_path_task when
+    # BackgroundReasonerBudgetExhausted is caught.  caused_by[] cites the
+    # last emitted tool_progress_event from the in-flight call.
+    "reasoner_budget_exhausted": ToolEventSchema(
+        payload_kind="signal",
+        subject_class="self",
+        sensitivity="safe",
+        retention_policy_id="tool_call_audit_30d",
+        required_fields=("budget_kind", "limit", "observed"),
+        notes=(
+            "BackgroundReasoner exceeded its wall-clock or step-count "
+            "budget. caused_by[] cites the last emitted "
+            "tool_progress_event from the in-flight call."
+        ),
+    ),
 }
