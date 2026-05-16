@@ -323,19 +323,19 @@ and confirm every instantiation site either (a) does not specify the flag (defau
 
 ---
 
-## §6 — Open questions for reviewer
+## §6 — Open questions for reviewer — **RESOLVED 2026-05-16 (operator approval recorded)**
 
-These need explicit go/no-go before §3.3 dispatches. plan-critic should not VERDICT: ready until each has a recorded answer.
+All 5 questions answered by operator on 2026-05-16. §3.3 dispatch is no longer gated by §6.
 
-1. **Default for `--audit-speculations`.** OFF (recommended) keeps blob volume small but loses byte-exact reconstruction of discarded tokens. ON gives perfect forensics at the cost of ~KB/s blob growth. Recommendation: OFF; operator opts in for forensic captures. **Agree?**
+1. **Default for `--audit-speculations`.** **RESOLVED: OFF.** Operator opts in via `--audit-speculations` for forensic captures. Tier B replay satisfied via invariant 6 (text similarity is "advisory only, not a pass gate" — see §3.6).
 
-2. **Barge-in cut style.** HARD cut (drop all queued chunks immediately at `request_stop`) vs GRACEFUL fade (let the current sub-chunk finish, then stop). HARD is the cleanest contract and what 3.4's test asserts. GRACEFUL adds 100-200 ms of overlap with the user's new speech, which is conversationally awkward. **Recommendation: HARD. Agree?**
+2. **Barge-in cut style.** **RESOLVED: HARD cut.** Drop all queued audio chunks immediately at `request_stop`. §3.4's `test_barge_in_cancels_active_tts_under_500ms` asserts this.
 
-3. **KV cache reset trigger.** Three options: (a) time-based (every N seconds); (b) token-count-based (current MiniCPM-o internal at 1500); (c) MiniCPM's own internal signal (we ride along with the existing reset logic but suppress the mid-response variant). §3.5 picks (c) as it's the minimum diff against MiniCPM-o's actual behavior. **Agree?**
+3. **KV cache reset trigger.** **RESOLVED: ride MiniCPM's existing internal signal.** §3.5 adds the `_committing_in_flight` flag to SUPPRESS the auto-reset during commit; reset fires naturally at the next `is_listen=True` boundary. Minimum diff against current behavior.
 
-4. **POLICY_VERSION bump.** My read: NO. The speak_policy module is byte-unchanged in this plan; only the proposer's lifecycle changes. The Tier-B replay gate verifies `same_action_class + same_timing_bucket + same_interaction_intent + same_safety_class` (invariant 6) which is computed from `policy_decision` events — those events keep identical schema and identical `decide()` logic. Counter-argument FOR a bump: the *meaning* of "the proposer almost said X but was discarded" is novel to v0.3; a replay-er from v0.2 looking at a v0.3 capture would see new `commit_or_discard` events it doesn't know about. **My read: NO bump. Argue the other side and confirm.**
+4. **POLICY_VERSION bump.** **RESOLVED: NO bump.** `speak_policy.py` byte-unchanged; `decide()` logic identical; Tier B replay tuple unchanged. New events (`commit_or_discard`, `proposer_token_buffered`, `barge_in_cancelled`, `model_context_window_reset`) are additive and don't affect policy-layer determinism.
 
-5. **Promotion threshold for `is_listen` as primary EOU.** Today `MiniCPMNativeDuplexEouSource` is wired as primary but `_NullNativeDuplexEouSource` is the default injection (`realtime_orchestrator.py:317-319`). Path B requires the real source. What agreement rate with VAD+SmartTurn (over a captured 100-turn session) is acceptable before we ship Path B as the default? My proposal: ≥95% agreement on EOU timing within ±300 ms. Below that, leave the flag OFF in production. **Agree on 95% / 300 ms?**
+5. **Promotion threshold for `is_listen` as primary EOU.** **RESOLVED: ≥95% agreement on EOU timing within ±300 ms over a captured 100-turn real session.** Below this threshold, PR 8 flag-day cut-over is deferred. Above, default flips to `True`.
 
 ---
 
