@@ -1,0 +1,48 @@
+{
+  "schema_version": "1.0",
+  "session_id": "phase_c_synthetic_three_speaker_001",
+  "utterances": [
+    {
+      "utterance_id": "utt_000",
+      "t_start_ms": 0,
+      "t_end_ms": 2800,
+      "speaker_id": "speaker_A",
+      "addressed_agent": true
+    },
+    {
+      "utterance_id": "utt_001",
+      "t_start_ms": 3200,
+      "t_end_ms": 5500,
+      "speaker_id": "speaker_B",
+      "addressed_agent": false
+    },
+    {
+      "utterance_id": "utt_002",
+      "t_start_ms": 6000,
+      "t_end_ms": 8200,
+      "speaker_id": "speaker_C",
+      "addressed_agent": false
+    },
+    {
+      "utterance_id": "utt_003",
+      "t_start_ms": 9000,
+      "t_end_ms": 11500,
+      "speaker_id": "speaker_A",
+      "addressed_agent": true
+    },
+    {
+      "utterance_id": "utt_004",
+      "t_start_ms": 12000,
+      "t_end_ms": 14300,
+      "speaker_id": "speaker_B",
+      "addressed_agent": true
+    },
+    {
+      "utterance_id": "utt_005",
+      "t_start_ms": 15000,
+      "t_end_ms": 18000,
+      "speaker_id": "speaker_C",
+      "addressed_agent": false
+    }
+  ]
+}

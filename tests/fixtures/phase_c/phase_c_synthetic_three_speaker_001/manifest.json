@@ -1,0 +1,12 @@
+{
+  "session_id": "phase_c_synthetic_three_speaker_001",
+  "schema_version": "1.0",
+  "recording_date": "2026-05-16",
+  "speaker_count": 3,
+  "duration_ms": 18000,
+  "license": "safe_eval_fixture",
+  "redaction_notes": "Fully synthesized via Kokoro TTS (option-1); no real user audio. No PII. Deterministic seed=43.",
+  "audio_sha256": "synthetic_no_audio_file",
+  "synthesis_method": "kokoro_tts_option1",
+  "synthesis_seed": 43
+}
