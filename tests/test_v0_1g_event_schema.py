@@ -52,6 +52,7 @@ EXPECTED_EVENT_TYPES = {
     "recent_shared_moment_referenced",
     "user_reduction_command_applied",
     "native_duplex_invocation",
+    "addressing_classified",
 }
 
 
