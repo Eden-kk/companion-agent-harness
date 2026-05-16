@@ -18,6 +18,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from companion_harness.provenance_minicpm import ProvenanceComputer
 from companion_harness.schemas import Event, MemoryItem, SensitiveField
 
 from companion_harness.memory_manager import CommitResult
@@ -28,8 +29,8 @@ if TYPE_CHECKING:
 
 __all__ = ["SleepTimeAgent"]
 
-CONFIDENCE_DEFAULT = 0.8  # UNAVAILABLE: #188 — replace with LLM-driven confidence scorer
-SALIENCE_DEFAULT = 0.5  # UNAVAILABLE: #188 — replace with LLM-driven salience scorer
+CONFIDENCE_DEFAULT = 0.8  # UNAVAILABLE: #188 — null path fallback (no LLM wired)
+SALIENCE_DEFAULT = 0.5  # UNAVAILABLE: #188 — null path fallback (no LLM wired)
 SUMMARY_TRUNCATE_CHARS = 80
 
 
@@ -81,12 +82,14 @@ class SleepTimeAgent:
         clock: Callable[[], str] = _now_utc,
         item_id_factory: Callable[[], str] = lambda: f"item-{uuid.uuid4().hex[:12]}",
         payload_reader: Callable[[str], dict | None] | None = None,
+        provenance_computer: "ProvenanceComputer | None" = None,
     ) -> None:
         self._stores = stores
         self._event_logger = event_logger
         self._clock = clock
         self._item_id_factory = item_id_factory
         self._payload_reader = payload_reader
+        self._provenance_computer = provenance_computer
         self._started = False
         self._seq = 0
 
@@ -145,7 +148,15 @@ class SleepTimeAgent:
         now = self._clock()
         item_id = payload.get("item_id") or self._item_id_factory()
         content = payload["content"]
-        content_summary = json.dumps(content)[:SUMMARY_TRUNCATE_CHARS]
+
+        if self._provenance_computer is not None and "confidence" not in payload and "salience" not in payload:
+            confidence, salience, content_summary = self._provenance_computer.compute(payload)
+            content_summary = content_summary[:SUMMARY_TRUNCATE_CHARS]
+        else:
+            confidence = payload.get("confidence", CONFIDENCE_DEFAULT)
+            salience = payload.get("salience", SALIENCE_DEFAULT)
+            content_summary = json.dumps(content)[:SUMMARY_TRUNCATE_CHARS]
+
         return MemoryItem(
             item_id=item_id,
             store=payload["store"],
@@ -153,8 +164,8 @@ class SleepTimeAgent:
             source_event_id=payload["source_event_id"],
             created_at=now,
             last_confirmed_at=now,
-            confidence=payload.get("confidence", CONFIDENCE_DEFAULT),
-            salience=payload.get("salience", SALIENCE_DEFAULT),
+            confidence=confidence,
+            salience=salience,
             privacy_level=payload["privacy_level"],
             mutability=payload["mutability"],
             valid_from=now,
