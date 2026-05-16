@@ -83,6 +83,17 @@
   .tuning-top-bar .reset-all { background: #1f2530; color: var(--fg); border: 1px solid #2c3340; padding: 3px 8px; cursor: pointer; border-radius: 3px; font: inherit; font-size: 11px; }
   .tuning-top-bar .reset-all:hover { border-color: var(--warn); color: var(--warn); }
   .tuning-top-bar .hint { font-size: 10px; color: var(--muted); flex: 1; text-align: right; }
+  .seam-row { display: flex; align-items: center; gap: 8px; padding: 6px 6px; border-radius: 3px; margin-bottom: 4px; background: var(--row); transition: background 0.25s ease; font-size: 11.5px; }
+  .seam-row.green-flash { background: rgba(86, 211, 100, 0.25); }
+  .seam-row.red-flash { background: rgba(249, 117, 131, 0.35); }
+  .seam-row .seam-label { flex: 1; color: var(--fg); }
+  .seam-row .seam-badge { font-size: 10px; padding: 1px 5px; border-radius: 2px; font-variant-numeric: tabular-nums; }
+  .seam-badge.enabled { color: var(--ok); background: rgba(86, 211, 100, 0.12); border: 1px solid rgba(86, 211, 100, 0.3); }
+  .seam-badge.disabled { color: var(--err); background: rgba(249, 117, 131, 0.12); border: 1px solid rgba(249, 117, 131, 0.3); }
+  .seam-badge.swapping { color: var(--warn); background: rgba(255, 166, 87, 0.12); border: 1px solid rgba(255, 166, 87, 0.3); }
+  .seam-row .seam-toggle { background: #1f2530; color: var(--fg); border: 1px solid #2c3340; padding: 2px 7px; cursor: pointer; border-radius: 3px; font: inherit; font-size: 10.5px; white-space: nowrap; }
+  .seam-row .seam-toggle:hover { border-color: var(--accent); color: var(--accent); }
+  .seam-row .seam-toggle:disabled { opacity: 0.45; cursor: not-allowed; }
   .audit-tail { border-top: 1px solid #1f2530; background: #11151c; padding: 8px 12px; font-size: 10.5px; flex-shrink: 0; }
   .audit-tail .audit-head { display: flex; align-items: center; gap: 6px; color: var(--accent); text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; font-size: 10.5px; margin-bottom: 4px; }
   .audit-tail .audit-head .label { flex: 1; }
@@ -142,6 +153,14 @@
       <div class="tuning-top-bar">
         <button class="reset-all" id="btn-reset-all" title="Reset every Tier-B key to its default">[reset all]</button>
         <span class="hint" id="tuning-loading">loading from /config...</span>
+      </div>
+      <div id="hot-seams-section" class="tuning-section">
+        <div class="tuning-section-header" id="hot-seams-header">
+          <span class="caret"></span>
+          <span class="name">Hot seams (12)</span>
+          <button class="section-reset" id="btn-seams-enable-all" title="Re-enable all 12 hot seams">[enable all]</button>
+        </div>
+        <div class="tuning-section-body" id="hot-seams-body"></div>
       </div>
       <div id="tuning-sections"></div>
     </div>
@@ -1067,6 +1086,187 @@
     renderAuditTail();
   });
 
+  // ---------------- Hot seams toggle panel (Dashboard P1 D3) ----------------
+  // §F3 locked event shapes: model_swap_completed / model_swap_rejected payloads
+  // carry {seam, from_enabled, to_enabled} (completed) or {seam, attempted_enabled,
+  // reason} (rejected). Client state reconciles from these WS events after each
+  // optimistic toggle.
+
+  const HOT_SEAMS = [
+    "vad", "smart_turn", "backchannel", "asr", "tts",
+    "scene_scorer", "grounding_model", "av_conflict_scorer",
+    "urgency_scorer", "embedder", "attachment_risk_monitor",
+    "fast_tool_dispatcher",
+  ];
+
+  const SEAM_LABELS = {
+    vad: "VAD",
+    smart_turn: "Smart-turn",
+    backchannel: "Backchannel",
+    asr: "ASR",
+    tts: "TTS",
+    scene_scorer: "Scene scorer",
+    grounding_model: "Grounding model",
+    av_conflict_scorer: "AV conflict scorer",
+    urgency_scorer: "Urgency scorer",
+    embedder: "Embedder",
+    attachment_risk_monitor: "Attachment risk monitor",
+    fast_tool_dispatcher: "Fast tool dispatcher",
+  };
+
+  // seam → { enabled: bool, pending: bool, row, badge, toggleBtn }
+  const seamState = new Map();
+
+  const hotSeamsBody = document.getElementById("hot-seams-body");
+  const hotSeamsHeader = document.getElementById("hot-seams-header");
+  const hotSeamsSection = document.getElementById("hot-seams-section");
+  const btnSeamsEnableAll = document.getElementById("btn-seams-enable-all");
+
+  hotSeamsHeader.addEventListener("click", (e) => {
+    if (e.target === btnSeamsEnableAll) return;
+    hotSeamsSection.classList.toggle("collapsed");
+  });
+  btnSeamsEnableAll.addEventListener("click", (e) => {
+    e.stopPropagation();
+    for (const seam of HOT_SEAMS) {
+      const s = seamState.get(seam);
+      if (s && !s.enabled && !s.pending) postSeamToggle(seam, true);
+    }
+  });
+
+  function setBadge(s, state) {
+    // state: "enabled" | "disabled" | "swapping"
+    s.badge.className = "seam-badge " + state;
+    s.badge.textContent = state === "swapping" ? "swapping…" : state;
+  }
+
+  function flashSeamRow(s, kind) {
+    s.row.classList.add(kind);
+    setTimeout(() => s.row.classList.remove(kind), kind === "green-flash" ? 220 : 420);
+  }
+
+  function buildSeamRow(seam) {
+    const row = document.createElement("div");
+    row.className = "seam-row";
+    row.dataset.seam = seam;
+
+    const label = document.createElement("span");
+    label.className = "seam-label";
+    label.textContent = SEAM_LABELS[seam] || seam;
+
+    const badge = document.createElement("span");
+    badge.className = "seam-badge enabled";
+    badge.textContent = "enabled";
+
+    const btn = document.createElement("button");
+    btn.className = "seam-toggle";
+    btn.textContent = "disable";
+
+    row.appendChild(label);
+    row.appendChild(badge);
+    row.appendChild(btn);
+
+    const s = { enabled: true, pending: false, row, badge, toggleBtn: btn };
+    seamState.set(seam, s);
+
+    btn.addEventListener("click", () => {
+      if (s.pending) return;
+      postSeamToggle(seam, !s.enabled);
+    });
+
+    return row;
+  }
+
+  function applySeamEnabled(seam, enabled) {
+    const s = seamState.get(seam);
+    if (!s) return;
+    s.enabled = enabled;
+    s.pending = false;
+    setBadge(s, enabled ? "enabled" : "disabled");
+    s.toggleBtn.disabled = false;
+    s.toggleBtn.textContent = enabled ? "disable" : "enable";
+  }
+
+  async function postSeamToggle(seam, enabled) {
+    const s = seamState.get(seam);
+    if (!s || s.pending) return;
+
+    // Optimistic update
+    s.pending = true;
+    s.toggleBtn.disabled = true;
+    setBadge(s, "swapping");
+
+    try {
+      const r = await fetch("/config/model-swap", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ seam, enabled }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok || !data.accepted) {
+        // Revert
+        s.pending = false;
+        s.toggleBtn.disabled = false;
+        setBadge(s, s.enabled ? "enabled" : "disabled");
+        flashSeamRow(s, "red-flash");
+        showToast(`model-swap ${seam} rejected: ${data.error || "HTTP " + r.status}`);
+        return;
+      }
+      // Success: apply optimistic state; WS reconciliation will confirm
+      applySeamEnabled(seam, enabled);
+      flashSeamRow(s, "green-flash");
+    } catch (e) {
+      s.pending = false;
+      s.toggleBtn.disabled = false;
+      setBadge(s, s.enabled ? "enabled" : "disabled");
+      flashSeamRow(s, "red-flash");
+      showToast(`model-swap ${seam} error: ${e.message}`);
+    }
+  }
+
+  function initSeamsPanel(seamsData) {
+    hotSeamsBody.innerHTML = "";
+    for (const { seam, enabled } of seamsData) {
+      const row = buildSeamRow(seam);
+      hotSeamsBody.appendChild(row);
+      if (!enabled) applySeamEnabled(seam, false);
+    }
+  }
+
+  async function loadSeams() {
+    try {
+      const r = await fetch("/config/seams");
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const data = await r.json();
+      initSeamsPanel(data.seams || []);
+    } catch (e) {
+      // Render rows in default-enabled state; WS will reconcile if server comes up
+      hotSeamsBody.innerHTML = "";
+      for (const seam of HOT_SEAMS) {
+        hotSeamsBody.appendChild(buildSeamRow(seam));
+      }
+      log("seams: load failed: " + e.message);
+    }
+  }
+
+  // Reconcile client state from §F3 WS events (handles multi-tab / rejection-only paths)
+  subscribeEvents((evt) => {
+    if (evt.event_type === "model_swap_completed") {
+      const p = evt.payload_inline || {};
+      if (p.seam) applySeamEnabled(p.seam, p.to_enabled);
+    } else if (evt.event_type === "model_swap_rejected") {
+      const p = evt.payload_inline || {};
+      if (!p.seam) return;
+      const s = seamState.get(p.seam);
+      if (!s) return;
+      s.pending = false;
+      s.toggleBtn.disabled = false;
+      setBadge(s, s.enabled ? "enabled" : "disabled");
+      flashSeamRow(s, "red-flash");
+    }
+  });
+
+  loadSeams();
   loadConfig();
 })();
 </script>
