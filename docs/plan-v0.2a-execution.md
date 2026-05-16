@@ -15,8 +15,8 @@
 
 After this plan ships:
 
-- A new `MCPBackgroundReasoner` concrete class implements the existing
-  `BackgroundReasoner` Protocol (in
+- T2 will create a new `MCPBackgroundReasoner` concrete class
+  implementing the existing `BackgroundReasoner` Protocol (in
   `companion_harness/background_reasoner.py`) by wrapping the upstream
   `mcp` Python SDK inline (no extra `MCPClient` Protocol wrapper).
 - `MCPBackgroundReasoner.select_and_call(request)` selects a tool via
@@ -26,18 +26,23 @@ After this plan ships:
   with `routing_tier="smart"` stamped on `tool_call_dispatched`
   (extends v0.1f Anchor 3 — the field already exists; today only
   `FastToolDispatcher` writes it, with `"fast"`).
-- A module-level `BackgroundReasonerBudgetExhausted` exception is
-  raised when wall-clock or step-count budgets are exceeded; no base
-  class is introduced. Each concrete reasoner keeps its own inline
+- T3 will create a module-level `BackgroundReasonerBudgetExhausted`
+  exception at module scope in `background_reasoner.py`, raised when
+  wall-clock or step-count budgets are exceeded; no base class is
+  introduced. Each concrete reasoner keeps its own inline
   `_budget_remaining` accounting.
-- Two new ConfigStore Tier-B keys (`reasoner.budget_wall_clock_s`,
-  `reasoner.budget_step_count`) flow through the existing snapshot
-  path in `realtime_orchestrator.py:_snapshot_config()`.
-- `manual_test_console/server.py` reads the
-  `BACKGROUND_REASONER={fake,mcp}` env var at startup and constructs
-  the corresponding adapter. The `mcp` SDK import stays inside
-  `MCPBackgroundReasoner`; `server.py` only sees the abstract
-  Protocol.
+- T3 will add two new ConfigStore Tier-B keys
+  (`reasoner.budget_wall_clock_s`, `reasoner.budget_step_count`) and
+  wire them through the existing snapshot path in
+  `realtime_orchestrator.py:_snapshot_config()`. These keys do NOT
+  exist in the current ALLOWLIST; T3 adds them.
+- T4 will add `BACKGROUND_REASONER={fake,mcp}` env-var dispatch to
+  `manual_test_console/server.py` and will extend
+  `build_live_pipeline()` to accept a `background_reasoner` param
+  that forwards to the orchestrator constructor. Neither the env
+  dispatch nor the `build_live_pipeline` extension exist in main
+  today. The `mcp` SDK import stays inside `MCPBackgroundReasoner`;
+  `server.py` only sees the abstract Protocol.
 - A new `signal_producer_fallback`-class event is emitted whenever
   MCP returns a tool not in the local registry (the existing
   `signal_producer_fallback` event-type, already used for
@@ -95,8 +100,9 @@ the event_log iterable on `evt_type == "tool_progress_event"` and
 ignores other event types.
 
 **Derives from:** v0.1f Anchor 4 (replay determinism contract:
-`ms_since_last_filler` derived from `timestamp_mono_ms` deltas
-between `tool_progress_event`s); invariants #5 + #6.
+`ms_since_last_filler` derived as
+`now_mono_ms − latest matching tool_progress_event timestamp_mono_ms`,
+NOT a delta between consecutive events); invariants #5 + #6.
 **Implication for MCP:** `MCPBackgroundReasoner` MUST emit
 `tool_progress_event` rows during the MCP stream (one per upstream
 progress update), not just a terminal `tool_call_completed`.
@@ -115,10 +121,12 @@ threaded through a shared helper).
 
 **Derives from:** v0.1f Anchor 3 (routing_tier recorded as a field
 on `tool_call_dispatched`); single-source-of-truth discipline.
-**Schema:** `v0_1f_event_schema.py:91-103` already accepts
-`routing_tier ∈ {fast, smart}`; v0.2a adds no schema change to this
-event type. The event-emission helper inside
-`MCPBackgroundReasoner` mirrors
+**Schema:** `v0_1f_event_schema.py:91-103` requires `routing_tier`
+as a field on `tool_call_dispatched`; the producer's type hints
+restrict the values to `{"fast", "smart"}` (the schema does not
+enumerate accepted values — the restriction is enforced by the
+producer). v0.2a adds no schema change to this event type. The
+event-emission helper inside `MCPBackgroundReasoner` mirrors
 `FastToolDispatcher._make_event()`'s shape but lives in the reasoner
 module (no shared base class — see Anchor A4).
 
@@ -307,12 +315,20 @@ event id is the natural anchor; see Closed Decision OQ-D2).
 ```
 
 prints a version `>= 1.6.0`. Local venv same check passes.
+Additionally, the coder MUST verify the streaming-progress API
+surface used by T2 is present at the pinned version (TBD verify at
+impl time — e.g., confirm `mcp.ClientSession` or equivalent
+entry-point exists); if it is absent or renamed, bump the pin in
+T1's PR before merging.
 
 ### OQs (with leans)
 
 - **OQ-1.1**: Pin to `>=1.6.0` or to an exact version?
   **Lean: `>=1.6.0`** — the upstream MCP SDK is still moving;
-  lockfiles are out of scope until v0.3 (per v0.2 Anchor 5).
+  lockfiles are out of scope until v0.3 (per v0.2 Anchor 5). The
+  exact version probed in T2's pre-flight step (see T2 Pre-flight)
+  should be noted in T1's PR description as the confirmed-good
+  version so future readers can reproduce the pin rationale.
 - **OQ-1.2**: Does the `mcp` SDK pull large transitive deps that
   bloat the dev venv? **TBD verify at impl time** — if yes, mark a
   follow-up to split into an optional-extra (`pip install
@@ -466,12 +482,16 @@ Coder runs (after T1 lands):
 
 ```
 /raid/yid042/venvs/companion-harness/bin/python -c \
-    "from mcp import ClientSession; import mcp; print(mcp.__version__)"
+    "import mcp; print(mcp.__version__)"
 ```
 
-to confirm the SDK import works and the streaming-progress API is
-present in the pinned version. If not, file an issue and bump the
-T1 pin in this PR (a one-line edit, OK to bundle).
+then separately confirms the specific API entry-points used by T2
+are present. **TBD verify at impl time**: the exact attribute check
+(e.g., `assert hasattr(mcp, 'ClientSession')` or the streaming
+equivalent — the check must assert a concrete attribute, not merely
+that `import mcp` succeeds). Record the confirmed attribute path in
+the PR description. If not present, file an issue and bump the T1
+pin in this PR (a one-line edit, OK to bundle).
 
 ### Success criterion
 
@@ -557,29 +577,42 @@ passes. All existing `FakeBackgroundReasoner` tests
    BackgroundReasoner.select_and_call() invocation; exceed raises
    BackgroundReasonerBudgetExhausted."`
 4. In `realtime_orchestrator._snapshot_config()`, after the
-   existing detector + policy reads, add a block:
+   existing detector + policy reads, add a block that reads the two
+   new keys T3 adds to `config_schema.py`. The current
+   `ConfigStore.get(key)` signature raises `KeyError` when the key
+   is absent — do NOT pass a `default=` kwarg. Use try/except:
    ```python
    if self._background_reasoner is not None:
-       wcs = cfg.get("reasoner.budget_wall_clock_s", default=None)
-       sc  = cfg.get("reasoner.budget_step_count",   default=None)
+       try:
+           wcs = cfg.get("reasoner.budget_wall_clock_s")
+       except KeyError:
+           wcs = None
+       try:
+           sc = cfg.get("reasoner.budget_step_count")
+       except KeyError:
+           sc = None
        if wcs is not None and hasattr(self._background_reasoner, "_budget_wall_clock_s"):
            self._background_reasoner._budget_wall_clock_s = float(wcs)
        if sc is not None and hasattr(self._background_reasoner, "_budget_step_count"):
            self._background_reasoner._budget_step_count = int(sc)
    ```
-   **TBD verify at impl time**: confirm the ConfigStore `get()`
-   signature in `manual_test_console/config_store.py` (the snippet
-   above guesses `default=None`; adjust to the real signature).
+   **TBD verify at impl time**: confirm the above matches the real
+   `ConfigStore.get()` signature in
+   `manual_test_console/config_store.py`; if the signature has
+   changed, adjust accordingly. Alternatively, T3 may extend
+   `ConfigStore.get()` to accept an optional `default` kwarg as
+   part of this task — that is equally acceptable and avoids the
+   try/except boilerplate.
 5. Document that `FakeBackgroundReasoner` does NOT honour the
    budget keys (no-op for it); only `MCPBackgroundReasoner`
    reads them.
 6. The budget application is a hot-swap at the EOU boundary
    (existing `_snapshot_config()` cadence). New value takes effect
    on the next `select_and_call()` invocation.
-7. In `_smart_path_task` (lines 1106-1123), wrap the
-   `async for evt in event_iter:` loop in a `try` /
-   `except BackgroundReasonerBudgetExhausted as exc:` clause. On
-   exception:
+7. T3 will add a `try` / `except BackgroundReasonerBudgetExhausted
+   as exc:` handler around the `async for evt in event_iter:` loop
+   in `_smart_path_task` (lines 1106-1123 in current main — does NOT
+   exist today). On exception:
    - log a `reasoner_budget_exhausted` event with
      `payload_inline={"budget_kind": exc.budget_kind,
      "limit": exc.limit, "observed": exc.observed}`;
@@ -656,14 +689,19 @@ passes.
 - **OQ-3.1**: Budget defaults — 30s / 8 steps, or other?
   **Lean: 30s / 8 steps.** Justification: 30s matches v0.1f OQ-3's
   wall-clock budget; 8 steps is a small-MCP-server estimate (3-5
-  for a search-and-aggregate flow + headroom).
+  for a search-and-aggregate flow + headroom). Note: the
+  ConfigStore extension (new ALLOWLIST keys) and the inline
+  `_budget_*` counters in `MCPBackgroundReasoner` arrive together
+  in T3 — neither ships without the other.
 - **OQ-3.2**: Should budget exhaustion count as a "soft failure"
   (informational metric only) or block the gate?
-  **Lean: gate at < 0.05 exhaustion rate.** Matches the v0.2
-  pinned success criterion clause #1 (default flip from `fake` to
-  `mcp` gates on
-  `background_reasoner_budget_exhaustion_rate < 0.05` for 24h of
-  production use).
+  **Lean: v0.2a's gate is "the exception fires correctly in the
+  contract tests" (binary pass/fail).** The
+  `background_reasoner_budget_exhaustion_rate < 0.05` production-rate
+  gate is a v0.2-final measurement that requires 24h of production
+  use; it cannot be verified in v0.2a's contract-test-only harness.
+  v0.2a passes this OQ by shipping the tests in T3; rate aggregation
+  is deferred to v0.2-final's replay-report task.
 
 ### Cross-references
 
@@ -684,13 +722,12 @@ passes.
   construction site, read `BACKGROUND_REASONER` env var and
   construct either `FakeBackgroundReasoner` (default) or
   `MCPBackgroundReasoner` (requires `MCP_SERVER_URL` env var).
-- `manual_test_console/live_pipeline.py` — verify
-  `build_live_pipeline()` accepts a `background_reasoner` param
-  that flows through to the orchestrator constructor. **TBD verify
-  at impl time**: today the orchestrator constructor accepts
-  `background_reasoner` (see
-  `realtime_orchestrator.py:237`); confirm `build_live_pipeline`
-  forwards it.
+- `manual_test_console/live_pipeline.py` — T4 will extend
+  `build_live_pipeline()` to accept a `background_reasoner` param
+  that flows through to the orchestrator constructor. This param
+  does NOT exist in main today. The orchestrator constructor already
+  accepts `background_reasoner` (see `realtime_orchestrator.py:237`);
+  T4 threads it through the factory.
 
 ### Implementation sketch (8 bullets)
 
@@ -715,8 +752,14 @@ passes.
 2. The `mcp` SDK import (Anchor A1) stays inside
    `MCPBackgroundReasoner`, NOT in `server.py`. `server.py` sees
    only the Protocol — adapter-first invariant preserved.
-3. Pass the returned reasoner into `build_live_pipeline(...,
-   background_reasoner=reasoner)` at the existing call site.
+3. Extend `build_live_pipeline()` in `live_pipeline.py` to accept
+   `background_reasoner: "BackgroundReasoner | None" = None` and
+   forward it to the orchestrator constructor (which already accepts
+   it at `realtime_orchestrator.py:237`). Then pass the returned
+   reasoner into `build_live_pipeline(...,
+   background_reasoner=reasoner)` at the `server.py` call site.
+   This is the dedicated sub-task for the factory-signature extension
+   called out in the Files touched section above.
 4. Extend the server startup banner (the existing region near
    `print()` calls during startup) with a line:
    `f"BACKGROUND_REASONER={choice}"` for operator visibility.
@@ -814,7 +857,8 @@ that bit-identical Tier-B replay holds via recorded events.
   (`test_evidence_at_replay_from_recorded_events_is_bit_identical`):
   record one full MCP `select_and_call` event stream into an
   in-memory event log; pass the log to
-  `ToolProgressEmitter.evidence_at(tool_call_id, now_ms)`;
+  `ToolProgressEmitter.evidence_at(tool_call_id, now_mono_ms,
+  event_log)` (three-arg signature — `event_log` is required);
   assert the returned `ToolProgressEvidence` is bit-identical
   to a second call with the same args (invariant #5; ratifies
   Anchor A2).
@@ -841,10 +885,11 @@ that bit-identical Tier-B replay holds via recorded events.
    `ToolProgressEvidence` outputs).
 6. Verify the new `reasoner_budget_exhausted` and
    `signal_producer_fallback` schema entries are honored by the
-   schema-conformance test that walks every emitted event — **TBD
-   verify at impl time**: the existing schema-walker test name
-   (likely `tests/test_v0_1f_event_schema.py`); extend it if
-   necessary.
+   schema-conformance test that walks every emitted event. **TBD
+   verify at impl time**: locate the existing schema-walker test
+   (do NOT assume its name — check `tests/` for the file that
+   asserts every emitted event type has a schema row); extend it
+   with the two new event types if necessary.
 
 ### Success criterion
 
@@ -892,16 +937,16 @@ v0.2a's gates are a subset of the v0.2 milestone gates
 this slice can land. Each gate cites the event type it counts +
 which test or script aggregates it.
 
-| Metric | Gate | Owner | Event type measured | Aggregator |
-|---|---|---|---|---|
-| `background_reasoner_budget_exhaustion_rate` | < 0.05 (24h prod tolerance; v0.2a measures via contract test only) | T3 owner | `reasoner_budget_exhausted` / total `tool_call_dispatched` with `routing_tier="smart"` | `test_mcp_background_reasoner_budget_wall_clock` + `..._step_count` (assert exception under exhaustion; rate-aggregation deferred to v0.2-final replay-report) |
-| `background_reasoner_summary_set_context_attribution_rate` | == 1.0 | T2 owner | Each `set_context()` call has a `MemoryItem.source_event_id` pointing at a recorded `tool_call_completed` OR `tool_call_cancelled` event | `test_mcp_background_reasoner_summarize_provenance` |
-| `tool_call_caused_by_closure_rate` (v0.1f carry-forward) | == 1.0 | T2 owner | Every `tool_*` event emitted by `MCPBackgroundReasoner` has non-empty `caused_by[]` closing to the upstream signal | `test_mcp_background_reasoner_event_chain` |
-| `routing_tier_smart_attribution_rate` | == 1.0 | T2 owner | Every `tool_call_dispatched` emitted by `MCPBackgroundReasoner` carries `payload_inline["routing_tier"] == "smart"` | `test_mcp_background_reasoner_event_chain` (Anchor A3) |
-| `mcp_fallback_rate` (informational at v0.2a) | informational; baseline | T2 owner | `signal_producer_fallback` with `reason ∈ {unknown_mcp_tool, unknown_mcp_progress_stage}` / total `select_and_call` | `test_mcp_background_reasoner_unknown_tool` (per-case gate; rate aggregation deferred) |
-| `evidence_at_replay_determinism_rate` | == 1.0 | T5 owner | Two `evidence_at()` calls on the same recorded `tool_progress_event` log produce byte-identical `ToolProgressEvidence` | `test_mcp_reasoner_replay_determinism` (Anchor A2 / invariant #5) |
-| `local_ci_pass_rate` | == 1.0 | each task owner | N/A (test-pass aggregator) | local pytest on the v0.2a test suite |
-| `remote_smoke_pass_rate` | == 1.0 | each task owner | N/A | b200 smoke (`BACKGROUND_REASONER=mcp` startup + one tool call) |
+| Metric | Gate | Owner | Event type measured | Measurement (numerator / denominator) | Aggregator |
+|---|---|---|---|---|---|
+| `background_reasoner_budget_exhaustion_rate` | v0.2a: exception fires in contract tests (binary); v0.2-final: < 0.05 over 24h prod | T3 owner | `reasoner_budget_exhausted` / total `tool_call_dispatched` with `routing_tier="smart"` | Numerator: count of `reasoner_budget_exhausted` events; Denominator: count of `tool_call_dispatched` events where `routing_tier=="smart"`; rate aggregation requires production log — deferred to v0.2-final | `test_mcp_background_reasoner_budget_wall_clock` + `..._step_count` (assert exception fires; v0.2a gate is pass/fail only) |
+| `background_reasoner_summary_set_context_attribution_rate` | == 1.0 | T2 owner | Each `set_context()` call has a `MemoryItem.source_event_id` pointing at a recorded `tool_call_completed` OR `tool_call_cancelled` event | Numerator: `set_context()` calls where `MemoryItem.source_event_id` resolves to a recorded event; Denominator: all `set_context()` calls from smart-path drain | `test_mcp_background_reasoner_summarize_provenance` |
+| `tool_call_caused_by_closure_rate` (v0.1f carry-forward) | == 1.0 | T2 owner | Every `tool_*` event emitted by `MCPBackgroundReasoner` has non-empty `caused_by[]` closing to the upstream signal | Numerator: `tool_*` events with non-empty `caused_by[]`; Denominator: all `tool_*` events emitted by `MCPBackgroundReasoner` | `test_mcp_background_reasoner_event_chain` |
+| `routing_tier_smart_attribution_rate` | == 1.0 | T2 owner | Every `tool_call_dispatched` emitted by `MCPBackgroundReasoner` carries `payload_inline["routing_tier"] == "smart"` | Numerator: `tool_call_dispatched` events with `routing_tier=="smart"`; Denominator: all `tool_call_dispatched` events emitted by `MCPBackgroundReasoner` | `test_mcp_background_reasoner_event_chain` (Anchor A3) |
+| `mcp_fallback_rate` (informational at v0.2a) | informational; baseline | T2 owner | `signal_producer_fallback` with `reason ∈ {unknown_mcp_tool, unknown_mcp_progress_stage}` / total `select_and_call` | Numerator: `signal_producer_fallback` events with qualifying `reason`; Denominator: total `select_and_call` invocations; rate aggregation deferred | `test_mcp_background_reasoner_unknown_tool` (per-case gate; rate aggregation deferred) |
+| `evidence_at_replay_determinism_rate` | == 1.0 | T5 owner | Two `evidence_at(tool_call_id, now_mono_ms, event_log)` calls on the same recorded `tool_progress_event` log produce byte-identical `ToolProgressEvidence` | Numerator: replay calls where output is byte-identical to first call; Denominator: all replay calls in the test matrix | `test_mcp_reasoner_replay_determinism` (Anchor A2 / invariant #5) |
+| `local_ci_pass_rate` | == 1.0 | each task owner | N/A (test-pass aggregator) | Numerator: passing tests; Denominator: total tests in v0.2a suite | local pytest on the v0.2a test suite |
+| `remote_smoke_pass_rate` | == 1.0 | each task owner | N/A | Numerator: smoke scenarios completing without error; Denominator: smoke scenarios attempted | b200 smoke (`BACKGROUND_REASONER=mcp` startup + one tool call) |
 
 All v0.1a–v0.1j gates carry forward unchanged (v0.2a does not
 amend any).
