@@ -548,7 +548,12 @@ class StreamingRealtimeOrchestrator:
             # so it stays set even after set_result() marks the future done — that was
             # the pre-fix bug (done future → guard evaluated False → duplicate decision).
             if self._decision_in_flight:
-                self._emit("turn_signal_coalesced", [self._pending_signal_evt_id], "signal")
+                evt_type = (
+                    "coalesced_during_playback"
+                    if self._audio_output.is_playing
+                    else "turn_signal_coalesced"
+                )
+                self._emit(evt_type, [self._pending_signal_evt_id], "signal")
                 continue
 
             self._decision_in_flight = True
@@ -950,6 +955,15 @@ class StreamingRealtimeOrchestrator:
             await self._batch_open_event.wait()
             self._batch_open_event.clear()
 
+            # Discard frames buffered between turn N's close and turn N+1's open.
+            # These are silence/breath/early-N+1, not turn N+1's main content.
+            # Without this, MiniCPM conditions on stale prefix and answers the wrong question.
+            while not self._tee_to_foreground.empty():
+                try:
+                    self._tee_to_foreground.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+
             frame_iter = self._make_batch_frame_iter()
             async for proposal in self._foreground_model.process_stream(
                 frame_iter,
@@ -1007,12 +1021,11 @@ class StreamingRealtimeOrchestrator:
         """T4: Await policy_decision Future; grace window; snapshot; synthesize if approved."""
         while True:
             signal_evt_id, decision_future, policy_evt_id = await self._policy_decisions.get()
-            # Reset the coalescing guard now that this decision has been consumed.
-            # T2 sets _decision_in_flight=True when it starts processing a TurnSignal
-            # and leaves it True until T4 dequeues here — so any same-turn signals
-            # that arrived in _t2_inbox before this get() correctly emitted
-            # turn_signal_coalesced instead of duplicate policy_decision events.
-            self._decision_in_flight = False
+            # _decision_in_flight is NOT reset here — it stays True through the full
+            # synthesis cycle (including play_task) so that TurnSignals arriving during
+            # Kokoro playback are coalesced and emit coalesced_during_playback rather
+            # than stacking a second synthesis on top of the first.  The reset moves to
+            # the finally: block below, after play_task completes.
             decision = await decision_future
 
             # Close the batch for T3.
@@ -1022,6 +1035,7 @@ class StreamingRealtimeOrchestrator:
             if decision.action_type == "silence":
                 self.proposal_buffer.clear()
                 self._first_proposal_event.clear()
+                self._decision_in_flight = False
                 continue
 
             # Tool dispatch path — non-blocking; all events forwarded to logger.
@@ -1056,6 +1070,7 @@ class StreamingRealtimeOrchestrator:
                         self._tool_progress_emitter.record_filler(result.tool_call_id, now_ms)
                 self.proposal_buffer.clear()
                 self._first_proposal_event.clear()
+                self._decision_in_flight = False
                 continue
 
             # Grace window: wait for at least one proposal BEFORE snapshot (edge case h).
@@ -1069,6 +1084,7 @@ class StreamingRealtimeOrchestrator:
                     self._emit("synthesis_skipped_no_proposal", [policy_evt_id], "signal")
                     self.proposal_buffer.clear()
                     self._first_proposal_event.clear()
+                    self._decision_in_flight = False
                     continue
 
             # SNAPSHOT — no await between these two lines (race-freedom).
@@ -1102,6 +1118,7 @@ class StreamingRealtimeOrchestrator:
                     self._audio_output.request_stop(caused_by=[gen_event_id])
             finally:
                 self._audio_output.set_generation_task(None)
+                self._decision_in_flight = False
 
     async def _smart_path_task(self) -> None:
         """T5: Drain smart_path_queue; drive BackgroundReasoner; inject context (OQ-12)."""
