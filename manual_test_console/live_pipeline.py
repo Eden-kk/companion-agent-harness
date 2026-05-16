@@ -341,8 +341,8 @@ def _make_live_policy_inputs_builder(
             eou_probability=max_p_done,
             assistant_speaking=assistant_speaking,
             scene_change_score=scene_score,
-            deictic_reference=False,
-            user_addressed_agent=False,  # placeholder; AddressingClassifier overrides post-ASR.
+            deictic_reference=False,  # UNAVAILABLE: #169 — XLLM 2025 deictic detector pending model wiring
+            user_addressed_agent=False,  # UNAVAILABLE: #139 — placeholder; AddressingClassifier overrides post-ASR.
             urgency_score=_urgency.score("", None),  # UNAVAILABLE: #171
             proactivity_budget_remaining={},
             privacy_mode="normal",
@@ -350,14 +350,14 @@ def _make_live_policy_inputs_builder(
             social_mode=social_mode,
             risk_mode="normal",
             cooldown_state={},
-            attachment_risk_level=0.0,
+            attachment_risk_level=0.0,  # UNAVAILABLE: #213 — EventStreamAttachmentRiskMonitor wiring pending
             audio_visual_conflict_score=_av.score(b"", None),  # UNAVAILABLE: #168
             grounding_confidence=(
                 vision_sidecar.grounding_confidence()
                 if vision_sidecar is not None
-                else 0.0  # UNAVAILABLE: #161 — real grounding model pending model wiring
+                else 0.0  # UNAVAILABLE: #172 — real grounding model pending model wiring
             ),
-            deictic_ambiguous=False,
+            deictic_ambiguous=False,  # UNAVAILABLE: #169 — XLLM 2025 deictic ambiguity pending model wiring
         )
 
     return _builder
