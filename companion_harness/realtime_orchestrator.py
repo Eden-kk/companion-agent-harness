@@ -1045,15 +1045,6 @@ class StreamingRealtimeOrchestrator:
             await self._batch_open_event.wait()
             self._batch_open_event.clear()
 
-            # Discard frames buffered between turn N's close and turn N+1's open.
-            # These are silence/breath/early-N+1, not turn N+1's main content.
-            # Without this, MiniCPM conditions on stale prefix and answers the wrong question.
-            while not self._tee_to_foreground.empty():
-                try:
-                    self._tee_to_foreground.get_nowait()
-                except asyncio.QueueEmpty:
-                    break
-
             frame_iter = self._make_batch_frame_iter()
             async for proposal in self._foreground_model.process_stream(
                 frame_iter,
@@ -1079,6 +1070,19 @@ class StreamingRealtimeOrchestrator:
         return pair[0] if pair is not None else None
 
     async def _bounded_frame_gen(self):  # type: ignore[return]
+        # Synchronously drain frames already in the queue (current turn's speech
+        # audio accumulated before batch-open).  These frames are yielded without
+        # any await so they reach infer_stream before T4's batch_close fires.
+        while True:
+            try:
+                frame_bytes, _ = self._tee_to_foreground.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            yield frame_bytes, self._consume_video_or_none()
+            if self._batch_close_event.is_set():
+                return
+
+        # Then wait for new frames (live streaming while the batch is open).
         while not self._batch_close_event.is_set():
             # Race between next frame and batch-close.
             get_task = asyncio.ensure_future(self._tee_to_foreground.get())
