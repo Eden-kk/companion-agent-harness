@@ -35,6 +35,10 @@ _WINDOW_SAMPLES = 512
 _SAMPLE_RATE = 16000
 # State shape per silero v6 ONNX: (2, batch=1, 128)
 _STATE_SHAPE = (2, 1, 128)
+# Context window required by Silero v6 ONNX encoder (64 samples @ 16 kHz).
+# Without this prepend, the encoder receives effectively-zero-padded input
+# and produces p_speech ~0.002 regardless of audio content (2026-05-17 bug).
+_CONTEXT_SIZE = 64
 
 
 class SileroVADModel:
@@ -73,11 +77,13 @@ class SileroVADModel:
             str(model_path), sess_options=sess_opts, providers=["CPUExecutionProvider"]
         )
         self._state: np.ndarray = np.zeros(_STATE_SHAPE, dtype=np.float32)
+        self._context: np.ndarray = np.zeros((1, _CONTEXT_SIZE), dtype=np.float32)
         self._sr = np.array(_SAMPLE_RATE, dtype=np.int64)
 
     def reset_states(self) -> None:
         """Reset Silero's recurrent state. Call between sessions."""
         self._state = np.zeros(_STATE_SHAPE, dtype=np.float32)
+        self._context = np.zeros((1, _CONTEXT_SIZE), dtype=np.float32)
 
     def __call__(self, frame: bytes) -> float:
         """Return p_speech in [0, 1] for the leading 32 ms of the frame."""
@@ -94,9 +100,13 @@ class SileroVADModel:
         # Copy first WINDOW_SAMPLES samples, normalize int16 → float.
         audio[:n] = np.frombuffer(usable, dtype=np.int16)[:n].astype(np.float32) / 32768.0
         audio = audio.reshape(1, _WINDOW_SAMPLES)
+        # Prepend 64-sample context window — Silero v6 ONNX encoder requires
+        # shape (1, 576), not (1, 512). See 2026-05-17 debugger finding.
+        x_with_ctx = np.concatenate([self._context, audio], axis=1)
 
         out, state_n = self._session.run(
-            None, {"input": audio, "state": self._state, "sr": self._sr}
+            None, {"input": x_with_ctx, "state": self._state, "sr": self._sr}
         )
         self._state = state_n
+        self._context = x_with_ctx[:, -_CONTEXT_SIZE:]
         return float(out[0, 0])
