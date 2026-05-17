@@ -1841,11 +1841,14 @@ def build_app(
 
         if tts is not None:
             t0 = time.monotonic()
+            # Native MiniCPM TTS triggers Token2wav cold-load on first call (~30-90s);
+            # Kokoro warms in <5s.
+            _tts_warmup_timeout = 120.0 if tts_label.startswith("MiniCPM-o native TTS") else 20.0
             try:
                 async def _drain_tts() -> None:  # noqa: WPS430
                     async for _ in tts.synthesize("ok", []):
                         pass
-                await asyncio.wait_for(_drain_tts(), timeout=20.0)
+                await asyncio.wait_for(_drain_tts(), timeout=_tts_warmup_timeout)
             except Exception as exc:
                 print(f"warmup_warning: tts: {type(exc).__name__}: {exc}", flush=True)
             timings["kokoro"] = round((time.monotonic() - t0) * 1000)
