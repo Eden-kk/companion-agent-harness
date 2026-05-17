@@ -68,6 +68,15 @@ BACKCHANNEL_PHRASES: tuple[str, ...] = (
     "mm",
     "uh",
     "hmm",
+    # Mandarin fillers (operator-confirmed set §8 #6)
+    "嗯",
+    "嗯嗯",
+    "啊",
+    "哦",
+    "对",
+    "是",
+    "好",
+    "好的",
 )
 
 # 16 kHz PCM16 → 32 ms per 512-sample frame. ASR every 32 frames ≈ 1 s.
@@ -75,11 +84,11 @@ _DEFAULT_ASR_INTERVAL_FRAMES = 32
 # Trailing audio window scored by ASR: 1.5 s.
 _WINDOW_SAMPLES = 16000 * 3 // 2  # 24000
 
-_PUNCT_RE = re.compile(r"[^a-z0-9 ]+")
+_PUNCT_RE = re.compile(r"[^\w ]+", re.UNICODE)
 
 
 def _normalize(text: str) -> str:
-    return _PUNCT_RE.sub("", text.strip().lower())
+    return _PUNCT_RE.sub("", text.strip().casefold())
 
 
 def _is_backchannel(text: str) -> bool:
@@ -89,11 +98,12 @@ def _is_backchannel(text: str) -> bool:
     for phrase in BACKCHANNEL_PHRASES:
         if norm == phrase:
             return True
-    # Substring match for short transcripts (≤ 3 words) to catch
-    # "mm-hmm." → "mm hmm" → match.
+    # Substring match for short transcripts (≤ 3 whitespace-delimited tokens)
+    # to catch "mm-hmm." → "mm hmm" → match. Only try multi-word phrases so
+    # single-token CJK fillers don't match as substrings of longer utterances.
     if len(norm.split()) <= 3:
         for phrase in BACKCHANNEL_PHRASES:
-            if phrase in norm:
+            if " " in phrase and phrase in norm:
                 return True
     return False
 
@@ -112,13 +122,15 @@ class ASRLexiconBackchannelModel:
     def __init__(
         self,
         *,
-        model_size: str = "tiny",
+        model_size: str = "base",
+        language: str | None = None,
         asr_interval_frames: int = _DEFAULT_ASR_INTERVAL_FRAMES,
         window_samples: int = _WINDOW_SAMPLES,
         download_root: str | Path | None = None,
     ) -> None:
         from faster_whisper import WhisperModel  # type: ignore
 
+        self._language = language
         kwargs: dict[str, Any] = {"device": "cpu", "compute_type": "int8"}
         if download_root is not None:
             kwargs["download_root"] = str(download_root)
@@ -159,7 +171,7 @@ class ASRLexiconBackchannelModel:
 
         segments, _info = self._model.transcribe(
             self._buf,
-            language="en",
+            language=self._language,
             temperature=0.0,
             beam_size=1,
             vad_filter=False,
