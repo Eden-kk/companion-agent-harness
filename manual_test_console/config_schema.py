@@ -113,10 +113,10 @@ ALLOWLIST: dict[str, TierBSchemaEntry] = {
     ),
     "detectors.smart_turn.silence_rms_threshold": TierBSchemaEntry(
         key="detectors.smart_turn.silence_rms_threshold",
-        code_location="turn_detector_smart.py:47",
-        default=100,
+        code_location="turn_detector_smart.py:52",
+        default=500,
         min=10,
-        max=500,
+        max=2000,
         step=5,
         value_type=int,
         description="RMS energy gate for silence-candidate detection",
