@@ -316,6 +316,7 @@ class StreamingRealtimeOrchestrator:
         self._decision_in_flight: bool = False
         self._pending_decision_future: asyncio.Future[SpeakDecision] | None = None
         self._pending_signal_evt_id: str = ""
+        self._pending_policy_evt_id: str | None = None
 
         # Signal history for determinism boundary (sorted before crossing into policy_inputs_builder)
         self._signal_history: list[TurnSignal] = []
@@ -1038,6 +1039,7 @@ class StreamingRealtimeOrchestrator:
 
             # Open a new batch window for T3 (Path A only; Path B T3 runs continuously).
             if not self._use_streaming_speculative:
+                self._pending_policy_evt_id = policy_evt_id
                 self._first_proposal_event.clear()
                 self.proposal_buffer.clear()
                 self._batch_close_event.clear()
@@ -1057,10 +1059,18 @@ class StreamingRealtimeOrchestrator:
             return
 
         # Path A (flag OFF): per-batch turn-batched behavior (bit-for-bit v0.2).
+        loop_iteration = 0
         while True:
             # Wait for T2 to open a new batch.
             await self._batch_open_event.wait()
             self._batch_open_event.clear()
+
+            # §1.4: reset MiniCPM session between turns to bound KV growth.
+            # First batch skips reset — initial duplex.prepare() inside infer_stream() handles cold-start.
+            if loop_iteration > 0 and hasattr(self._foreground_model, "reset_streaming_session"):
+                self._foreground_model.reset_streaming_session(
+                    caused_by=[self._pending_policy_evt_id] if self._pending_policy_evt_id else [self._started_event_id]
+                )
 
             frame_iter = self._make_batch_frame_iter()
             async for proposal in self._foreground_model.process_stream(
@@ -1070,6 +1080,7 @@ class StreamingRealtimeOrchestrator:
             ):
                 self.proposal_buffer.append(proposal)
                 self._first_proposal_event.set()
+            loop_iteration += 1
 
     async def _foreground_stream_task_path_b(self) -> None:
         """T3 Path B: single continuous infer_stream over the whole session.

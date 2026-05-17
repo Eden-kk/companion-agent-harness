@@ -122,6 +122,20 @@ EVENT_TYPE_SCHEMAS: dict[str, StageSixEventSchema] = {
         ),
     ),
 
+    # §1.3 (plan-minicpm-reset-and-latency-survey.md): emitted by
+    # MiniCPMStreamingModel.reset_streaming_session() at turn boundaries.
+    "minicpm_session_reset": StageSixEventSchema(
+        payload_kind="signal",
+        subject_class="self",
+        sensitivity="safe",
+        retention_policy_id="signal_default_30d",
+        notes=(
+            "Emitted once per inter-turn reset. Payload carries reset_at_ms, "
+            "reset_token2wav_cache (always False), and trigger. "
+            "caused_by references the policy_decision that opened the batch."
+        ),
+    ),
+
     # W-PR182-A: addressing classifier result — emitted post-ASR, pre-policy
     # for invariant #1 audit and Eval Phase C live-examiner gating.
     "addressing_classified": StageSixEventSchema(

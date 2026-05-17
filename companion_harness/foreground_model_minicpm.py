@@ -347,11 +347,58 @@ class MiniCPMStreamingModel:
         async for proposal in gen:
             on_proposal(proposal)
 
+    def reset_streaming_session(self, *, caused_by: list[str]) -> "Event":
+        """Clear duplex KV cache (audio_past_key_values + llm_past_key_values).
+
+        Called by orchestrator at turn boundaries to bound first-proposal
+        latency. Preserves token2wav cache (TTS speaker state). After this
+        call, the next streaming_prefill() must be preceded by
+        duplex.prepare(prefix_system_prompt=...), which the next
+        infer_stream() invocation handles at line 252-265.
+        """
+        self._duplex.reset_session(reset_token2wav_cache=False)
+        self._last_is_listen = True
+        self._last_native_duplex_event_id = None
+        return self._emit_session_reset(caused_by)
+
     # ------------------------------------------------------------------
 
     def _next_seq(self) -> int:
         self._seq += 1
         return self._seq
+
+    def _emit_session_reset(self, caused_by: list[str]) -> "Event":
+        seq = self._next_seq()
+        now_ms = int(time.monotonic() * 1000)
+        event_id = f"{self._session_id}-nd-reset-{seq}-{now_ms}"
+        payload_hash = hashlib.sha256(
+            f"minicpm_session_reset:{event_id}:{now_ms}".encode()
+        ).hexdigest()[:16]
+        evt = Event(
+            event_id=event_id,
+            session_id=self._session_id,
+            schema_version=self.SCHEMA_VERSION,
+            seq_no=seq,
+            event_type="minicpm_session_reset",
+            timestamp_mono_ms=now_ms,
+            timestamp_wall=datetime.now(timezone.utc).isoformat(),
+            source=self.SOURCE,
+            caused_by=caused_by,
+            payload_hash=payload_hash,
+            payload_ref=None,
+            payload_kind="signal",
+            subject_class="self",
+            sensitivity="safe",
+            retention_policy_id="signal_default_30d",
+            payload_inline={
+                "reset_at_ms": now_ms,
+                "reset_token2wav_cache": False,
+                "trigger": "post_turn",
+            },
+        )
+        if self._logger is not None:
+            self._logger.log(evt)
+        return evt
 
     def _emit_invocation(self, is_listen: bool, caused_by: list[str]) -> Event:
         now_ms = int(time.monotonic() * 1000)
