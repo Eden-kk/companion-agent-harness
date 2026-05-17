@@ -1797,7 +1797,17 @@ def build_app(
         timings: dict[str, int] = {}
 
         if minicpm is not None:
+            _compile_active = getattr(minicpm, "_torch_compile_active", False)
+            _warmup_timeout = 60.0 if _compile_active else 20.0
             t0 = time.monotonic()
+            try:
+                await asyncio.get_running_loop().run_in_executor(
+                    None,
+                    minicpm.classify_yes_no,
+                    "Is the agent being addressed? Transcript: hello.",
+                )
+            except Exception as exc:
+                print(f"warmup_warning: minicpm_classify: {type(exc).__name__}: {exc}", flush=True)
             try:
                 async def _silent_frames():  # noqa: WPS430
                     yield silent_pcm, None
@@ -1806,7 +1816,7 @@ def build_app(
                         _silent_frames(), caused_by=["warmup"]
                     ):
                         pass
-                await asyncio.wait_for(_drain_warmup(), timeout=20.0)
+                await asyncio.wait_for(_drain_warmup(), timeout=_warmup_timeout)
             except Exception as exc:
                 print(f"warmup_warning: minicpm: {type(exc).__name__}: {exc}", flush=True)
             timings["minicpm"] = round((time.monotonic() - t0) * 1000)
@@ -1854,7 +1864,9 @@ def build_app(
     return app
 
 
-def _load_minicpm_streaming_model(*, init_vision: bool = False) -> Any:
+def _load_minicpm_streaming_model(
+    *, init_vision: bool = False, enable_torch_compile: bool = False
+) -> Any:
     """Lazy import + construct MiniCPMStreamingModel. b200 only.
 
     Imported here (not at module top) so the server module remains importable
@@ -1863,7 +1875,7 @@ def _load_minicpm_streaming_model(*, init_vision: bool = False) -> Any:
     per b200 pre-verification).
     """
     from companion_harness.foreground_model_minicpm import MiniCPMStreamingModel  # noqa: WPS433
-    return MiniCPMStreamingModel(init_vision=init_vision)
+    return MiniCPMStreamingModel(init_vision=init_vision, enable_torch_compile=enable_torch_compile)
 
 
 def _load_silero_vad_model() -> Any:
@@ -2132,6 +2144,17 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--torch-compile",
+        dest="torch_compile",
+        action="store_true",
+        default=False,
+        help=(
+            "Wrap MiniCPM-o LLM in torch.compile(mode='default', dynamic=True, fullgraph=False). "
+            "Pays ~20-30s compile cost during warmup for ~1.2-1.4x per-chunk speedup. "
+            "Default OFF — opt in after probe verifies on B200."
+        ),
+    )
+    parser.add_argument(
         "--skip-warmup",
         dest="skip_warmup",
         action="store_true",
@@ -2194,7 +2217,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.live_pipeline or args.minicpm_streaming_raw:
         if args.enable_vision and not args.minicpm_streaming_raw:
             def factory() -> Any:  # noqa: WPS430
-                return _load_minicpm_streaming_model(init_vision=True)
+                return _load_minicpm_streaming_model(
+                    init_vision=True, enable_torch_compile=args.torch_compile
+                )
+        elif args.torch_compile:
+            def factory() -> Any:  # noqa: WPS430
+                return _load_minicpm_streaming_model(enable_torch_compile=True)
         else:
             factory = _load_minicpm_streaming_model
     else:
