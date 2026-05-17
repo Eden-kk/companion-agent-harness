@@ -1878,10 +1878,10 @@ def _load_pipecat_smart_turn_model() -> Any:
     return PipecatSmartTurnModel()
 
 
-def _load_asr_lexicon_backchannel_model() -> Any:
+def _load_asr_lexicon_backchannel_model(language: str | None = None) -> Any:
     """Lazy import + construct ASRLexiconBackchannelModel."""
     from companion_harness.backchannel_asr_lexicon import ASRLexiconBackchannelModel  # noqa: WPS433
-    return ASRLexiconBackchannelModel()
+    return ASRLexiconBackchannelModel(language=language)
 
 
 # Default Kokoro model paths on b200. Override via env var if your install
@@ -1916,14 +1916,14 @@ def _load_native_minicpm_tts_adapter() -> Any:
     return MiniCPMNativeTtsAdapter(streaming_model)
 
 
-def _load_asr_model() -> Any:
-    """Lazy import + construct FasterWhisperASRModel (whisper-tiny.en). b200 only.
+def _load_asr_model(language: str | None = None) -> Any:
+    """Lazy import + construct FasterWhisperASRModel. b200 only.
 
     Imported here (not at module top) so the server module remains importable
     on machines without faster_whisper. Mirrors _load_minicpm_streaming_model.
     """
     from companion_harness.asr_faster_whisper import FasterWhisperASRModel  # noqa: WPS433
-    return FasterWhisperASRModel(device="cuda", compute_type="float16")
+    return FasterWhisperASRModel(model_id="base", language=language, device="cuda", compute_type="float16")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1981,6 +1981,15 @@ def main(argv: list[str] | None = None) -> int:
             "TTS adapter to load at startup. "
             "'kokoro' (default): Kokoro-82M-ONNX via KokoroTtsAdapter. "
             "'native_minicpm': MiniCPM-o native duplex TTS via MiniCPMNativeTtsAdapter."
+        ),
+    )
+    parser.add_argument(
+        "--language",
+        choices=["zh", "en", "auto"],
+        default="en",
+        help=(
+            "Pin ASR + backchannel language. "
+            "'auto' = whisper auto-detect (marks session Tier-A-only per architecture invariant #5)."
         ),
     )
     # Real-adapter wiring flags. Default ON (v0.2e) — each flag swaps in the
@@ -2208,22 +2217,23 @@ def main(argv: list[str] | None = None) -> int:
         tts_factory: Optional[Callable[[], Any]] = _load_native_minicpm_tts_adapter
         asr_factory: Optional[Callable[[], Any]] = None
     elif args.live_pipeline and not args.use_stubs:
+        _asr_lang: str | None = None if args.language == "auto" else args.language
         if args.minicpm_only:
             vad_factory = None
             smart_turn_factory = None
             backchannel_factory = None
             tts_factory = _load_native_minicpm_tts_adapter
-            asr_factory = _load_asr_model
+            asr_factory = lambda: _load_asr_model(_asr_lang)
         else:
             vad_factory = _load_silero_vad_model
             smart_turn_factory = _load_pipecat_smart_turn_model
-            backchannel_factory = _load_asr_lexicon_backchannel_model
+            backchannel_factory = lambda: _load_asr_lexicon_backchannel_model(_asr_lang)
             tts_factory = (
                 _load_native_minicpm_tts_adapter
                 if args.tts_adapter == "native_minicpm"
                 else _load_kokoro_tts_adapter
             )
-            asr_factory = _load_asr_model
+            asr_factory = lambda: _load_asr_model(_asr_lang)
     else:
         vad_factory = smart_turn_factory = backchannel_factory = tts_factory = asr_factory = None
 
