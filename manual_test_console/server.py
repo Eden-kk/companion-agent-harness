@@ -143,6 +143,23 @@ KEY_BLOB_ROTATION_LAST_TICK: web.AppKey[object] = web.AppKey("blob_rotation_last
 _OPERATOR_SESSION_ID = "manual_test_console.operator"
 _CONFIG_EVENT_SCHEMA_VERSION = "0.1"
 
+# Basic-stack seam defaults: only vad/asr/tts on; all 9 heavy seams off.
+# Matches docs/basic-stack-design-2026-05-16.md §1.
+_BASIC_STACK_SEAM_DEFAULTS: dict[str, bool] = {
+    "vad": True,
+    "asr": True,
+    "tts": True,
+    "smart_turn": False,
+    "backchannel": False,
+    "scene_scorer": False,
+    "grounding_model": False,
+    "av_conflict_scorer": False,
+    "urgency_scorer": False,
+    "embedder": False,
+    "attachment_risk_monitor": False,
+    "fast_tool_dispatcher": False,
+}
+
 
 def _event_to_json(event: Event) -> dict:
     """Serialize an Event to a JSON-safe dict for display."""
@@ -1339,7 +1356,7 @@ def build_app(
     embedder: Any = None,
     diarization_adapter_factory: Any = None,
     streaming_raw_mode: bool = False,
-    seam_defaults: dict[str, bool] | None = None,
+    seam_defaults: dict[str, bool] | None = _BASIC_STACK_SEAM_DEFAULTS,
     blob_retention_days: int = 30,
     event_log_maxsize: int = 16384,
     display_sampling_rate: int = 1,
@@ -2133,16 +2150,15 @@ def main(argv: list[str] | None = None) -> int:
             except Exception as exc:
                 print(f"PyannoteDiarizationAdapter init FAILED: {type(exc).__name__}: {exc}", flush=True)
 
-    # Build seam_defaults from --disable-seam flags.  Unknown seam names are
-    # silently ignored here; the HTTP route rejects them at runtime.
-    seam_defaults: dict[str, bool] | None = None
+    # Start from basic-stack defaults, then apply --disable-seam overrides.
+    seam_defaults: dict[str, bool] = dict(_BASIC_STACK_SEAM_DEFAULTS)
     if args.disable_seams:
-        seam_defaults = {s: False for s in args.disable_seams if s in HOT_SEAMS}
         unknown = [s for s in args.disable_seams if s not in HOT_SEAMS]
         for s in unknown:
             print(f"WARNING: --disable-seam {s!r}: unknown seam (ignored)", flush=True)
-        if not seam_defaults:
-            seam_defaults = None
+        for s in args.disable_seams:
+            if s in HOT_SEAMS:
+                seam_defaults[s] = False
 
     tts_name = "MiniCPM-o native TTS" if args.tts_adapter == "native_minicpm" else "Kokoro-82M-ONNX"
     app = build_app(

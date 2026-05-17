@@ -168,7 +168,6 @@ async def test_get_config_seams_returns_all_12(tmp_path: Path) -> None:
         for entry in body["seams"]:
             assert "seam" in entry
             assert "enabled" in entry
-            assert entry["enabled"] is True  # all default to enabled
     finally:
         await server.close()
 

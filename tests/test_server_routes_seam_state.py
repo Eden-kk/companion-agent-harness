@@ -23,7 +23,7 @@ def _make_app(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_get_config_seams_returns_all_12_enabled(tmp_path: Path) -> None:
+async def test_get_config_seams_returns_basic_stack_defaults(tmp_path: Path) -> None:
     app = _make_app(tmp_path)
     server = TestServer(app)
     await server.start_server()
@@ -38,7 +38,14 @@ async def test_get_config_seams_returns_all_12_enabled(tmp_path: Path) -> None:
         assert len(seams) == 12
         names = [s["seam"] for s in seams]
         assert names == list(HOT_SEAMS)
-        assert all(s["enabled"] is True for s in seams)
+        seam_map = {s["seam"]: s["enabled"] for s in seams}
+        assert seam_map["vad"] is True
+        assert seam_map["asr"] is True
+        assert seam_map["tts"] is True
+        for off_seam in ("smart_turn", "backchannel", "scene_scorer", "grounding_model",
+                         "av_conflict_scorer", "urgency_scorer", "embedder",
+                         "attachment_risk_monitor", "fast_tool_dispatcher"):
+            assert seam_map[off_seam] is False, f"{off_seam} should be disabled by default"
     finally:
         await server.close()
 
