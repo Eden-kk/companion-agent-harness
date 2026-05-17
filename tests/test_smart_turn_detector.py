@@ -28,7 +28,7 @@ def _make_logger() -> tuple[EventLogger, list[Event]]:
 
 
 def _speech_frame(n_samples: int = 256) -> bytes:
-    """PCM-16 frame with amplitude well above silence_rms_threshold (default 100)."""
+    """PCM-16 frame with amplitude well above silence_rms_threshold (default 500)."""
     sample = struct.pack("<h", 2000)
     return sample * n_samples
 
@@ -190,3 +190,17 @@ async def test_end_of_turn_emits_signal_and_resets_buffer():
     assert invocation_count == 2
     signal_count = event_types.count("smart_turn_signal")
     assert signal_count == 2
+
+
+def test_silence_rms_threshold_default_filters_ambient():
+    """Regression: default threshold must reject typical ambient noise (RMS ~150-300).
+
+    Prevents regression to threshold=100 which caused phantom EOU triggers
+    on HVAC hum, breath, and keyboard rustle (observed 2026-05-17).
+    """
+    from companion_harness.turn_detector_smart import _SILENCE_RMS_THRESHOLD
+
+    assert _SILENCE_RMS_THRESHOLD >= 400, (
+        f"silence_rms_threshold too low ({_SILENCE_RMS_THRESHOLD}); "
+        "ambient noise will trigger phantom EOU"
+    )
