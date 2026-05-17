@@ -2,12 +2,19 @@
 from companion_harness.foreground_model_minicpm import MiniCPMStreamingModel
 
 
-class _FakeDuplex:
+class _FakeModel:
+    """Mirrors MiniCPMO — the class that ACTUALLY owns reset_session."""
     def __init__(self):
         self.reset_calls = []
 
     def reset_session(self, reset_token2wav_cache: bool) -> None:
         self.reset_calls.append({"reset_token2wav_cache": reset_token2wav_cache})
+
+
+class _FakeDuplex:
+    """Mirrors MiniCPMODuplex — does NOT have reset_session directly; only .model does."""
+    def __init__(self):
+        self.model = _FakeModel()
 
 
 class _FakeLogger:
@@ -34,8 +41,8 @@ def _build_model() -> tuple[MiniCPMStreamingModel, _FakeDuplex, _FakeLogger]:
 def test_reset_calls_underlying_reset_with_token2wav_false():
     model, fake_duplex, _ = _build_model()
     model.reset_streaming_session(caused_by=["some-policy-event-id"])
-    assert len(fake_duplex.reset_calls) == 1
-    assert fake_duplex.reset_calls[0]["reset_token2wav_cache"] is False
+    assert len(fake_duplex.model.reset_calls) == 1
+    assert fake_duplex.model.reset_calls[0]["reset_token2wav_cache"] is False
 
 
 def test_reset_emits_session_reset_event():
