@@ -171,6 +171,10 @@ class ForegroundModel:
             self._emit("foreground_proposal", [frame_evt.event_id], "model_output")
             yield proposal
 
+    def reset_streaming_session(self, *, caused_by: list[str]) -> None:
+        if hasattr(self._model, "reset_streaming_session"):
+            self._model.reset_streaming_session(caused_by=caused_by)  # type: ignore[union-attr]
+
     async def infer_stream_continuous(
         self,
         frame_iter: AsyncIterator[tuple[bytes, bytes | None]],
