@@ -63,6 +63,29 @@ No mixing. "Make it work" is not a success criterion. "`pytest -k thinking_pause
 
 Use `Read` on every file you intend to edit. Greps and listings are not substitutes — you need to see the structure to make a surgical edit.
 
+## Debugging discipline
+
+These rules apply when fixing a bug, not when writing new code. They exist because minimal-diff patching is the right default for *known mechanisms*, and the wrong default for *unknown mechanisms*. A patch that doesn't address the actual cause sets up the same bug to reappear, often disguised.
+
+### 5. For recurring bugs, root-cause first — no code modification before the cause is identified
+
+A bug counts as "recurring" if any of these are true:
+- The operator has reported the same symptom across more than one session, or
+- A prior fix shipped for this symptom but the bug came back, or
+- Multiple debuggers have looked at it and produced different patches.
+
+For these, the default flow is:
+1. Dispatch a **read-only researcher** to walk the entire code path end-to-end (from upstream signal to user-visible effect).
+2. Researcher emits one of: (a) the file:line where the chain actually breaks, (b) "external dependency at fault" with evidence, or (c) "I cannot determine without operator-side probe X."
+3. Only after the root cause is named in writing do we dispatch a fix coder.
+4. The fix coder's prompt cites the named root cause; the PR description cites the researcher's finding by file:line.
+
+Do **not** dispatch a debugger straight to the symptom for a recurring bug. Debuggers default to the smallest patch that makes the symptom disappear in their repro — which is exactly what produces the patch-symptom-recurs cycle. A researcher's read-only investigation is the correct first step.
+
+This rule is not about adding rigor for its own sake. It exists because the cost of a recurring bug compounds: every "fix attempt" PR adds code surface, makes the actual cause harder to find, and erodes trust in the codebase's audit trail. One thorough root-cause pass saves N rounds of surface patching.
+
+The rule does NOT apply to first-occurrence bugs caught by a contract test or a clean repro. Those are well-served by the standard debugger pass.
+
 ## Project-specific rules
 
 These translate the invariants into commits-and-code-review form.
