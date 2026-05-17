@@ -305,6 +305,9 @@ class StreamingRealtimeOrchestrator:
         self._first_proposal_event = asyncio.Event()
         self._batch_open_event = asyncio.Event()
         self._batch_close_event = asyncio.Event()
+        # Set by T3 after its async-for over process_stream() completes, so T4
+        # can wait for ALL proposals to land before snapshotting (not just the first).
+        self._t3_batch_done_event = asyncio.Event()
 
         # Coalescing guard — T2 only
         # _decision_in_flight is True from the moment a TurnSignal passes the guard
@@ -1041,6 +1044,7 @@ class StreamingRealtimeOrchestrator:
             if not self._use_streaming_speculative:
                 self._pending_policy_evt_id = policy_evt_id
                 self._first_proposal_event.clear()
+                self._t3_batch_done_event.clear()
                 self.proposal_buffer.clear()
                 self._batch_close_event.clear()
                 self._batch_open_event.set()
@@ -1080,6 +1084,7 @@ class StreamingRealtimeOrchestrator:
             ):
                 self.proposal_buffer.append(proposal)
                 self._first_proposal_event.set()
+            self._t3_batch_done_event.set()
             loop_iteration += 1
 
     async def _foreground_stream_task_path_b(self) -> None:
@@ -1352,13 +1357,28 @@ class StreamingRealtimeOrchestrator:
                         ))
                         self.proposal_buffer.clear()
                         self._first_proposal_event.clear()
+                        self._t3_batch_done_event.clear()
                         self._decision_in_flight = False
                         continue
+
+                # Wait for T3 to finish yielding ALL proposals for this batch before
+                # snapshotting. batch_close_event fired above so T3's _bounded_frame_gen
+                # will exit; T3 then yields remaining proposals and sets _t3_batch_done_event.
+                # Without this wait T4 snapshots after the FIRST proposal, truncating responses.
+                # See 2026-05-17 short-responses debugger finding.
+                try:
+                    await asyncio.wait_for(
+                        self._t3_batch_done_event.wait(),
+                        timeout=self._proposal_batch_window_ms / 1000.0,
+                    )
+                except asyncio.TimeoutError:
+                    pass  # Snapshot whatever arrived within the window.
 
                 # SNAPSHOT — no await between these two lines (race-freedom).
                 snapshot = list(self.proposal_buffer)
                 self.proposal_buffer.clear()
                 self._first_proposal_event.clear()
+                self._t3_batch_done_event.clear()
 
             text = _best_proposal_text(snapshot)
             gen_event_id = self._audio_output.start_generation(caused_by=[policy_evt_id])
