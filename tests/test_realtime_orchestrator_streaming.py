@@ -45,6 +45,8 @@ from companion_harness.speak_policy import decide as _real_decide
 from companion_harness.tts_adapter import SilentTtsAdapter
 from companion_harness.turn_detector_smart import SmartTurnDetector
 from companion_harness.turn_detector_vad import VADDetector
+from manual_test_console.config_schema import ALLOWLIST
+from manual_test_console.config_store import ConfigStore
 
 
 # ---------------------------------------------------------------------------
@@ -1201,3 +1203,155 @@ async def test_empty_transcript_short_circuits_to_silence_with_distinct_reason(t
     # Addressing classifiers must NOT have been called.
     assert minicpm_called == [], f"MiniCPM classifier called on empty transcript: {minicpm_called}"
     assert wakword_called == [], f"WakeWord classifier called on empty transcript: {wakword_called}"
+
+
+# ---------------------------------------------------------------------------
+# Seam-gate regression tests (2026-05-17: dashboard toggle was a placebo)
+# ---------------------------------------------------------------------------
+
+
+class _SpyDetector:
+    """Wraps a detector and records whether process_frame was called."""
+
+    def __init__(self, inner) -> None:
+        self._inner = inner
+        self.call_count = 0
+
+    def process_frame(self, frame_bytes: bytes, caused_by: list[str]):
+        self.call_count += 1
+        return self._inner.process_frame(frame_bytes, caused_by)
+
+    # Proxy attribute access for last_frame_* used in barge-in path.
+    def __getattr__(self, name: str):
+        return getattr(self._inner, name)
+
+
+def _build_orch_with_spies(
+    session_id: str,
+    logger: EventLogger,
+    ingest_session,
+    audio_in: asyncio.Queue,
+    config_store: ConfigStore | None,
+) -> tuple[StreamingRealtimeOrchestrator, "_SpyDetector", "_SpyDetector", "_SpyDetector"]:
+    vad_inner = VADDetector(
+        model=_FakeVADModel([0.9, 0.9, 0.1, 0.1]),
+        session_id=session_id,
+        logger=logger,
+        speech_threshold=0.5,
+        silence_onset_ms=64,
+        frame_duration_ms=32,
+    )
+    smart_inner = SmartTurnDetector(
+        model=_FakeSmartTurnModel(),
+        session_id=session_id,
+        logger=logger,
+    )
+    bc_inner = BackchannelClassifier(
+        model=_FakeBackchannelModel(),
+        session_id=session_id,
+        logger=logger,
+    )
+    spy_vad = _SpyDetector(vad_inner)
+    spy_smart = _SpyDetector(smart_inner)
+    spy_bc = _SpyDetector(bc_inner)
+    fg = ForegroundModel(
+        model=_FakeStreamingModel(),
+        session_id=session_id,
+        logger=logger,
+    )
+    controller = AudioOutputController(
+        session_id=session_id,
+        logger=logger,
+        sink=_noop_sink,
+    )
+    orch = StreamingRealtimeOrchestrator(
+        session_id=session_id,
+        logger=logger,
+        ingest_session=ingest_session,
+        audio_in=audio_in,
+        vad_detector=spy_vad,
+        smart_turn_detector=spy_smart,
+        backchannel_classifier=spy_bc,
+        policy_inputs_builder=_build_policy_inputs,
+        foreground_model=fg,
+        audio_output=controller,
+        tts_adapter=SilentTtsAdapter(chunk_count=1),
+        config_store=config_store,
+    )
+    return orch, spy_vad, spy_smart, spy_bc
+
+
+@pytest.mark.asyncio
+async def test_detector_seam_disabled_skips_invocation(tmp_path: Path):
+    """Regression: seam=OFF must prevent detector.process_frame() invocation entirely,
+    not just suppress its output. See 2026-05-17 seam-placebo finding."""
+    logger, _ = _make_logger()
+    await logger.start()
+
+    ingest = InputIngest(logger=logger, blob_dir=tmp_path)
+    session = ingest.open_session("test-client")
+    audio_in: asyncio.Queue[tuple[bytes, str]] = asyncio.Queue(maxsize=64)
+
+    store = ConfigStore(ALLOWLIST, seam_defaults={"smart_turn": False})
+    orch, spy_vad, spy_smart, spy_bc = _build_orch_with_spies(
+        "test-seam-disabled", logger, session, audio_in, store
+    )
+
+    await orch.start()
+    await _push_frames(audio_in, ingest, session, 2)
+    await asyncio.sleep(0.1)
+    await orch.stop()
+
+    assert spy_smart.call_count == 0, (
+        f"smart_turn detector called {spy_smart.call_count} times despite seam=OFF"
+    )
+    assert spy_vad.call_count >= 1, "vad detector should still run when only smart_turn is disabled"
+
+
+@pytest.mark.asyncio
+async def test_detector_seam_enabled_invokes(tmp_path: Path):
+    """Sanity: seam=ON invokes the detector normally."""
+    logger, _ = _make_logger()
+    await logger.start()
+
+    ingest = InputIngest(logger=logger, blob_dir=tmp_path)
+    session = ingest.open_session("test-client")
+    audio_in: asyncio.Queue[tuple[bytes, str]] = asyncio.Queue(maxsize=64)
+
+    store = ConfigStore(ALLOWLIST)  # all seams enabled by default
+    orch, spy_vad, spy_smart, spy_bc = _build_orch_with_spies(
+        "test-seam-enabled", logger, session, audio_in, store
+    )
+
+    await orch.start()
+    await _push_frames(audio_in, ingest, session, 2)
+    await asyncio.sleep(0.1)
+    await orch.stop()
+
+    assert spy_smart.call_count >= 1, "smart_turn detector not called despite seam=ON"
+    assert spy_vad.call_count >= 1, "vad detector not called despite seam=ON"
+    assert spy_bc.call_count >= 1, "backchannel detector not called despite seam=ON"
+
+
+@pytest.mark.asyncio
+async def test_detector_seam_default_true_when_no_config_store(tmp_path: Path):
+    """When config_store is None (test fixtures), all detectors should run."""
+    logger, _ = _make_logger()
+    await logger.start()
+
+    ingest = InputIngest(logger=logger, blob_dir=tmp_path)
+    session = ingest.open_session("test-client")
+    audio_in: asyncio.Queue[tuple[bytes, str]] = asyncio.Queue(maxsize=64)
+
+    orch, spy_vad, spy_smart, spy_bc = _build_orch_with_spies(
+        "test-seam-no-store", logger, session, audio_in, config_store=None
+    )
+
+    await orch.start()
+    await _push_frames(audio_in, ingest, session, 2)
+    await asyncio.sleep(0.1)
+    await orch.stop()
+
+    assert spy_vad.call_count >= 1, "vad detector not called without config_store"
+    assert spy_smart.call_count >= 1, "smart_turn detector not called without config_store"
+    assert spy_bc.call_count >= 1, "backchannel detector not called without config_store"
