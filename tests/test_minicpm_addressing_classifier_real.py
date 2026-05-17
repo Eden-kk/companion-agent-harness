@@ -126,6 +126,27 @@ def test_no_unavailable_157_marker_in_real_impl() -> None:
     assert "UNAVAILABLE: #157" not in source
 
 
+def test_minicpm_addressing_classifier_calls_classify_yes_no() -> None:
+    """Mock contract: real implementation calls model.classify_yes_no(prompt)
+    with a single positional str argument and unpacks (is_yes, prob_yes).
+
+    Guards against drift between the real call signature and what fakes mock.
+    """
+    calls: list[str] = []
+
+    class _RecordingModel:
+        def classify_yes_no(self, prompt: str) -> tuple[bool, float]:
+            calls.append(prompt)
+            return True, 0.8
+
+    clf = MiniCPMAddressingClassifierImpl(_RecordingModel())  # type: ignore[arg-type]
+    result = clf("hello world", speaker_count=None, social_mode="single_user_voice_only")
+    assert len(calls) == 1
+    assert isinstance(calls[0], str)
+    assert "hello world" in calls[0]
+    assert result is not None
+
+
 # ---------------------------------------------------------------------------
 # GPU test (b200 venv required)
 # ---------------------------------------------------------------------------
@@ -149,3 +170,23 @@ def test_minicpm_addressing_classifier_real_inference() -> None:
     assert result is None or isinstance(result, AddressingSignal), (
         f"Expected AddressingSignal or None, got {type(result)}"
     )
+
+
+@pytest.mark.gpu
+def test_classify_yes_no_runs_without_typeerror() -> None:
+    """Regression for 2026-05-17 TypeError: MiniCPMO.forward() missing 'data' arg.
+
+    Real-model exercise of the fix. Prior to PR #340, this raised
+    `TypeError: MiniCPMO.forward() missing 1 required positional argument: 'data'`
+    on every call.
+    """
+    from companion_harness.foreground_model_minicpm import MiniCPMStreamingModel
+
+    model = MiniCPMStreamingModel()
+    is_yes, prob_yes = model.classify_yes_no(
+        "Transcript: 'what time is it?'. "
+        "Is the user addressing an AI assistant? "
+        "Answer with only 'yes' or 'no'."
+    )
+    assert is_yes is True, f"clearly-addressed prompt classified no (prob_yes={prob_yes:.3f})"
+    assert 0.0 <= prob_yes <= 1.0
