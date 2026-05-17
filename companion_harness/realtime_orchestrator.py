@@ -374,10 +374,10 @@ class StreamingRealtimeOrchestrator:
 
         # Path B (§3.3): proposal ring buffer shared by T3 (writer) and T4/barge-in (readers).
         # Only used when _use_streaming_speculative is True; inert otherwise.
+        # Single-threaded asyncio; no lock needed — no await between read and write.
         self._proposal_ring: list[tuple[int, ThinkerProposal]] = []
         self._proposal_ring_committed_seq: int = 0
         self._proposal_ring_next_seq: int = 0
-        self._proposal_ring_lock: asyncio.Lock = asyncio.Lock()
 
         self._seq = 0
         self._tasks: list[asyncio.Task[None]] = []
@@ -1085,16 +1085,20 @@ class StreamingRealtimeOrchestrator:
         is appended to _proposal_ring with a monotonic seq so T4 can snapshot
         committed or discard uncommitted tokens at EOU time.
         """
-        async def _continuous_gen():
+        latest_chunk_event_id: list[str] = []
+
+        async def _continuous_gen() -> AsyncIterator[tuple[bytes, bytes | None]]:
             while True:
                 frame_bytes, chunk_event_id = await self._tee_to_foreground.get()
+                latest_chunk_event_id[:] = [chunk_event_id]
                 yield frame_bytes, self._consume_video_or_none()
 
         def _on_proposal(proposal: ThinkerProposal) -> None:
             seq = self._proposal_ring_next_seq
             self._proposal_ring_next_seq += 1
             self._proposal_ring.append((seq, proposal))
-            self._emit_proposer_token_buffered(seq, proposal)
+            caused_by = (latest_chunk_event_id + [self._started_event_id]) if latest_chunk_event_id else ([self._started_event_id] if self._started_event_id else [])
+            self._emit_proposer_token_buffered(seq, proposal, caused_by=caused_by)
 
         await self._foreground_model.infer_stream_continuous(
             _continuous_gen(),
@@ -1102,12 +1106,14 @@ class StreamingRealtimeOrchestrator:
             on_proposal=_on_proposal,
         )
 
-    def _emit_proposer_token_buffered(self, ring_seq: int, proposal: ThinkerProposal) -> None:
+    def _emit_proposer_token_buffered(self, ring_seq: int, proposal: ThinkerProposal, *, caused_by: list[str] | None = None) -> None:
+        if caused_by is None:
+            caused_by = [self._started_event_id] if self._started_event_id else []
         evt = dataclasses.replace(
             self._make_event(
                 event_id=self._new_event_id(),
                 event_type="proposer_token_buffered",
-                caused_by=[self._started_event_id] if self._started_event_id else [],
+                caused_by=caused_by,
                 payload_kind="signal",
             ),
             payload_inline={
@@ -1251,8 +1257,19 @@ class StreamingRealtimeOrchestrator:
                     now_ms = int(__import__("time").monotonic() * 1000)
                     if self._tool_progress_emitter.should_emit_filler(result.tool_call_id, now_ms):
                         self._tool_progress_emitter.record_filler(result.tool_call_id, now_ms)
-                self.proposal_buffer.clear()
-                self._first_proposal_event.clear()
+                if self._use_streaming_speculative:
+                    discarded = len(self._proposal_ring) - self._proposal_ring_committed_seq
+                    del self._proposal_ring[self._proposal_ring_committed_seq:]
+                    self._emit_commit_or_discard(
+                        committed=False,
+                        discarded_token_count=discarded,
+                        committed_token_count=0,
+                        signal_evt_id=signal_evt_id,
+                        policy_evt_id=policy_evt_id,
+                    )
+                else:
+                    self.proposal_buffer.clear()
+                    self._first_proposal_event.clear()
                 self._decision_in_flight = False
                 continue
 

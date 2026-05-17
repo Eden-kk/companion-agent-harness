@@ -180,8 +180,8 @@ class ForegroundModel:
     ) -> None:
         """Path B: forward to the underlying model's infer_stream_continuous.
 
-        Delegates to the model if it has `infer_stream_continuous`; otherwise
-        falls back to consuming process_stream and calling on_proposal() per yield.
+        The else branch exists for test stubs (e.g. tests/test_streaming_speculative_flag.py)
+        that only implement infer_stream; production models must provide infer_stream_continuous.
         """
         if hasattr(self._model, "infer_stream_continuous"):
             await self._model.infer_stream_continuous(  # type: ignore[attr-defined]
