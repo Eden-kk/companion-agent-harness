@@ -510,6 +510,24 @@ class StreamingRealtimeOrchestrator:
             },
         )
 
+    def _is_seam_enabled(self, seam: str) -> bool:
+        """Return True if the named seam is enabled in ConfigStore.
+
+        Defaults to True when config_store is None (test fixtures / basic-stack).
+        Reads current state on every call, so dashboard toggles take effect on the
+        next frame with no extra plumbing.
+
+        Note: disabling "vad" while no other EOU source is wired (e.g. native_duplex)
+        will prevent EOU from firing — the system becomes non-functional until re-enabled.
+        This is intentional: the operator made the choice via the dashboard.
+        """
+        if self._config_store is None:
+            return True
+        try:
+            return self._config_store.get_seam(seam)
+        except KeyError:
+            return True
+
     async def _detector_fanout_task(self) -> None:
         """T1: Fan audio frames to all detectors; forward TurnSignals and VAD onset frames to T2.
 
@@ -523,9 +541,18 @@ class StreamingRealtimeOrchestrator:
             frame_bytes, chunk_event_id = await self._tee_to_detectors.get()
             caused_by = [chunk_event_id]
 
-            vad_sig: TurnSignal | None = self._vad_detector.process_frame(frame_bytes, caused_by)
-            smart_sig: TurnSignal | None = self._smart_turn_detector.process_frame(frame_bytes, caused_by)
-            bc_sig: TurnSignal | None = self._backchannel_classifier.process_frame(frame_bytes, caused_by)
+            vad_sig: TurnSignal | None = (
+                self._vad_detector.process_frame(frame_bytes, caused_by)
+                if self._is_seam_enabled("vad") else None
+            )
+            smart_sig: TurnSignal | None = (
+                self._smart_turn_detector.process_frame(frame_bytes, caused_by)
+                if self._is_seam_enabled("smart_turn") else None
+            )
+            bc_sig: TurnSignal | None = (
+                self._backchannel_classifier.process_frame(frame_bytes, caused_by)
+                if self._is_seam_enabled("backchannel") else None
+            )
 
             # SmartTurn veto: when SmartTurn fires p_continue > p_done (thinking pause),
             # suppress both the VAD signal and the SmartTurn signal from reaching the EOU
