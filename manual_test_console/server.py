@@ -81,8 +81,9 @@ _DISPLAY_QUEUE_DEPTH = 1024
 _HIGH_RATE_DISPLAY_TYPES = frozenset({"raw_audio_chunk", "vad_frame"})
 
 # Per-audio_out-WS queue depth. Drops oldest on overflow (invariant #10).
-# Synthesized audio is bursty; 256 chunks ≈ several seconds of buffer.
-_AUDIO_OUT_QUEUE_DEPTH = 256
+# Synthesized audio is bursty; 1024 chunks ≈ several seconds of buffer
+# (raised from 256 to match DisplayBroker headroom for slow browsers).
+_AUDIO_OUT_QUEUE_DEPTH = 1024
 
 # Sample rate / format that AudioOutputController -> sink chunks carry. This is
 # advisory metadata for the browser's AudioContext decoder. The real TTS adapter
@@ -343,20 +344,31 @@ class AudioOutBroker:
     publish() is called from WebSocketAudioSink on the orchestrator's event
     loop; it does put_nowait on each listener queue and drops the oldest entry
     on QueueFull so the realtime path is never blocked (invariant #10).
+    On the second QueueFull (drop confirmed), emits an audio_subscriber_drop
+    audit event via the logger (invariant #10 — never silently lose events).
     """
 
-    def __init__(self, counter: dict[str, int]) -> None:
+    def __init__(self, counter: dict[str, int], queue_depth: int = _AUDIO_OUT_QUEUE_DEPTH) -> None:
         self._queues: list[asyncio.Queue[dict]] = []
         self._counter = counter
+        self._queue_depth = max(64, min(16384, queue_depth))
+        self._drops_by_queue: dict[int, int] = {}
+        self._logger: Any = None
+        self._drop_throttle: dict[str, float] = {}  # subscriber_id → last emit ts
+
+    def set_logger(self, logger: Any) -> None:
+        self._logger = logger
 
     def add(self) -> asyncio.Queue[dict]:
-        q: asyncio.Queue[dict] = asyncio.Queue(maxsize=_AUDIO_OUT_QUEUE_DEPTH)
+        q: asyncio.Queue[dict] = asyncio.Queue(maxsize=self._queue_depth)
         self._queues.append(q)
+        self._drops_by_queue[id(q)] = 0
         return q
 
     def remove(self, q: asyncio.Queue[dict]) -> None:
         if q in self._queues:
             self._queues.remove(q)
+        self._drops_by_queue.pop(id(q), None)
 
     def publish(self, session_id: str, seq: int, chunk: bytes) -> None:
         self._counter["chunks_sent"] = self._counter.get("chunks_sent", 0) + 1
@@ -372,17 +384,53 @@ class AudioOutBroker:
             try:
                 q.put_nowait(msg)
             except asyncio.QueueFull:
-                # drop-oldest: discard head, then enqueue (best-effort)
+                # drop-oldest: discard head, then enqueue new chunk.
+                # The discarded head IS the drop — record it and audit.
                 try:
                     q.get_nowait()
                 except asyncio.QueueEmpty:
                     pass
-                try:
-                    q.put_nowait(msg)
-                except asyncio.QueueFull:
+                else:
+                    new_count = self._drops_by_queue.get(id(q), 0) + 1
+                    self._drops_by_queue[id(q)] = new_count
                     self._counter["chunks_dropped"] = (
                         self._counter.get("chunks_dropped", 0) + 1
                     )
+                    if self._logger is not None:
+                        sub_id = str(id(q))
+                        now = time.monotonic()
+                        if now - self._drop_throttle.get(sub_id, 0.0) >= 60.0:
+                            self._drop_throttle[sub_id] = now
+                            now_ms = int(now * 1000)
+                            drop_evt = Event(
+                                event_id=f"audio-drop-{now_ms}-{sub_id}",
+                                session_id=session_id,
+                                schema_version="0.1",
+                                seq_no=0,
+                                event_type="audio_subscriber_drop",
+                                timestamp_mono_ms=now_ms,
+                                timestamp_wall=_now_wall(),
+                                source="audio_out_broker",
+                                caused_by=[],
+                                payload_hash="",
+                                payload_ref=None,
+                                payload_kind="signal",
+                                subject_class="self",
+                                sensitivity="safe",
+                                retention_policy_id="default",
+                                payload_inline={
+                                    "subscriber_id": sub_id,
+                                    "subscriber_drop_count": new_count,
+                                    "queue_depth": q.qsize(),
+                                    "session_id": session_id,
+                                    "seq": seq,
+                                },
+                            )
+                            self._logger.log(drop_evt)
+                try:
+                    q.put_nowait(msg)
+                except asyncio.QueueFull:
+                    pass
 
 
 # ---------------------------------------------------------------------------
@@ -1361,6 +1409,7 @@ def build_app(
     event_log_maxsize: int = 16384,
     display_sampling_rate: int = 1,
     display_queue_depth: int = 1024,
+    audio_out_queue_depth: int = 1024,
 ) -> web.Application:
     """Build the aiohttp Application. Caller is responsible for run/cleanup.
 
@@ -1398,7 +1447,8 @@ def build_app(
     ingest = InputIngest(logger, blob_dir)
 
     audio_out_counter: dict[str, int] = {"chunks_sent": 0, "chunks_dropped": 0}
-    audio_out_broker = AudioOutBroker(audio_out_counter)
+    audio_out_broker = AudioOutBroker(audio_out_counter, queue_depth=audio_out_queue_depth)
+    audio_out_broker.set_logger(logger)
 
     app[KEY_BROKER] = broker
     app[KEY_LOGGER] = logger
@@ -2002,6 +2052,13 @@ def main(argv: list[str] | None = None) -> int:
         help="Per-subscriber display WS queue depth (default 1024, range 64..16384).",
     )
     parser.add_argument(
+        "--audio-out-queue-depth",
+        dest="audio_out_queue_depth",
+        type=int,
+        default=1024,
+        help="Per-subscriber audio_out WS queue depth (default 1024, range 64..16384).",
+    )
+    parser.add_argument(
         "--streaming-speculative",
         dest="streaming_speculative",
         action="store_true",
@@ -2186,6 +2243,7 @@ def main(argv: list[str] | None = None) -> int:
         event_log_maxsize=args.event_log_maxsize,
         display_sampling_rate=args.display_sampling_rate,
         display_queue_depth=args.display_queue_depth,
+        audio_out_queue_depth=args.audio_out_queue_depth,
     )
     if args.streaming_speculative:
         config_store: ConfigStore = app[KEY_CONFIG_STORE]  # type: ignore[assignment]

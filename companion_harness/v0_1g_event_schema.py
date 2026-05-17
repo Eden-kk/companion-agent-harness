@@ -247,6 +247,23 @@ EVENT_TYPE_SCHEMAS: dict[str, StageSixEventSchema] = {
         ),
     ),
 
+    # AudioOutBroker per-subscriber queue overflow (invariant #10).
+    # Throttled to at most 1 per subscriber per 60s.
+    # Default-OFF in dashboard filter (low-signal for normal operation).
+    "audio_subscriber_drop": StageSixEventSchema(
+        payload_kind="signal",
+        subject_class="self",
+        sensitivity="safe",
+        retention_policy_id="signal_default_30d",
+        required_fields=("subscriber_id", "subscriber_drop_count", "queue_depth", "session_id", "seq"),
+        notes=(
+            "Emitted by AudioOutBroker when a per-listener audio_out queue overflows "
+            "and a chunk is dropped (invariant #10). Throttled: at most 1 per "
+            "subscriber per 60s to prevent feedback-loop amplification. "
+            "Mirrors display_subscriber_drop (PR #321)."
+        ),
+    ),
+
     # Path B (§3.3): one per policy decision in Path B (silence or full_response).
     # caused_by: [signal_evt_id, policy_evt_id].
     "commit_or_discard": StageSixEventSchema(
