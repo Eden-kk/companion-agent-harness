@@ -34,6 +34,7 @@ heuristics; they belong to a later phase (see issue #139).
 
 from __future__ import annotations
 
+import sys
 import time
 import uuid
 from dataclasses import dataclass
@@ -174,12 +175,17 @@ class MiniCPMAddressingClassifierImpl:
         social_mode: str,
     ) -> AddressingSignal | None:
         if not transcript.strip():
+            print("[addressing-debug] MiniCPM skipped: empty transcript", file=sys.stderr, flush=True)  # DEBUG: remove after addressing-classifier root cause is named (issue TBD)
             return None
         prompt = _ADDRESSING_PROMPT.format(transcript=transcript)
         try:
             is_yes, prob_yes = self._model.classify_yes_no(prompt)
-        except Exception:
+        except Exception as e:
+            print(f"[addressing-debug] MiniCPM classify_yes_no raised: {type(e).__name__}: {e}", file=sys.stderr, flush=True)  # DEBUG: remove after addressing-classifier root cause is named (issue TBD)
+            import traceback
+            traceback.print_exc(file=sys.stderr)
             return None
+        print(f"[addressing-debug] MiniCPM success: is_yes={is_yes} prob_yes={prob_yes:.3f} transcript={transcript[:40]!r}", file=sys.stderr, flush=True)  # DEBUG: remove after addressing-classifier root cause is named (issue TBD)
         if _LOW_CONF_LO <= prob_yes <= _LOW_CONF_HI and self._logger is not None:
             self._emit_low_confidence(transcript, prob_yes)
         if is_yes:
