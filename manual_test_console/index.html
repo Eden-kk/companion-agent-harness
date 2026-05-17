@@ -297,6 +297,17 @@
     if (evt.event_type === "signal_producer_fallback") return `${p.primary_producer} → ${p.fallback_producer} (${p.reason})`;
     if (evt.event_type === "reasoner_budget_exhausted") return `${p.budget_kind} limit=${p.limit} observed=${p.observed}`;
     if (evt.event_type === "addressing_classified") return `addressed=${p.user_addressed_agent} (${p.classifier_source || "?"})`;
+    if (evt.event_type === "display_event_sampled") {
+      const fwd = Object.values(p.forwarded || {}).reduce((a, b) => a + b, 0);
+      const sampled = Object.values(p.sampled_out || {}).reduce((a, b) => a + b, 0);
+      const elapsed = (p.elapsed_s || 0).toFixed(1);
+      return `${elapsed}s: ${fwd} forwarded, ${sampled} sampled out`;
+    }
+    if (evt.event_type === "deictic_classification") {
+      const is_deictic = p.is_deictic === true ? "yes" : (p.is_deictic === false ? "no" : "?");
+      const conf = (p.confidence ?? "?");
+      return `deictic=${is_deictic} (conf=${conf})`;
+    }
     const keys = Object.keys(p).slice(0, 2);
     if (keys.length === 0) return "";
     return keys.map(k => `${k}=${JSON.stringify(p[k]).slice(0, 30)}`).join(" ");
@@ -1358,6 +1369,7 @@
   const DEFAULT_OFF = new Set([
     "vad_frame", "raw_audio_chunk", "audio_frame",
     "assistant_audio_buffer_queued", "display_subscriber_drop",
+    "display_event_sampled", "deictic_classification",
   ]);
 
   // All event types seen so far (for dynamic checklist).
@@ -1531,7 +1543,7 @@
     const pinBtn = document.createElement("button");
     pinBtn.className = "pin-btn" + (isPinned ? " pinned" : "");
     pinBtn.title = isPinned ? "Unpin" : "Pin to top";
-    pinBtn.textContent = isPinned ? "📌" : "📍";
+    pinBtn.textContent = isPinned ? "unpin" : "pin";
     pinBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       if (pinnedIds.has(evt.event_id)) pinnedIds.delete(evt.event_id);
