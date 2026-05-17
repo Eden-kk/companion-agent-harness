@@ -1038,6 +1038,8 @@ class StreamingRealtimeOrchestrator:
 
             # Open a new batch window for T3 (Path A only; Path B T3 runs continuously).
             if not self._use_streaming_speculative:
+                self._first_proposal_event.clear()
+                self.proposal_buffer.clear()
                 self._batch_close_event.clear()
                 self._batch_open_event.set()
 

@@ -141,6 +141,49 @@ class _FakeStreamingModel:
         return _gen()
 
 
+class _FakeStreamingModelDelayed:
+    """StreamingDuplexModel that yields proposals after a short async delay.
+
+    Used in the multi-turn regression test: the delay ensures proposal_buffer
+    is empty when T4 first checks it, forcing the _first_proposal_event.wait()
+    path — which is exactly where the turn-N+1 silent bug lives.
+    """
+
+    def __init__(self, delay_s: float = 0.02, proposal_text: str = "scripted response") -> None:
+        self._delay_s = delay_s
+        self._text = proposal_text
+
+    def infer(self, audio_frame: bytes, video_frame: bytes | None = None) -> ThinkerProposal | None:
+        return None
+
+    def set_context(self, items) -> None:
+        pass
+
+    async def infer_stream(
+        self,
+        frame_iter: AsyncIterator[tuple[bytes, bytes | None]],
+        caused_by: list[str],
+        context_items: tuple = (),
+    ) -> AsyncGenerator[ThinkerProposal, None]:
+        async def _gen() -> AsyncGenerator[ThinkerProposal, None]:
+            async for _ in frame_iter:
+                pass
+            await asyncio.sleep(self._delay_s)
+            yield ThinkerProposal(
+                proposal_type="observation",
+                content=self._text,
+                trigger="eou",
+                confidence=0.9,
+                novelty=0.5,
+                interruption_cost=0.1,
+                max_utterance_ms=2000,
+                cooldown_consumed="full_response",
+                caused_by=caused_by,
+            )
+
+        return _gen()
+
+
 class _FakeStreamingModelNoProposals:
     """StreamingDuplexModel that never yields any proposals."""
 
@@ -820,3 +863,163 @@ async def test_determinism_boundary_signal_history_sorted(tmp_path: Path):
             f"signal_history is NOT sorted by evidence_event_ids[0] lexicographic. "
             f"Got: {event_ids}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Test 8: Multi-turn regression — _first_proposal_event + proposal_buffer cleared at batch_open
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_multi_turn_stale_state_cleared_at_batch_open(tmp_path: Path):
+    """Regression test for the turn-N+1 silent bug.
+
+    Root cause: _first_proposal_event (asyncio.Event) was never cleared between
+    turns at batch_open (realtime_orchestrator.py:305 init, :1041-1042, :1316-1348).
+    A stale SET event from turn N caused turn N+1's T4 to return instantly from
+    _first_proposal_event.wait(), then snapshot a stale or empty proposal_buffer.
+
+    Fix: _first_proposal_event.clear() + proposal_buffer.clear() at batch_open
+    (realtime_orchestrator.py:1041-1042) before _batch_open_event.set().
+
+    Test design: after turn 1 completes, forcibly re-set _first_proposal_event and
+    inject a stale proposal into proposal_buffer (simulating the race where T3 of
+    turn N yields a second proposal after T4's snapshot-clear at line 1347-1348).
+    Then trigger turn 2.
+
+    WITHOUT fix: T2's batch_open does NOT clear state, T4 for turn 2 finds the
+    stale event immediately set and snaps the stale "turn-1-stale" proposal.
+    The spy TTS records "turn-1-stale" as the text for turn 2.
+
+    WITH fix: T2 clears both before waking T3, stale state is gone, T4 blocks
+    until T3 yields the real "scripted response" proposal for turn 2.
+    """
+    logger, received = _make_logger()
+    await logger.start()
+
+    ingest = InputIngest(logger=logger, blob_dir=tmp_path)
+    session_id = "test-streaming-multiturn"
+    session = ingest.open_session("test-client")
+
+    audio_in: asyncio.Queue[tuple[bytes, str]] = asyncio.Queue(maxsize=256)
+
+    # Spy TTS records the text passed to synthesize() for each call.
+    synthesized_texts: list[str] = []
+
+    class _RecordingTtsAdapter:
+        async def synthesize(self, text: str, prosody_tags: list[str]):
+            synthesized_texts.append(text)
+            yield b"\x00" * 160
+
+    # One turn = 2 speech frames + 2 silence frames (silence_onset_ms=64, frame_duration_ms=32).
+    one_turn = [0.9, 0.9, 0.1, 0.1]
+    vad_probs = one_turn * 2  # 2 turns worth of VAD probs
+
+    orch = _build_orch(
+        session_id=session_id,
+        logger=logger,
+        ingest_session=session,
+        audio_in=audio_in,
+        vad_probs=vad_probs,
+        streaming_model=_FakeStreamingModelDelayed(delay_s=0.01),
+        tts_adapter=_RecordingTtsAdapter(),
+        proposal_batch_window_ms=200,
+    )
+
+    await orch.start()
+
+    # Push turn 1 and wait for it to fully complete.
+    frame_idx = 0
+    for _ in one_turn:
+        evt = ingest.ingest_chunk(session, _pcm_chunk(), _meta(frame_idx))
+        await audio_in.put((_pcm_chunk(), evt.event_id))
+        frame_idx += 1
+    await asyncio.sleep(0.4)  # wait for turn 1 TTS to complete + _decision_in_flight reset
+
+    # Simulate the race: T3 of turn 1 yielded a SECOND proposal after T4's snapshot,
+    # leaving stale state that the fix must clear at the next batch_open.
+    stale_proposal = ThinkerProposal(
+        proposal_type="observation",
+        content="turn-1-stale",
+        trigger="eou",
+        confidence=0.9,
+        novelty=0.5,
+        interruption_cost=0.1,
+        max_utterance_ms=2000,
+        cooldown_consumed="full_response",
+        caused_by=[],
+    )
+    orch.proposal_buffer.append(stale_proposal)
+    orch._first_proposal_event.set()
+
+    # Push turn 2.
+    for _ in one_turn:
+        evt = ingest.ingest_chunk(session, _pcm_chunk(), _meta(frame_idx))
+        await audio_in.put((_pcm_chunk(), evt.event_id))
+        frame_idx += 1
+    await asyncio.sleep(0.4)  # wait for turn 2 TTS to complete
+
+    await orch.stop()
+
+    assert len(synthesized_texts) >= 2, (
+        f"Expected TTS for at least 2 turns, got {synthesized_texts}. "
+        "Turn-N+1 silent regression."
+    )
+    assert synthesized_texts[1] != "turn-1-stale", (
+        f"Turn 2 TTS used stale content from turn 1: {synthesized_texts[1]!r}. "
+        "Fix must clear proposal_buffer at batch_open (realtime_orchestrator.py:1041-1042)."
+    )
+
+
+@pytest.mark.asyncio
+async def test_multi_turn_tts_fires_on_each_turn(tmp_path: Path):
+    """Behavioral regression: TTS fires on each independent turn (turn-N+1 silent bug).
+
+    Root cause: realtime_orchestrator.py:305 + :1041-1042 + :1316-1348.
+    Fix: clear _first_proposal_event + proposal_buffer at batch_open.
+    """
+    logger, received = _make_logger()
+    await logger.start()
+
+    ingest = InputIngest(logger=logger, blob_dir=tmp_path)
+    session_id = "test-streaming-multiturn-behavioral"
+    session = ingest.open_session("test-client")
+
+    audio_in: asyncio.Queue[tuple[bytes, str]] = asyncio.Queue(maxsize=256)
+    spy_tts = _SpyTtsAdapter()
+
+    # One turn = 2 speech frames + 2 silence frames (silence_onset_ms=64, frame_duration_ms=32).
+    one_turn = [0.9, 0.9, 0.1, 0.1]
+    vad_probs = one_turn * 3
+
+    orch = _build_orch(
+        session_id=session_id,
+        logger=logger,
+        ingest_session=session,
+        audio_in=audio_in,
+        vad_probs=vad_probs,
+        streaming_model=_FakeStreamingModelDelayed(delay_s=0.01),
+        tts_adapter=spy_tts,
+        proposal_batch_window_ms=200,
+    )
+
+    await orch.start()
+
+    frame_idx = 0
+    for _ in range(3):
+        for _ in one_turn:
+            evt = ingest.ingest_chunk(session, _pcm_chunk(), _meta(frame_idx))
+            await audio_in.put((_pcm_chunk(), evt.event_id))
+            frame_idx += 1
+        await asyncio.sleep(0.4)  # let TTS complete + _decision_in_flight reset
+
+    await orch.stop()
+
+    synth_count = spy_tts.synthesize_call_count
+    skipped = [e for e in received if e.event_type == "synthesis_skipped_no_proposal"]
+    assert skipped == [], (
+        f"synthesis_skipped_no_proposal fired — turn-N+1 regression: {[e.payload_inline for e in skipped]}"
+    )
+    assert synth_count >= 2, (
+        f"Expected TTS on at least 2 turns, got {synth_count}. Likely turn-N+1 silent regression."
+    )
