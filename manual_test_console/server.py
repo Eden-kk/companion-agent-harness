@@ -1565,13 +1565,31 @@ def build_app(
             _app[KEY_FOREGROUND_MODEL] = model
             print(f"MiniCPM-o loaded in {elapsed:.1f}s", flush=True)
 
+        # B4-FIX: resolve the concrete TTS factory now that foreground model is
+        # loaded. For native_minicpm, pass the foreground model via closure so no
+        # second MiniCPMStreamingModel is constructed.
+        if tts_adapter_name == "MiniCPM-o native TTS":
+            _fg = _app.get(KEY_FOREGROUND_MODEL)
+            if _fg is None:
+                print(
+                    "warning: native_minicpm TTS requires foreground model; "
+                    "falling back to Noop",
+                    flush=True,
+                )
+                from manual_test_console.live_pipeline import NoopTtsAdapter  # noqa: WPS433
+                tts_factory_concrete = lambda: NoopTtsAdapter()  # noqa: E731
+            else:
+                tts_factory_concrete = lambda: _load_native_minicpm_tts_adapter(_fg)  # noqa: E731
+        else:
+            tts_factory_concrete = tts_adapter_factory
+
         # In streaming_raw_mode: load TTS then return (no detectors needed).
         if _app[KEY_STREAMING_RAW_MODE]:
-            if _app[KEY_TTS_ADAPTER] is None and tts_adapter_factory is not None:
+            if _app[KEY_TTS_ADAPTER] is None and tts_factory_concrete is not None:
                 print(f"Loading {tts_adapter_name} TTS adapter (raw mode)...", flush=True)
                 t0 = time.monotonic()
                 try:
-                    _app[KEY_TTS_ADAPTER] = tts_adapter_factory()
+                    _app[KEY_TTS_ADAPTER] = tts_factory_concrete()
                 except Exception as exc:
                     print(
                         f"{tts_adapter_name} TTS load FAILED: {type(exc).__name__}: {exc} "
@@ -1601,11 +1619,11 @@ def build_app(
 
         # Load TTS singleton. Falls back to NoopTtsAdapter on failure so the
         # server still starts (voice-back simply silent).
-        if _app[KEY_TTS_ADAPTER] is None and tts_adapter_factory is not None:
+        if _app[KEY_TTS_ADAPTER] is None and tts_factory_concrete is not None:
             print(f"Loading {tts_adapter_name} TTS adapter...", flush=True)
             t0 = time.monotonic()
             try:
-                _app[KEY_TTS_ADAPTER] = tts_adapter_factory()
+                _app[KEY_TTS_ADAPTER] = tts_factory_concrete()
             except Exception as exc:
                 print(
                     f"{tts_adapter_name} TTS load FAILED: {type(exc).__name__}: {exc} "
@@ -1908,11 +1926,13 @@ def _load_kokoro_tts_adapter() -> Any:
     )
 
 
-def _load_native_minicpm_tts_adapter() -> Any:
-    """Lazy import + construct MiniCPMNativeTtsAdapter. b200 only (requires CUDA + init_tts)."""
-    from companion_harness.foreground_model_minicpm import MiniCPMStreamingModel  # noqa: WPS433
+def _load_native_minicpm_tts_adapter(streaming_model: Any) -> Any:
+    """Lazy import + construct MiniCPMNativeTtsAdapter. b200 only (requires CUDA + init_tts).
+
+    B4-FIX: takes the already-loaded foreground MiniCPMStreamingModel so no
+    second model load occurs. Wired via lambda closure in _on_startup.
+    """
     from companion_harness.tts_minicpm_native import MiniCPMNativeTtsAdapter  # noqa: WPS433
-    streaming_model = MiniCPMStreamingModel()
     return MiniCPMNativeTtsAdapter(streaming_model)
 
 
@@ -2199,27 +2219,32 @@ def main(argv: list[str] | None = None) -> int:
             factory = _load_minicpm_streaming_model
     else:
         factory = None
+    # B4-FIX: _load_native_minicpm_tts_adapter now takes streaming_model arg;
+    # _on_startup resolves the concrete factory via lambda closure after the
+    # foreground model is loaded. These assignments are placeholders that signal
+    # intent; _on_startup overwrites them for the native_minicpm case.
+    _native_tts_placeholder: Callable[[], Any] = lambda: None  # noqa: E731
     if args.minicpm_streaming_raw:
         # DEMO MODE: bypasses SpeakPolicy + audit gates per spec invariants #2/#4.
         # No detector factories; TTS is native MiniCPM for the raw path.
         vad_factory: Optional[Callable[[], Any]] = None
         smart_turn_factory: Optional[Callable[[], Any]] = None
         backchannel_factory: Optional[Callable[[], Any]] = None
-        tts_factory: Optional[Callable[[], Any]] = _load_native_minicpm_tts_adapter
+        tts_factory: Optional[Callable[[], Any]] = _native_tts_placeholder
         asr_factory: Optional[Callable[[], Any]] = None
     elif args.live_pipeline and not args.use_stubs:
         if args.minicpm_only:
             vad_factory = None
             smart_turn_factory = None
             backchannel_factory = None
-            tts_factory = _load_native_minicpm_tts_adapter
+            tts_factory = _native_tts_placeholder
             asr_factory = _load_asr_model
         else:
             vad_factory = _load_silero_vad_model
             smart_turn_factory = _load_pipecat_smart_turn_model
             backchannel_factory = _load_asr_lexicon_backchannel_model
             tts_factory = (
-                _load_native_minicpm_tts_adapter
+                _native_tts_placeholder
                 if args.tts_adapter == "native_minicpm"
                 else _load_kokoro_tts_adapter
             )
