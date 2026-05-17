@@ -355,8 +355,13 @@ class MiniCPMStreamingModel:
         call, the next streaming_prefill() must be preceded by
         duplex.prepare(prefix_system_prompt=...), which the next
         infer_stream() invocation handles at line 252-265.
+
+        Note: reset_session() lives on MiniCPMO (self._duplex.model), NOT on
+        MiniCPMODuplex (self._duplex). Calling it on _duplex directly raises
+        AttributeError and silently kills the T3 asyncio task — see PR #341
+        incident 2026-05-17.
         """
-        self._duplex.reset_session(reset_token2wav_cache=False)
+        self._duplex.model.reset_session(reset_token2wav_cache=False)
         self._last_is_listen = True
         self._last_native_duplex_event_id = None
         return self._emit_session_reset(caused_by)
