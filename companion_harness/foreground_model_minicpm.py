@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import hashlib
 import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, AsyncGenerator, AsyncIterator
 
@@ -315,6 +316,24 @@ class MiniCPMStreamingModel:
                     yield proposal
 
         return _gen()
+
+    async def infer_stream_continuous(
+        self,
+        frame_iter: AsyncIterator[tuple[bytes, bytes | None]],
+        caused_by: list[str],
+        *,
+        on_proposal: Callable[[ThinkerProposal], None],
+    ) -> None:
+        """Path B: never-terminating consumption + callback per proposal.
+
+        Unlike infer_stream (Path A) which tears down when frame_iter ends,
+        this method runs until frame_iter is exhausted or cancelled, invoking
+        on_proposal() for each yielded proposal. Used by Path B's continuous
+        T3 lifetime so the KV cache is not reset per turn (§3.5 handles reset).
+        """
+        gen = await self.infer_stream(frame_iter, caused_by)
+        async for proposal in gen:
+            on_proposal(proposal)
 
     # ------------------------------------------------------------------
 

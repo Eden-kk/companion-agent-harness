@@ -227,4 +227,43 @@ EVENT_TYPE_SCHEMAS: dict[str, StageSixEventSchema] = {
             "input event.  Reuses v0.1e retention policy."
         ),
     ),
+
+    # Path B (§3.3): one per ring-append from MiniCPMStreamingModel.
+    # High-rate (potentially 1 Hz continuous); default-OFF in dashboard filter
+    # (matches PR #321 pattern). payload_inline carries only a 32-char preview
+    # per §3.6 option (b) — no full text. payload_ref is always None unless
+    # --audit-speculations is set (§3.6, deferred to PR 7).
+    "proposer_token_buffered": StageSixEventSchema(
+        payload_kind="signal",
+        subject_class="self",
+        sensitivity="safe",
+        retention_policy_id="signal_default_30d",
+        required_fields=("ring_seq", "is_listen", "text_preview"),
+        notes=(
+            "Emitted once per ring-append in Path B (flag ON). "
+            "ring_seq is the monotonic index; text_preview is truncated "
+            "to 32 chars. Full text is NOT stored by default (§3.6 option b). "
+            "High-rate — add to default-OFF dashboard filter list."
+        ),
+    ),
+
+    # Path B (§3.3): one per policy decision in Path B (silence or full_response).
+    # caused_by: [signal_evt_id, policy_evt_id].
+    "commit_or_discard": StageSixEventSchema(
+        payload_kind="signal",
+        subject_class="self",
+        sensitivity="safe",
+        retention_policy_id="signal_default_30d",
+        required_fields=(
+            "committed", "discarded_token_count", "committed_token_count",
+            "signal_evt_id", "policy_evt_id",
+        ),
+        notes=(
+            "Emitted once per EOU policy decision in Path B. "
+            "committed=True means ring tail was snapshotted + dispatched to Kokoro; "
+            "committed=False means ring tail was discarded. "
+            "discarded_token_count / committed_token_count are integer counts only "
+            "(no full text, per §3.6 option b)."
+        ),
+    ),
 }

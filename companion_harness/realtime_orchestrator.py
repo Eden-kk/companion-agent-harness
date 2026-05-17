@@ -372,6 +372,13 @@ class StreamingRealtimeOrchestrator:
 
         self._use_streaming_speculative: bool = use_streaming_speculative
 
+        # Path B (§3.3): proposal ring buffer shared by T3 (writer) and T4/barge-in (readers).
+        # Only used when _use_streaming_speculative is True; inert otherwise.
+        self._proposal_ring: list[tuple[int, ThinkerProposal]] = []
+        self._proposal_ring_committed_seq: int = 0
+        self._proposal_ring_next_seq: int = 0
+        self._proposal_ring_lock: asyncio.Lock = asyncio.Lock()
+
         self._seq = 0
         self._tasks: list[asyncio.Task[None]] = []
         self._started_event_id: str = ""
@@ -1029,9 +1036,10 @@ class StreamingRealtimeOrchestrator:
                 )
                 self._logger.log(cmd_evt)
 
-            # Open a new batch window for T3.
-            self._batch_close_event.clear()
-            self._batch_open_event.set()
+            # Open a new batch window for T3 (Path A only; Path B T3 runs continuously).
+            if not self._use_streaming_speculative:
+                self._batch_close_event.clear()
+                self._batch_open_event.set()
 
             await self._policy_decisions.put((signal_evt_id, decision_future, policy_evt_id))
             # _decision_in_flight is NOT reset here — T4 resets it after get() so that
@@ -1039,7 +1047,14 @@ class StreamingRealtimeOrchestrator:
             # coalesced (they see _decision_in_flight=True and emit turn_signal_coalesced).
 
     async def _foreground_stream_task(self) -> None:
-        """T3: Per-batch bounded frame_iter → ForegroundModel → proposal_buffer."""
+        """T3: Per-batch bounded frame_iter → ForegroundModel → proposal_buffer (Path A)
+        or continuous frame_iter → ring buffer (Path B).
+        """
+        if self._use_streaming_speculative:
+            await self._foreground_stream_task_path_b()
+            return
+
+        # Path A (flag OFF): per-batch turn-batched behavior (bit-for-bit v0.2).
         while True:
             # Wait for T2 to open a new batch.
             await self._batch_open_event.wait()
@@ -1062,6 +1077,71 @@ class StreamingRealtimeOrchestrator:
             ):
                 self.proposal_buffer.append(proposal)
                 self._first_proposal_event.set()
+
+    async def _foreground_stream_task_path_b(self) -> None:
+        """T3 Path B: single continuous infer_stream over the whole session.
+
+        Never calls _batch_open_event or drains stale frames.  Every proposal
+        is appended to _proposal_ring with a monotonic seq so T4 can snapshot
+        committed or discard uncommitted tokens at EOU time.
+        """
+        async def _continuous_gen():
+            while True:
+                frame_bytes, chunk_event_id = await self._tee_to_foreground.get()
+                yield frame_bytes, self._consume_video_or_none()
+
+        def _on_proposal(proposal: ThinkerProposal) -> None:
+            seq = self._proposal_ring_next_seq
+            self._proposal_ring_next_seq += 1
+            self._proposal_ring.append((seq, proposal))
+            self._emit_proposer_token_buffered(seq, proposal)
+
+        await self._foreground_model.infer_stream_continuous(
+            _continuous_gen(),
+            caused_by=[self._started_event_id] if self._started_event_id else [],
+            on_proposal=_on_proposal,
+        )
+
+    def _emit_proposer_token_buffered(self, ring_seq: int, proposal: ThinkerProposal) -> None:
+        evt = dataclasses.replace(
+            self._make_event(
+                event_id=self._new_event_id(),
+                event_type="proposer_token_buffered",
+                caused_by=[self._started_event_id] if self._started_event_id else [],
+                payload_kind="signal",
+            ),
+            payload_inline={
+                "ring_seq": ring_seq,
+                "is_listen": False,
+                "text_preview": proposal.content[:32],
+            },
+        )
+        self._logger.log(evt)
+
+    def _emit_commit_or_discard(
+        self,
+        committed: bool,
+        discarded_token_count: int,
+        committed_token_count: int,
+        signal_evt_id: str,
+        policy_evt_id: str,
+    ) -> None:
+        evt = dataclasses.replace(
+            self._make_event(
+                event_id=self._new_event_id(),
+                event_type="commit_or_discard",
+                caused_by=[signal_evt_id, policy_evt_id],
+                payload_kind="signal",
+            ),
+            payload_inline={
+                "committed": committed,
+                "discarded_token_count": discarded_token_count,
+                "committed_token_count": committed_token_count,
+                "signal_evt_id": signal_evt_id,
+                "policy_evt_id": policy_evt_id,
+            },
+        )
+        self._logger.log(evt)
 
     def _make_batch_frame_iter(self) -> AsyncIterator[tuple[bytes, bytes | None]]:
         """Return a bounded async generator that terminates when _batch_close_event fires."""
@@ -1118,13 +1198,26 @@ class StreamingRealtimeOrchestrator:
             # the finally: block below, after play_task completes.
             decision = await decision_future
 
-            # Close the batch for T3.
-            self._batch_close_event.set()
+            # Close the batch for T3 (Path A only; Path B T3 never waits on this).
+            if not self._use_streaming_speculative:
+                self._batch_close_event.set()
             self._pending_retrieved_items = []
 
             if decision.action_type == "silence":
-                self.proposal_buffer.clear()
-                self._first_proposal_event.clear()
+                if self._use_streaming_speculative:
+                    # Path B: discard uncommitted ring tail, emit commit_or_discard.
+                    discarded = len(self._proposal_ring) - self._proposal_ring_committed_seq
+                    del self._proposal_ring[self._proposal_ring_committed_seq:]
+                    self._emit_commit_or_discard(
+                        committed=False,
+                        discarded_token_count=discarded,
+                        committed_token_count=0,
+                        signal_evt_id=signal_evt_id,
+                        policy_evt_id=policy_evt_id,
+                    )
+                else:
+                    self.proposal_buffer.clear()
+                    self._first_proposal_event.clear()
                 self._decision_in_flight = False
                 continue
 
@@ -1163,15 +1256,13 @@ class StreamingRealtimeOrchestrator:
                 self._decision_in_flight = False
                 continue
 
-            # Grace window: wait for at least one proposal BEFORE snapshot (edge case h).
-            if not self.proposal_buffer:
-                try:
-                    await asyncio.wait_for(
-                        self._first_proposal_event.wait(),
-                        timeout=self._proposal_batch_window_ms / 1000.0,
-                    )
-                except asyncio.TimeoutError:
-                    _close_ms = int(time.monotonic() * 1000)
+            if self._use_streaming_speculative:
+                # Path B: no grace window — proposals already exist in the ring.
+                # Snapshot the uncommitted ring tail, advance committed_seq, emit event.
+                ring_tail = self._proposal_ring[self._proposal_ring_committed_seq:]
+                committed_count = len(ring_tail)
+                if not ring_tail:
+                    # Ring is empty — emit synthesis_skipped and continue.
                     _skip_evt = self._make_event(
                         event_id=self._new_event_id(),
                         event_type="synthesis_skipped_no_proposal",
@@ -1181,22 +1272,59 @@ class StreamingRealtimeOrchestrator:
                     self._logger.log(dataclasses.replace(
                         _skip_evt,
                         payload_inline={
-                            "dispatcher_state": "timeout_waiting_for_first_proposal",
-                            "batch_window_ms": self._proposal_batch_window_ms,
-                            "batch_open_at_ms": _close_ms - self._proposal_batch_window_ms,
-                            "batch_close_at_ms": _close_ms,
+                            "dispatcher_state": "path_b_ring_empty",
+                            "batch_window_ms": 0,
+                            "batch_open_at_ms": 0,
+                            "batch_close_at_ms": int(time.monotonic() * 1000),
                             "signal_evt_id": signal_evt_id,
                         },
                     ))
-                    self.proposal_buffer.clear()
-                    self._first_proposal_event.clear()
                     self._decision_in_flight = False
                     continue
+                snapshot = [p for _, p in ring_tail]
+                self._proposal_ring_committed_seq = len(self._proposal_ring)
+                self._emit_commit_or_discard(
+                    committed=True,
+                    discarded_token_count=0,
+                    committed_token_count=committed_count,
+                    signal_evt_id=signal_evt_id,
+                    policy_evt_id=policy_evt_id,
+                )
+            else:
+                # Path A: grace window — wait for at least one proposal BEFORE snapshot (edge case h).
+                if not self.proposal_buffer:
+                    try:
+                        await asyncio.wait_for(
+                            self._first_proposal_event.wait(),
+                            timeout=self._proposal_batch_window_ms / 1000.0,
+                        )
+                    except asyncio.TimeoutError:
+                        _close_ms = int(time.monotonic() * 1000)
+                        _skip_evt = self._make_event(
+                            event_id=self._new_event_id(),
+                            event_type="synthesis_skipped_no_proposal",
+                            caused_by=[policy_evt_id],
+                            payload_kind="signal",
+                        )
+                        self._logger.log(dataclasses.replace(
+                            _skip_evt,
+                            payload_inline={
+                                "dispatcher_state": "timeout_waiting_for_first_proposal",
+                                "batch_window_ms": self._proposal_batch_window_ms,
+                                "batch_open_at_ms": _close_ms - self._proposal_batch_window_ms,
+                                "batch_close_at_ms": _close_ms,
+                                "signal_evt_id": signal_evt_id,
+                            },
+                        ))
+                        self.proposal_buffer.clear()
+                        self._first_proposal_event.clear()
+                        self._decision_in_flight = False
+                        continue
 
-            # SNAPSHOT — no await between these two lines (race-freedom).
-            snapshot = list(self.proposal_buffer)
-            self.proposal_buffer.clear()
-            self._first_proposal_event.clear()
+                # SNAPSHOT — no await between these two lines (race-freedom).
+                snapshot = list(self.proposal_buffer)
+                self.proposal_buffer.clear()
+                self._first_proposal_event.clear()
 
             text = _best_proposal_text(snapshot)
             gen_event_id = self._audio_output.start_generation(caused_by=[policy_evt_id])
