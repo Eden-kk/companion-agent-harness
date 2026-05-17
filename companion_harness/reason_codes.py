@@ -104,6 +104,7 @@ class ReasonCode(Enum):
     TOOL_FILLER_BUDGET_EXHAUSTED   = "TOOL_FILLER_BUDGET_EXHAUSTED"
     TOOL_PROGRESS_EVIDENCE_MISSING = "TOOL_PROGRESS_EVIDENCE_MISSING"
     MISSING_SIGNAL_PRODUCER        = "missing_signal_producer"
+    EMPTY_TRANSCRIPT               = "EMPTY_TRANSCRIPT"
 
 
 ReasonCode.RUBRIC_VIOLATION.__doc__               = (
@@ -200,4 +201,10 @@ ReasonCode.TOOL_PROGRESS_EVIDENCE_MISSING.__doc__ = (
     "The foreground would otherwise narrate tool progress but no "
     "tool_progress_event exists in the log to anchor the narration "
     "(invariant #9 - no invented tool progress).  Silence wins."
+)
+ReasonCode.EMPTY_TRANSCRIPT.__doc__ = (
+    "ASR returned an empty or whitespace-only transcript — the user did not "
+    "speak.  Policy gate short-circuits before the addressing classifier runs "
+    "so the audit log accurately reflects 'no speech', not 'speech not directed "
+    "at agent'.  See 2026-05-17 phantom-silence debugger finding."
 )

@@ -20,7 +20,7 @@ detectors:
     silence_onset_ms: 300                # turn_detector_vad.py:27 — see design doc §11 OQ-2
   smart_turn:
     silence_onset_ms:      300           # turn_detector_smart.py:46
-    silence_rms_threshold: 100           # turn_detector_smart.py:47
+    silence_rms_threshold: 500           # turn_detector_smart.py:47
   backchannel:
     emit_threshold: 0.3                  # backchannel_classifier.py:89
 

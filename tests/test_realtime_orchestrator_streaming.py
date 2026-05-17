@@ -1094,6 +1094,118 @@ def test_best_proposal_text_filters_empty_content():
 
 
 # ---------------------------------------------------------------------------
+# Test: empty-transcript short-circuit (2026-05-17 phantom-silence fix)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_empty_transcript_short_circuits_to_silence_with_distinct_reason(tmp_path: Path):
+    """Regression: empty ASR transcripts must short-circuit to silence/EMPTY_TRANSCRIPT,
+    NOT fall through addressing classifier (which produces misleading NOT_ADDRESSED_TO_AGENT).
+
+    See 2026-05-17 phantom-silence debugger finding: 5 of 8 silences in operator repro
+    followed empty-transcript → MiniCPM addressing returns None → WakeWord fallback →
+    NOT_ADDRESSED_TO_AGENT. This test prevents regression of the truthful-audit fix.
+    """
+    logger, received = _make_logger()
+    await logger.start()
+
+    ingest = InputIngest(logger=logger, blob_dir=tmp_path)
+    session_id = "test-streaming-empty-transcript"
+    session = ingest.open_session("test-client")
+
+    audio_in: asyncio.Queue[tuple[bytes, str]] = asyncio.Queue(maxsize=64)
+
+    # ASR model that always returns empty string.
+    class _EmptyASR:
+        label = "empty_asr"
+
+        def __call__(self, audio: bytes) -> str:
+            return ""
+
+    # Spy classifiers — must NOT be called when transcript is empty.
+    minicpm_called = []
+    wakword_called = []
+
+    class _SpyMiniCPM:
+        def __call__(self, transcript, speaker_count, social_mode):
+            minicpm_called.append(transcript)
+            return None
+
+    class _SpyWakeWord:
+        def __call__(self, transcript, speaker_count, social_mode):
+            wakword_called.append(transcript)
+            return None
+
+    vad = VADDetector(
+        model=_FakeVADModel([0.9, 0.9, 0.9, 0.9, 0.1, 0.1, 0.1]),
+        session_id=session_id,
+        logger=logger,
+        speech_threshold=0.5,
+        silence_onset_ms=64,
+        frame_duration_ms=32,
+    )
+    smart_turn = SmartTurnDetector(
+        model=_FakeSmartTurnModel(),
+        session_id=session_id,
+        logger=logger,
+    )
+    bc = BackchannelClassifier(
+        model=_FakeBackchannelModel(),
+        session_id=session_id,
+        logger=logger,
+    )
+    fg = ForegroundModel(
+        model=_FakeStreamingModelNoProposals(),
+        session_id=session_id,
+        logger=logger,
+    )
+    controller = AudioOutputController(
+        session_id=session_id,
+        logger=logger,
+        sink=_noop_sink,
+    )
+    orch = StreamingRealtimeOrchestrator(
+        session_id=session_id,
+        logger=logger,
+        ingest_session=session,
+        audio_in=audio_in,
+        vad_detector=vad,
+        smart_turn_detector=smart_turn,
+        backchannel_classifier=bc,
+        policy_inputs_builder=_build_policy_inputs,
+        foreground_model=fg,
+        audio_output=controller,
+        tts_adapter=SilentTtsAdapter(chunk_count=1),
+        asr_model=_EmptyASR(),
+        minicpm_addressing_classifier=_SpyMiniCPM(),
+        addressing_classifier=_SpyWakeWord(),
+        decision_trace_dir=tmp_path / "traces",
+        proposal_batch_window_ms=50,
+    )
+
+    await orch.start()
+    await _push_scripted_frames(audio_in, ingest, session, [0.9, 0.9, 0.9, 0.9, 0.1, 0.1, 0.1])
+    await asyncio.sleep(0.4)
+    await orch.stop()
+
+    # Policy decision must use EMPTY_TRANSCRIPT, not NOT_ADDRESSED_TO_AGENT.
+    policy_evts = [e for e in received if e.event_type == "policy_decision"]
+    assert policy_evts, "No policy_decision events logged"
+    reasons = [e.payload_inline.get("primary_reason_code") for e in policy_evts]
+    assert ReasonCode.EMPTY_TRANSCRIPT.value in reasons, (
+        f"Expected EMPTY_TRANSCRIPT reason code; got {reasons}"
+    )
+    assert ReasonCode.NOT_ADDRESSED_TO_AGENT.value not in reasons, (
+        f"Got NOT_ADDRESSED_TO_AGENT on empty transcript — short-circuit not firing: {reasons}"
+    )
+
+    # Addressing classifiers must NOT have been called.
+    assert minicpm_called == [], f"MiniCPM classifier called on empty transcript: {minicpm_called}"
+    assert wakword_called == [], f"WakeWord classifier called on empty transcript: {wakword_called}"
+
+
+# ---------------------------------------------------------------------------
 # Seam-gate regression tests (2026-05-17: dashboard toggle was a placebo)
 # ---------------------------------------------------------------------------
 
