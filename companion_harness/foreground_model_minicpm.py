@@ -28,6 +28,7 @@ Usage:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import time
 from collections.abc import Callable
@@ -330,6 +331,7 @@ class MiniCPMStreamingModel:
                 while len(buf) >= _CHUNK_SAMPLES:
                     chunk, buf = buf[:_CHUNK_SAMPLES], buf[_CHUNK_SAMPLES:]
                     proposal = _process_chunk(chunk)
+                    await asyncio.sleep(0)
                     if proposal is not None:
                         yield proposal
 
@@ -339,6 +341,7 @@ class MiniCPMStreamingModel:
                 pad = np.zeros(_CHUNK_SAMPLES - len(buf), dtype=np.float32)
                 chunk = np.concatenate([buf, pad])
                 proposal = _process_chunk(chunk)
+                await asyncio.sleep(0)
                 if proposal is not None:
                     yield proposal
 
