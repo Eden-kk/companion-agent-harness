@@ -119,6 +119,7 @@ class MiniCPMStreamingModel:
         self,
         *,
         init_vision: bool = False,
+        enable_torch_compile: bool = False,
         logger: "EventLogger | None" = None,
         session_id: str = "",
     ) -> None:
@@ -132,6 +133,20 @@ class MiniCPMStreamingModel:
             init_tts=True,
         ).eval().cuda()
         self._base = base
+        if enable_torch_compile:
+            try:
+                self._base.llm = torch.compile(
+                    self._base.llm,
+                    mode="default",
+                    fullgraph=False,
+                    dynamic=True,
+                )
+                self._torch_compile_active = True
+            except Exception as exc:
+                print(f"warning: torch.compile failed: {type(exc).__name__}: {exc}", flush=True)
+                self._torch_compile_active = False
+        else:
+            self._torch_compile_active = False
         self._tokenizer = AutoTokenizer.from_pretrained(_MODEL_ID, trust_remote_code=True)
 
         self._duplex = base.as_duplex(generate_audio=False)

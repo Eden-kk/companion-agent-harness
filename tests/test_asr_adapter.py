@@ -423,3 +423,93 @@ async def test_asr_buffer_cleared_between_turns(tmp_path: Path) -> None:
     assert "world" in policy.transcripts_seen, (
         f"Turn 2 transcript missing. Seen: {policy.transcripts_seen!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# FasterWhisperASRModel constructor interface tests (no faster_whisper import)
+# ---------------------------------------------------------------------------
+
+
+def _make_fake_whisper_model_cls():
+    """Return a drop-in WhisperModel fake that records construction kwargs."""
+
+    class _FakeWhisperModel:
+        instances: list["_FakeWhisperModel"] = []
+
+        def __init__(self, model_id, *, device="cpu", compute_type="int8"):
+            self.model_id = model_id
+            self.device = device
+            self.compute_type = compute_type
+            _FakeWhisperModel.instances.append(self)
+
+        def transcribe(self, *args, **kwargs):
+            return iter([]), None
+
+    _FakeWhisperModel.instances.clear()
+    return _FakeWhisperModel
+
+
+def test_asr_ctor_accepts_language_kwarg(monkeypatch) -> None:
+    """FasterWhisperASRModel(language='zh') constructs without error."""
+    import sys
+    import types
+
+    fake_cls = _make_fake_whisper_model_cls()
+    fake_fw = types.ModuleType("faster_whisper")
+    fake_fw.WhisperModel = fake_cls  # type: ignore
+    monkeypatch.setitem(sys.modules, "faster_whisper", fake_fw)
+
+    from companion_harness.asr_faster_whisper import FasterWhisperASRModel
+
+    model = FasterWhisperASRModel(language="zh", device="cpu", compute_type="int8")
+    assert model._language == "zh"
+
+
+def test_asr_ctor_accepts_language_none(monkeypatch) -> None:
+    """FasterWhisperASRModel(language=None) constructs without error."""
+    import sys
+    import types
+
+    fake_cls = _make_fake_whisper_model_cls()
+    fake_fw = types.ModuleType("faster_whisper")
+    fake_fw.WhisperModel = fake_cls  # type: ignore
+    monkeypatch.setitem(sys.modules, "faster_whisper", fake_fw)
+
+    from companion_harness.asr_faster_whisper import FasterWhisperASRModel
+
+    model = FasterWhisperASRModel(language=None, device="cpu", compute_type="int8")
+    assert model._language is None
+
+
+def test_asr_ctor_model_id_injectable(monkeypatch) -> None:
+    """FasterWhisperASRModel(model_id='base') stores the injected model_id."""
+    import sys
+    import types
+
+    fake_cls = _make_fake_whisper_model_cls()
+    fake_fw = types.ModuleType("faster_whisper")
+    fake_fw.WhisperModel = fake_cls  # type: ignore
+    monkeypatch.setitem(sys.modules, "faster_whisper", fake_fw)
+
+    from companion_harness.asr_faster_whisper import FasterWhisperASRModel
+
+    model = FasterWhisperASRModel(model_id="base", device="cpu", compute_type="int8")
+    assert model._model_id == "base"
+    assert fake_cls.instances[-1].model_id == "base"
+
+
+def test_asr_ctor_default_model_id_preserved(monkeypatch) -> None:
+    """FasterWhisperASRModel() with no args uses tiny.en (backward compat)."""
+    import sys
+    import types
+
+    fake_cls = _make_fake_whisper_model_cls()
+    fake_fw = types.ModuleType("faster_whisper")
+    fake_fw.WhisperModel = fake_cls  # type: ignore
+    monkeypatch.setitem(sys.modules, "faster_whisper", fake_fw)
+
+    from companion_harness.asr_faster_whisper import FasterWhisperASRModel
+
+    model = FasterWhisperASRModel(device="cpu", compute_type="int8")
+    assert model._model_id == "tiny.en"
+    assert fake_cls.instances[-1].model_id == "tiny.en"

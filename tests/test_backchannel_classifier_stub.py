@@ -104,3 +104,26 @@ async def test_mmmhmm_during_assistant_speech_emits_high_p_backchannel():
     assert len(received) == 1
     assert received[0].event_type == "backchannel_classification"
     assert received[0].caused_by == cause
+
+
+# ---------------------------------------------------------------------------
+# Chinese filler phrase tests (no faster_whisper import)
+# ---------------------------------------------------------------------------
+
+
+def test_backchannel_chinese_filler_嗯() -> None:
+    from companion_harness.backchannel_asr_lexicon import _is_backchannel
+
+    assert _is_backchannel("嗯") is True
+
+
+def test_backchannel_chinese_filler_with_punct() -> None:
+    from companion_harness.backchannel_asr_lexicon import _is_backchannel
+
+    assert _is_backchannel("嗯嗯。") is True
+
+
+def test_backchannel_chinese_long_phrase_not_filler() -> None:
+    from companion_harness.backchannel_asr_lexicon import _is_backchannel
+
+    assert _is_backchannel("好的我会去") is False
