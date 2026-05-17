@@ -210,6 +210,69 @@ class _FakeStreamingModelNoProposals:
         return _gen()
 
 
+class _FakeStreamingModelMultiChunk:
+    """StreamingDuplexModel that yields one proposal per frame consumed.
+
+    Mirrors real MiniCPM behavior: proposals are yielded WHILE consuming frames,
+    not just after frame_iter is exhausted. This is the model behavior that
+    triggered the 2026-05-17 batch_close timing regression: the old code set
+    _batch_close_event immediately after T4 dequeued the decision, which caused
+    _bounded_frame_gen to exit after the first proposal yield, truncating the
+    response to 1 chunk.
+    """
+
+    def __init__(self, chunks: list[str]) -> None:
+        self._chunks = chunks
+
+    def infer(self, audio_frame: bytes, video_frame: bytes | None = None) -> ThinkerProposal | None:
+        return None
+
+    def set_context(self, items) -> None:
+        pass
+
+    async def infer_stream(
+        self,
+        frame_iter: AsyncIterator[tuple[bytes, bytes | None]],
+        caused_by: list[str],
+        context_items: tuple = (),
+    ) -> AsyncGenerator[ThinkerProposal, None]:
+        chunks = self._chunks
+
+        async def _gen() -> AsyncGenerator[ThinkerProposal, None]:
+            chunk_iter = iter(chunks)
+            async for _ in frame_iter:
+                try:
+                    chunk = next(chunk_iter)
+                except StopIteration:
+                    break
+                yield ThinkerProposal(
+                    proposal_type="observation",
+                    content=chunk,
+                    trigger="eou",
+                    confidence=0.9,
+                    novelty=0.5,
+                    interruption_cost=0.1,
+                    max_utterance_ms=2000,
+                    cooldown_consumed="full_response",
+                    caused_by=caused_by,
+                )
+            # Yield any remaining chunks after frame_iter is consumed.
+            for chunk in chunk_iter:
+                yield ThinkerProposal(
+                    proposal_type="observation",
+                    content=chunk,
+                    trigger="eou",
+                    confidence=0.9,
+                    novelty=0.5,
+                    interruption_cost=0.1,
+                    max_utterance_ms=2000,
+                    cooldown_consumed="full_response",
+                    caused_by=caused_by,
+                )
+
+        return _gen()
+
+
 class _SpyTtsAdapter:
     """TtsAdapter that records monotonic-ns timestamps of synthesize() calls."""
 
@@ -1091,6 +1154,121 @@ def test_best_proposal_text_filters_empty_content():
     ]
     result = _best_proposal_text(proposals)
     assert result.strip() == "hello"
+
+
+# ---------------------------------------------------------------------------
+# Regression: T4 batch_close timing — must not kill T3 after first proposal
+# 2026-05-17 debugger finding: early batch_close capped responses to 1 chunk
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_multi_chunk_response_not_truncated_by_early_batch_close(tmp_path: Path):
+    """Regression: T4 must not set batch_close_event before T3 has emitted all
+    its proposals. Otherwise T3's _bounded_frame_gen exits after first proposal
+    and the response is capped to 1 chunk (~300ms TTS instead of N seconds).
+
+    See 2026-05-17 short-responses debugger finding: operator asked
+    "say a 10-word sentence" -> got "sure here" (1 proposal = ~300ms TTS).
+    """
+    logger, received = _make_logger()
+    await logger.start()
+
+    ingest = InputIngest(logger=logger, blob_dir=tmp_path)
+    session_id = "test-batch-close-timing"
+    session = ingest.open_session("test-client")
+
+    audio_in: asyncio.Queue[tuple[bytes, str]] = asyncio.Queue(maxsize=64)
+
+    chunks = ["sure,", "here", "is", "a", "ten"]
+    synthesized_texts: list[str] = []
+
+    class _RecordingTts:
+        async def synthesize(self, text: str, prosody_tags: list[str]):
+            synthesized_texts.append(text)
+            yield b"\x00" * 160
+
+    orch = _build_orch(
+        session_id=session_id,
+        logger=logger,
+        ingest_session=session,
+        audio_in=audio_in,
+        vad_probs=[0.9, 0.9, 0.9, 0.9, 0.1, 0.1, 0.1],
+        streaming_model=_FakeStreamingModelMultiChunk(chunks),
+        tts_adapter=_RecordingTts(),
+        proposal_batch_window_ms=200,
+    )
+
+    await orch.start()
+    await _push_scripted_frames(audio_in, ingest, session, [0.9, 0.9, 0.9, 0.9, 0.1, 0.1, 0.1])
+    await asyncio.sleep(0.5)
+    await orch.stop()
+
+    assert synthesized_texts, "TTS was never called — no full_response turn completed"
+    # All 5 chunks must appear in the synthesized text (not just the first).
+    combined = synthesized_texts[0]
+    assert all(c in combined for c in chunks), (
+        f"T4 batch_close fired before all proposals reached snapshot. "
+        f"Got: {combined!r}, expected all of {chunks}. "
+        "Root cause: batch_close_event set before grace window (2026-05-17 finding)."
+    )
+
+
+@pytest.mark.asyncio
+async def test_silence_branch_closes_batch(tmp_path: Path):
+    """Every T4 exit path must close the batch — silence branch."""
+    logger, _ = _make_logger()
+    await logger.start()
+
+    ingest = InputIngest(logger=logger, blob_dir=tmp_path)
+    session = ingest.open_session("test-client")
+    audio_in: asyncio.Queue[tuple[bytes, str]] = asyncio.Queue(maxsize=64)
+
+    orch = _build_orch(
+        session_id="test-silence-closes-batch",
+        logger=logger,
+        ingest_session=session,
+        audio_in=audio_in,
+        vad_probs=[0.9, 0.9, 0.9, 0.9, 0.1, 0.1, 0.1],
+        speak_policy=_AlwaysSilencePolicy(),
+    )
+
+    await orch.start()
+    await _push_scripted_frames(audio_in, ingest, session, [0.9, 0.9, 0.9, 0.9, 0.1, 0.1, 0.1])
+    await asyncio.sleep(0.3)
+    await orch.stop()
+
+    assert orch._batch_close_event.is_set(), (
+        "batch_close_event not set after silence decision — T3 would hang indefinitely"
+    )
+
+
+@pytest.mark.asyncio
+async def test_full_response_branch_closes_batch(tmp_path: Path):
+    """Every T4 exit path must close the batch — full_response branch."""
+    logger, _ = _make_logger()
+    await logger.start()
+
+    ingest = InputIngest(logger=logger, blob_dir=tmp_path)
+    session = ingest.open_session("test-client")
+    audio_in: asyncio.Queue[tuple[bytes, str]] = asyncio.Queue(maxsize=64)
+
+    orch = _build_orch(
+        session_id="test-full-response-closes-batch",
+        logger=logger,
+        ingest_session=session,
+        audio_in=audio_in,
+        vad_probs=[0.9, 0.9, 0.9, 0.9, 0.1, 0.1, 0.1],
+    )
+
+    await orch.start()
+    await _push_scripted_frames(audio_in, ingest, session, [0.9, 0.9, 0.9, 0.9, 0.1, 0.1, 0.1])
+    await asyncio.sleep(0.4)
+    await orch.stop()
+
+    assert orch._batch_close_event.is_set(), (
+        "batch_close_event not set after full_response decision — T3 would hang indefinitely"
+    )
 
 
 # ---------------------------------------------------------------------------
