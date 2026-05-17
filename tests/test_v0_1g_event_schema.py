@@ -63,6 +63,8 @@ EXPECTED_EVENT_TYPES = {
     # Path B (§3.3): proposal ring + commit/discard audit
     "proposer_token_buffered",
     "commit_or_discard",
+    # AudioOutBroker per-subscriber drop audit (invariant #10)
+    "audio_subscriber_drop",
 }
 
 
