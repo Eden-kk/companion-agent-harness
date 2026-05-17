@@ -1534,28 +1534,10 @@
     }
     kind.textContent = kindLabel;
 
-    const body = document.createElement("div");
-    body.className = "body";
     const cb = (evt.caused_by || []).map((s) => s.slice(0, 12)).join(",") || "-";
-    const preview = eventPreview(evt);
-    body.innerHTML = preview ? `<span class="payload-preview">${escapeHtml(preview)}</span>` : "";
     row.title = `${fmtTs(evt.timestamp_mono_ms)}  src=${evt.source}  seq=${evt.seq_no}\ncaused_by=[${cb}]  hash=${(evt.payload_hash || "").slice(0,12)}\nevent_id=${evt.event_id}`;
 
-    const pinBtn = document.createElement("button");
-    pinBtn.className = "pin-btn" + (isPinned ? " pinned" : "");
-    pinBtn.title = isPinned ? "Unpin" : "Pin to top";
-    pinBtn.textContent = isPinned ? "unpin" : "pin";
-    pinBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      if (pinnedIds.has(evt.event_id)) pinnedIds.delete(evt.event_id);
-      else pinnedIds.add(evt.event_id);
-      saveFilterState();
-      applyFilter();
-    });
-
     row.appendChild(kind);
-    row.appendChild(body);
-    row.appendChild(pinBtn);
     row.dataset.eventId = evt.event_id || "";
     eventRowsById.set(evt.event_id, row);
     return row;
