@@ -25,13 +25,15 @@ Hot-seam state managed via `POST /config/model-swap`. State readable at `GET /co
 | fast\_tool\_dispatcher | NO | |
 
 **Foreground model:** MiniCPM-o (`MiniCPMStreamingModel`) — always loaded, not a seam.
-**Deictic:** governed by `--enable-deictic` CLI flag (default on as of PR #307, but requires foreground model; wired in `_on_startup_finalize_deictic`).
+**Deictic:** governed by `--enable-deictic` CLI flag (default OFF as of PR #336; requires foreground model; wired in `_on_startup_finalize_deictic`).
 
 **Start command (basic stack):**
 ```
 python -m manual_test_console.server --port 8800
 ```
 No `--enable-vision`, no `--minicpm-streaming-raw`, no `--use-stubs`.
+
+As of PR #336, the bare boot command loads only the basic stack (VAD + ASR + TTS + MiniCPM foreground); heavy adapters (CLIP scene scorer, GroundingDINO, AV-conflict scorer, deictic detector, urgency scorer, sentence-transformer embedder) are opt-in via their respective `--enable-X` flags.
 
 ---
 
