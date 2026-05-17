@@ -1023,3 +1023,69 @@ async def test_multi_turn_tts_fires_on_each_turn(tmp_path: Path):
     assert synth_count >= 2, (
         f"Expected TTS on at least 2 turns, got {synth_count}. Likely turn-N+1 silent regression."
     )
+
+
+# ---------------------------------------------------------------------------
+# Test: _best_proposal_text unit tests (2026-05-17 truncation regression)
+# ---------------------------------------------------------------------------
+
+
+def test_best_proposal_text_concatenates_all_chunks():
+    """Regression: previous max(confidence) impl always returned proposals[0]
+    because confidence is hardcoded to 0.9, silently dropping every chunk
+    after the first. See 2026-05-17 truncation incident."""
+    from companion_harness.realtime_orchestrator import _best_proposal_text
+
+    proposals = [
+        ThinkerProposal(
+            proposal_type="observation", content="Yeah, I", trigger="eou",
+            confidence=0.9, novelty=0.5, interruption_cost=0.1,
+            max_utterance_ms=2000, cooldown_consumed="full_response", caused_by=[],
+        ),
+        ThinkerProposal(
+            proposal_type="observation", content="think that sounds", trigger="eou",
+            confidence=0.9, novelty=0.5, interruption_cost=0.1,
+            max_utterance_ms=2000, cooldown_consumed="full_response", caused_by=[],
+        ),
+        ThinkerProposal(
+            proposal_type="observation", content="great", trigger="eou",
+            confidence=0.9, novelty=0.5, interruption_cost=0.1,
+            max_utterance_ms=2000, cooldown_consumed="full_response", caused_by=[],
+        ),
+    ]
+    result = _best_proposal_text(proposals)
+    assert "Yeah, I" in result
+    assert "think that sounds" in result
+    assert "great" in result
+    assert len(result) > len(proposals[0].content)
+
+
+def test_best_proposal_text_empty_list():
+    from companion_harness.realtime_orchestrator import _best_proposal_text
+
+    assert _best_proposal_text([]) == ""
+
+
+def test_best_proposal_text_filters_empty_content():
+    """Empty proposals (e.g., leading silence chunks) should not produce extra spaces."""
+    from companion_harness.realtime_orchestrator import _best_proposal_text
+
+    proposals = [
+        ThinkerProposal(
+            proposal_type="observation", content="", trigger="eou",
+            confidence=0.9, novelty=0.5, interruption_cost=0.1,
+            max_utterance_ms=2000, cooldown_consumed="full_response", caused_by=[],
+        ),
+        ThinkerProposal(
+            proposal_type="observation", content="hello", trigger="eou",
+            confidence=0.9, novelty=0.5, interruption_cost=0.1,
+            max_utterance_ms=2000, cooldown_consumed="full_response", caused_by=[],
+        ),
+        ThinkerProposal(
+            proposal_type="observation", content="", trigger="eou",
+            confidence=0.9, novelty=0.5, interruption_cost=0.1,
+            max_utterance_ms=2000, cooldown_consumed="full_response", caused_by=[],
+        ),
+    ]
+    result = _best_proposal_text(proposals)
+    assert result.strip() == "hello"

@@ -1651,4 +1651,10 @@ class StreamingRealtimeOrchestrator:
 def _best_proposal_text(proposals: list[ThinkerProposal]) -> str:
     if not proposals:
         return ""
-    return max(proposals, key=lambda p: p.confidence).content
+    # MiniCPM emits one ThinkerProposal per 1-sec streaming chunk, each
+    # carrying ONLY that chunk's tokens (not cumulative). T4 snapshots all
+    # proposals accumulated during a turn; concatenate in order to reconstruct
+    # the full response. Previously max(confidence) always returned proposals[0]
+    # because confidence is hardcoded 0.9 across all proposals, silently
+    # dropping every chunk after the first. (2026-05-17 "yeah, I" truncation)
+    return " ".join(p.content for p in proposals if p.content)
