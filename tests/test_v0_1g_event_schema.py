@@ -60,6 +60,9 @@ EXPECTED_EVENT_TYPES = {
     "speaker_continuity_anchor",
     # F4 fix: typed payload for synthesis skip diagnosability
     "synthesis_skipped_no_proposal",
+    # Path B (§3.3): proposal ring + commit/discard audit
+    "proposer_token_buffered",
+    "commit_or_discard",
 }
 
 

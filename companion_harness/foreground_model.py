@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import hashlib
 import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import AsyncGenerator, AsyncIterator, Protocol, runtime_checkable
 
@@ -169,6 +170,31 @@ class ForegroundModel:
                 proposal.caused_by = [frame_evt.event_id]
             self._emit("foreground_proposal", [frame_evt.event_id], "model_output")
             yield proposal
+
+    async def infer_stream_continuous(
+        self,
+        frame_iter: AsyncIterator[tuple[bytes, bytes | None]],
+        caused_by: list[str],
+        *,
+        on_proposal: Callable[[ThinkerProposal], None],
+    ) -> None:
+        """Path B: forward to the underlying model's infer_stream_continuous.
+
+        The else branch exists for test stubs (e.g. tests/test_streaming_speculative_flag.py)
+        that only implement infer_stream; production models must provide infer_stream_continuous.
+        """
+        if hasattr(self._model, "infer_stream_continuous"):
+            await self._model.infer_stream_continuous(  # type: ignore[attr-defined]
+                frame_iter, caused_by, on_proposal=on_proposal
+            )
+        else:
+            frame_evt = self._emit("foreground_frame", caused_by, "raw_audio")
+            async for proposal in await self._model.infer_stream(  # type: ignore[attr-defined]
+                frame_iter, [frame_evt.event_id]
+            ):
+                if not proposal.caused_by:
+                    proposal.caused_by = [frame_evt.event_id]
+                on_proposal(proposal)
 
     # ------------------------------------------------------------------
 

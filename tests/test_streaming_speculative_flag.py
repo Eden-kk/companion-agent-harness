@@ -213,3 +213,52 @@ def test_config_store_default_is_false() -> None:
     value = store.get("orchestrator.use_streaming_speculative")
     assert not value
     assert value == 0
+
+
+# ---------------------------------------------------------------------------
+# Matrix test: invariant contract under both flag values (§3.7)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("flag", [False, True], ids=["flag_off", "flag_on"])
+@pytest.mark.asyncio
+async def test_invariant_1_no_orphan_events_under_both_flags(flag: bool, tmp_path: Path) -> None:
+    """Invariant #1: every emitted event has caused_by[] — no orphan events.
+
+    Runs under both flag values so the matrix confirms backward compat.
+    """
+    logger, received = _make_logger()
+    await logger.start()
+
+    ingest = InputIngest(logger, tmp_path)
+    session = ingest.open_session("matrix-test-client")
+    audio_in: asyncio.Queue = asyncio.Queue(maxsize=64)
+
+    orch = _make_orch(flag, logger=logger, ingest_session=session, audio_in=audio_in)
+    await orch.start()
+
+    # Push a handful of silent frames so T1/T2 spin at least once.
+    for i in range(5):
+        meta = CaptureMetadata(
+            client_id="matrix-test-client",
+            timestamp_mono_ms=1000 + i * 32,
+            timestamp_wall=datetime.now(timezone.utc).isoformat(),
+        )
+        evt = ingest.ingest_chunk(session, b"\x00" * 512, meta)
+        await audio_in.put((b"\x00" * 512, evt.event_id))
+
+    await asyncio.sleep(0.15)
+    await orch.stop()
+
+    # Every event must have at least one caused_by entry (invariant #1).
+    # Root events (no upstream event possible): session_open, harness_init,
+    # and orchestrator_started are top-level anchors.
+    orchestrator_root_types = {"orchestrator_started", "session_open", "harness_init"}
+    orphans = [
+        e for e in received
+        if not e.caused_by and e.event_type not in orchestrator_root_types
+    ]
+    assert not orphans, (
+        f"flag={flag}: {len(orphans)} orphan events (no caused_by): "
+        + ", ".join(e.event_type for e in orphans[:5])
+    )
