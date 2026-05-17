@@ -15,7 +15,7 @@ has persisted long enough), `SmartTurnDetector` has different internal behavior:
 - Between silence candidates the method returns None without touching the model.
 
 "Silence-candidate" detection is self-contained: each frame's RMS energy is
-compared against `silence_rms_threshold` (default 100 on int16 scale). When
+compared against `silence_rms_threshold` (default 500 on int16 scale). When
 accumulated silence exceeds `silence_onset_ms` (default 300 ms) this module
 fires the Smart Turn model on the buffered audio — exactly once per candidate
 window, not on every frame (watch-item 17).
@@ -44,7 +44,12 @@ __all__ = ["SmartTurnModel", "SmartTurnDetector"]
 
 # Module-level defaults; override via constructor keyword args.
 _SILENCE_ONSET_MS: int = 300
-_SILENCE_RMS_THRESHOLD: int = 100  # int16 RMS below which a frame counts as silence
+# Calibrated 2026-05-17: raised from 100 to 500 after operator observed
+# phantom EOU triggers on ambient noise (HVAC hum, breath, keyboard rustle).
+# 500 still catches clearly-spoken whispered speech but rejects typical
+# room ambient. Operators can tune via ConfigStore (POST /config/model-swap
+# with key="detectors.smart_turn.silence_rms_threshold").
+_SILENCE_RMS_THRESHOLD: int = 500  # int16 RMS below which a frame counts as silence
 
 
 @runtime_checkable

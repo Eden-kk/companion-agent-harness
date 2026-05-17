@@ -52,7 +52,7 @@ def _make_logger() -> tuple[EventLogger, list[Event]]:
 def _audio_frame(vad_speech: bool, frame_duration_ms: int = 32) -> bytes:
     """Return minimal PCM frame with RMS above (speech) or below (silence) the detector threshold.
 
-    SmartTurnDetector._SILENCE_RMS_THRESHOLD = 100.  Speech: amplitude 1000; silence: 0.
+    SmartTurnDetector._SILENCE_RMS_THRESHOLD = 500.  Speech: amplitude 1000; silence: 0.
     """
     n_samples = (frame_duration_ms * 16000) // 1000
     amplitude = 1000 if vad_speech else 0

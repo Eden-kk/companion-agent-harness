@@ -342,7 +342,7 @@ async def test_smart_turn_update_thresholds_takes_effect():
         logger=logger,
     )
     assert detector._silence_onset_ms == 300
-    assert detector._silence_rms_threshold == 100
+    assert detector._silence_rms_threshold == 500
 
     detector.update_thresholds(silence_onset_ms=500, silence_rms_threshold=50)
     assert detector._silence_onset_ms == 500
