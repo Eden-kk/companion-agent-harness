@@ -207,7 +207,19 @@ class MiniCPMStreamingModel:
         yes_ids, no_ids = self._yes_no_token_ids
         inputs = self._tokenizer(prompt, return_tensors="pt").to(self._base.device)
         with torch.no_grad():
-            out = self._base(**inputs)
+            # MiniCPMO.forward(data, ...) requires a multimodal data dict (input_ids,
+            # position_ids, image_bound, audio_bounds, audio_features, ...). For
+            # pure-text logprob classification we bypass the wrapper and call the
+            # underlying LLM directly. self._base.llm is a Qwen3ForCausalLM (see
+            # modeling_minicpmo.py:117) and is always present regardless of
+            # init_vision / init_audio. use_cache=False so we do NOT touch
+            # self._base.llm_past_key_values, which MiniCPMODuplex.streaming_generate
+            # relies on for the streaming audio session.
+            out = self._base.llm(
+                input_ids=inputs["input_ids"],
+                attention_mask=inputs.get("attention_mask"),
+                use_cache=False,
+            )
         last_logits = out.logits[0, -1, :]
         probs = torch.softmax(last_logits, dim=-1)
         p_yes = float(sum(probs[i].item() for i in yes_ids))
