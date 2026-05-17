@@ -1651,7 +1651,7 @@ def build_app(
             (KEY_BACKCHANNEL_MODEL, "backchannel", backchannel_model_factory,
              "stub:ZeroBackchannel", "whisper-tiny + lexicon"),
             (KEY_ASR_MODEL, "asr", asr_model_factory,
-             "stub:EmptyTranscript", "whisper-tiny.en (faster-whisper)"),
+             "stub:EmptyTranscript", "whisper-base (faster-whisper)"),
         ):
             if factory is None:
                 _app[KEY_DETECTOR_LABELS][label_key] = stub_label
