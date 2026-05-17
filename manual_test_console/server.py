@@ -1410,6 +1410,7 @@ def build_app(
     display_sampling_rate: int = 1,
     display_queue_depth: int = 1024,
     audio_out_queue_depth: int = 1024,
+    skip_warmup: bool = False,
 ) -> web.Application:
     """Build the aiohttp Application. Caller is responsible for run/cleanup.
 
@@ -1776,9 +1777,68 @@ def build_app(
         _app[KEY_ACTIVE_PIPELINES].clear()
         await logger.stop()
 
+    async def _on_startup_warmup(_app: web.Application) -> None:
+        if skip_warmup:
+            print("warmup: SKIPPED (--skip-warmup)", flush=True)
+            return
+        use_stubs_flag = _app[KEY_USE_STUBS]
+        minicpm = _app[KEY_FOREGROUND_MODEL]
+        tts_label: str = _app[KEY_TTS_LABEL]
+        tts = _app[KEY_TTS_ADAPTER] if not tts_label.startswith("stub:") else None
+        asr = _app[KEY_ASR_MODEL]
+        if use_stubs_flag or (minicpm is None and tts is None and asr is None):
+            print("warmup: SKIPPED (stubs / no real models loaded)", flush=True)
+            return
+
+        print("warmup: starting (MiniCPM / Kokoro / whisper-tiny)...", flush=True)
+        silent_pcm = bytes(16000 * 2)  # 1 s, 16 kHz, int16, silence
+        timings: dict[str, int] = {}
+
+        if minicpm is not None:
+            t0 = time.monotonic()
+            try:
+                async def _silent_frames():  # noqa: WPS430
+                    yield silent_pcm, None
+                async def _drain_warmup() -> None:  # noqa: WPS430
+                    async for _ in await minicpm.infer_stream(
+                        _silent_frames(), caused_by=["warmup"]
+                    ):
+                        pass
+                await asyncio.wait_for(_drain_warmup(), timeout=20.0)
+            except Exception as exc:
+                print(f"warmup_warning: minicpm: {type(exc).__name__}: {exc}", flush=True)
+            timings["minicpm"] = round((time.monotonic() - t0) * 1000)
+
+        if tts is not None:
+            t0 = time.monotonic()
+            try:
+                async def _drain_tts() -> None:  # noqa: WPS430
+                    async for _ in tts.synthesize("ok", []):
+                        pass
+                await asyncio.wait_for(_drain_tts(), timeout=20.0)
+            except Exception as exc:
+                print(f"warmup_warning: tts: {type(exc).__name__}: {exc}", flush=True)
+            timings["kokoro"] = round((time.monotonic() - t0) * 1000)
+
+        if asr is not None:
+            t0 = time.monotonic()
+            try:
+                await asyncio.wait_for(
+                    asyncio.get_running_loop().run_in_executor(None, asr, silent_pcm, 16000),
+                    timeout=20.0,
+                )
+            except Exception as exc:
+                print(f"warmup_warning: asr: {type(exc).__name__}: {exc}", flush=True)
+            timings["asr"] = round((time.monotonic() - t0) * 1000)
+
+        total = sum(timings.values())
+        parts = " ".join(f"{k}={v}ms" for k, v in timings.items())
+        print(f"warmup: {parts} total={total}ms", flush=True)
+
     app.on_startup.append(_on_startup)
     app.on_startup.append(_on_startup_finalize_deictic)
     app.on_startup.append(_on_startup_summary)
+    app.on_startup.append(_on_startup_warmup)
 
     async def _on_startup_rotation(_app: web.Application) -> None:
         if blob_retention_days > 0:
@@ -2068,6 +2128,16 @@ def main(argv: list[str] | None = None) -> int:
             "Default OFF — v0.2 behavior is bit-for-bit preserved when absent."
         ),
     )
+    parser.add_argument(
+        "--skip-warmup",
+        dest="skip_warmup",
+        action="store_true",
+        default=False,
+        help=(
+            "Skip the startup warmup pass (MiniCPM / Kokoro / whisper). "
+            "Saves ~3 s boot time at the cost of higher first-turn latency."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if args.minicpm_only and args.use_stubs:
@@ -2244,6 +2314,7 @@ def main(argv: list[str] | None = None) -> int:
         display_sampling_rate=args.display_sampling_rate,
         display_queue_depth=args.display_queue_depth,
         audio_out_queue_depth=args.audio_out_queue_depth,
+        skip_warmup=args.skip_warmup,
     )
     if args.streaming_speculative:
         config_store: ConfigStore = app[KEY_CONFIG_STORE]  # type: ignore[assignment]
@@ -2292,6 +2363,7 @@ def main(argv: list[str] | None = None) -> int:
         if flag
     ) or "(none — all null stubs)"
 
+    warmup_label = "SKIPPED (--skip-warmup)" if args.skip_warmup else "ENABLED"
     print("=" * 72)
     print("manual-test console — Phase 3 (live-loop pipeline wiring, no voice-back)")
     print("-" * 72)
@@ -2302,6 +2374,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  sessions:    {lanes_label}")
     print(f"  Vision:      {vision_label}")
     print(f"  adapters:    {adapter_flags}")
+    print(f"  warmup:      {warmup_label}")
     print(f"  open page:   http://localhost:{args.port}/")
     print(f"  ingest WS:   ws://localhost:{args.port}/ws/ingest")
     print(f"  display WS:  ws://localhost:{args.port}/ws/display")
