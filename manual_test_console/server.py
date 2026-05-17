@@ -146,6 +146,8 @@ _CONFIG_EVENT_SCHEMA_VERSION = "0.1"
 
 # Basic-stack seam defaults: only vad/asr/tts on; all 9 heavy seams off.
 # Matches docs/basic-stack-design-2026-05-16.md §1.
+# Path B (continuous-proposer, --streaming-speculative) is the default driver for
+# the basic stack.  Pass --no-streaming-speculative on the CLI to fall back to Path A.
 _BASIC_STACK_SEAM_DEFAULTS: dict[str, bool] = {
     "vad": True,
     "asr": True,
@@ -2120,12 +2122,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--streaming-speculative",
+        "--no-streaming-speculative",
         dest="streaming_speculative",
-        action="store_true",
-        default=False,
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help=(
-            "Enable continuous-proposer Path B with integrated barge-in (v0.3 experimental). "
-            "Default OFF — v0.2 behavior is bit-for-bit preserved when absent."
+            "Use continuous-proposer Path B (default ON). "
+            "Pass --no-streaming-speculative to fall back to Path A frame-batched mode."
         ),
     )
     parser.add_argument(
@@ -2316,9 +2319,8 @@ def main(argv: list[str] | None = None) -> int:
         audio_out_queue_depth=args.audio_out_queue_depth,
         skip_warmup=args.skip_warmup,
     )
-    if args.streaming_speculative:
-        config_store: ConfigStore = app[KEY_CONFIG_STORE]  # type: ignore[assignment]
-        config_store.set("orchestrator.use_streaming_speculative", 1)
+    config_store: ConfigStore = app[KEY_CONFIG_STORE]  # type: ignore[assignment]
+    config_store.set("orchestrator.use_streaming_speculative", 1 if args.streaming_speculative else 0)
 
     # Stamp the deictic_model label as "pending-foreground-load" so
     # _on_startup_finalize_deictic knows the operator asked for it.
