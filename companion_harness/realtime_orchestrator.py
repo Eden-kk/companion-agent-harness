@@ -748,6 +748,81 @@ class StreamingRealtimeOrchestrator:
             self._pending_retrieved_items = retrieved_items
             inputs.retrieved_items = retrieved_items
 
+            # --- Empty-transcript short-circuit (2026-05-17 phantom-silence fix) ---
+            # ASR is wired but returned empty/whitespace — the user did not speak.
+            # Emit silence with EMPTY_TRANSCRIPT rather than running the addressing
+            # classifier (which always returns None on empty input → WakeWord
+            # fallback → NOT_ADDRESSED_TO_AGENT — a misleading audit entry).
+            # Guard: only applies when asr_model is set; when ASR is None the empty
+            # transcript is the backward-compatible no-op (no transcription at all).
+            if self._asr_model is not None and not transcript.strip():
+                _et_decision = SpeakDecision(
+                    action_type="silence",
+                    primary_reason_code=ReasonCode.EMPTY_TRANSCRIPT,
+                    supporting_reason_codes=[],
+                    redacted_explanation=None,
+                    caused_by=[signal_evt_id],
+                    budget_bucket=None,
+                    allowed_prosody_tags=[],
+                    max_duration_ms=None,
+                    response_content_source="no_synthesis",
+                )
+                _et_policy_evt_id = self._new_event_id()
+                _et_decision_future: asyncio.Future[SpeakDecision] = asyncio.get_running_loop().create_future()
+                self._pending_decision_future = _et_decision_future
+                self._pending_signal_evt_id = signal_evt_id
+                _et_trace = _build_decision_trace(
+                    decision=_et_decision,
+                    inputs=inputs,
+                    signal_event_ids=[signal_evt_id],
+                    decision_id=_et_policy_evt_id,
+                    p_backchannel=signal.p_backchannel,
+                    retrieval_event_ids=[mre_event_id],
+                    **self._policy_threshold_kwargs,
+                )
+                _et_trace_uri = self._decision_trace_store.write(_et_trace)
+                self._logger.log(dataclasses.replace(
+                    self._make_event(
+                        event_id=_et_policy_evt_id,
+                        event_type="policy_decision",
+                        caused_by=[signal_evt_id, mre_event_id],
+                        payload_kind="signal",
+                        extra_hash=_et_decision.action_type,
+                    ),
+                    retention_policy_id="decision_trace_30d",
+                    payload_ref=_et_trace_uri,
+                    payload_inline={
+                        "action_type": _et_decision.action_type,
+                        "primary_reason_code": _et_decision.primary_reason_code.value,
+                    },
+                ))
+                _et_trace_dict = dataclasses.asdict(_et_trace)
+                _et_trace_dict["primary_reason_code"] = _et_trace.primary_reason_code.value
+                _et_trace_dict["supporting_reason_codes"] = [rc.value for rc in _et_trace.supporting_reason_codes]
+                _et_hash = hashlib.sha256(
+                    json.dumps(_et_trace_dict, sort_keys=True).encode()
+                ).hexdigest()
+                self._logger.log(dataclasses.replace(
+                    self._make_event(
+                        event_id=self._new_event_id(),
+                        event_type="decision_trace_emitted",
+                        caused_by=[_et_policy_evt_id],
+                        payload_kind="model_output",
+                        extra_hash=_et_hash,
+                    ),
+                    retention_policy_id="decision_trace_30d",
+                    payload_hash=_et_hash,
+                ))
+                _et_decision_future.set_result(_et_decision)
+                if not self._use_streaming_speculative:
+                    self._pending_policy_evt_id = _et_policy_evt_id
+                    self._first_proposal_event.clear()
+                    self.proposal_buffer.clear()
+                    self._batch_close_event.clear()
+                    self._batch_open_event.set()
+                await self._policy_decisions.put((signal_evt_id, _et_decision_future, _et_policy_evt_id))
+                continue
+
             # --- Addressing: MiniCPM-derived primary; WakeWord safety-net ---
             # MiniCPM-derived classifier is the final-product primary (issue #139).
             # WakeWordAddressingClassifier is the safety-net, active when MiniCPM
