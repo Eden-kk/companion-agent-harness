@@ -50,6 +50,8 @@ _MODEL_ID = "openbmb/MiniCPM-o-4_5"
 
 _DEFAULT_DUPLEX_SYSTEM_PROMPT = """You are a warm, conversational voice companion. The user is talking to you out loud. When they finish speaking, respond with one or two natural, complete sentences — not a single word, not a long monologue. Be specific and engaged. If the user asks a question, answer it directly first, then add one short follow-up thought."""
 
+_MAX_NEW_SPEAK_TOKENS_PER_CHUNK = 50  # bump from MiniCPM-o default of 20 (hard cap per modeling_minicpmo.py:3193-3198)
+
 # 16 kHz PCM16 — 1 second of audio = 16000 int16 samples = 32000 bytes
 _SAMPLE_RATE = 16000
 _CHUNK_SAMPLES = _SAMPLE_RATE  # 1-second chunks match MiniCPMODuplex default CHUNK_MS=1000
@@ -287,7 +289,7 @@ class MiniCPMStreamingModel:
             def _process_chunk(pcm_float: np.ndarray) -> ThinkerProposal | None:
                 duplex.streaming_prefill(audio_waveform=pcm_float)
                 result = duplex.streaming_generate(
-                    max_new_speak_tokens_per_chunk=duplex.max_new_speak_tokens_per_chunk,
+                    max_new_speak_tokens_per_chunk=_MAX_NEW_SPEAK_TOKENS_PER_CHUNK,
                     temperature=duplex.temperature,
                     top_k=duplex.top_k,
                     top_p=duplex.top_p,
