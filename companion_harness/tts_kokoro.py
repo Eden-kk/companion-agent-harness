@@ -65,7 +65,7 @@ structurally enforces the policy → synthesis edge.
 from __future__ import annotations
 
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 
 import numpy as np
 from kokoro_onnx import Kokoro
@@ -154,7 +154,7 @@ class KokoroTtsAdapter:
         self,
         text_chunks: AsyncIterator[str],
         prosody_tags: list[str],
-    ) -> AsyncIterator[bytes]:
+    ) -> AsyncGenerator[bytes, None]:
         """Stream PCM out as text chunks arrive. Hybrid clause-boundary + wall-cap policy.
 
         Accumulates incoming text into a clause buffer and fires Kokoro's

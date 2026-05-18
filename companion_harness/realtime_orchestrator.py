@@ -771,6 +771,7 @@ class StreamingRealtimeOrchestrator:
                         self._logger.log(self._make_event(
                             event_id=self._new_event_id(),
                             event_type="hybrid_audio_snapshot_overwrite_warning",
+                            caused_by=[signal_evt_id],
                             payload_kind="signal",
                         ))
                     self._latest_hybrid_audio_snapshot = bytes(self._turn_audio_buffer)
@@ -1485,6 +1486,16 @@ class StreamingRealtimeOrchestrator:
                     self._decision_in_flight = False
                     continue
 
+                if self._hybrid_state != "EOU_PENDING_SWITCH":
+                    self._logger.log(self._make_event(
+                        event_id=self._new_event_id(),
+                        event_type="hybrid_mode_switch_aborted_by_barge_in",
+                        caused_by=[policy_evt_id],
+                        payload_kind="signal",
+                    ))
+                    self._decision_in_flight = False
+                    continue
+
                 audio_bytes = self._latest_hybrid_audio_snapshot
                 self._latest_hybrid_audio_snapshot = None
                 if audio_bytes is None or len(audio_bytes) < _MIN_HYBRID_CHAT_AUDIO_SAMPLES * 2:
@@ -1502,7 +1513,6 @@ class StreamingRealtimeOrchestrator:
                 audio_np = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
 
                 self._foreground_model.reset_streaming_session(caused_by=[policy_evt_id])
-                self._transition_hybrid_state("CHAT_STREAMING")
 
                 gen_event_id = self._audio_output.start_generation(caused_by=[policy_evt_id])
                 _trigger = "natural_end"
@@ -1724,6 +1734,7 @@ class StreamingRealtimeOrchestrator:
             name=f"play-{gen_event_id}",
         )
         self._audio_output.set_generation_task(play_task)
+        self._transition_hybrid_state("CHAT_STREAMING")
         try:
             await play_task
         except asyncio.CancelledError:
@@ -1897,6 +1908,16 @@ class StreamingRealtimeOrchestrator:
         """
         play_task = self._audio_output.generation_task
         if play_task is None or play_task.done():
+            if self._use_hybrid and self._hybrid_state in ("EOU_PENDING_SWITCH", "CHAT_STREAMING"):
+                self._transition_hybrid_state("RESETTING_TO_DUPLEX")
+                self._transition_hybrid_state("AMBIENT_DUPLEX")
+                self._logger.log(self._make_event(
+                    event_id=self._new_event_id(),
+                    event_type="hybrid_chat_stop_requested",
+                    caused_by=[onset_evt_id],
+                    payload_kind="signal",
+                ))
+                self._foreground_model.request_chat_stop()
             self._logger.log(self._make_event(
                 event_id=self._new_event_id(),
                 event_type="barge_in_trigger_no_op",

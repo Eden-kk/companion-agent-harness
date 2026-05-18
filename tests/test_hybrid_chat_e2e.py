@@ -319,14 +319,6 @@ async def test_hybrid_chat_stream_natural_end(tmp_path: Path) -> None:
     types = [e.event_type for e in received]
     types_set = set(types)
 
-    # hybrid_mode_switched_to_chat is emitted by _transition_hybrid_state when
-    # entering EOU_PENDING_SWITCH (the state machine emits the event).
-    # Actually: _transition_hybrid_state does NOT emit events itself — only the
-    # hybrid_mode_returned_to_duplex is explicitly emitted with payload.
-    # The plan §2.2 DOES emit hybrid_mode_switched_to_chat via _transition_hybrid_state?
-    # No — _transition_hybrid_state only sets state; T4 explicitly emits the event
-    # hybrid_mode_returned_to_duplex.  chat_stream_turn_started is emitted in §2.3.
-
     # Assert required events present
     assert "chat_stream_turn_started" in types_set, (
         f"Missing chat_stream_turn_started. Got types: {sorted(types_set)}"
