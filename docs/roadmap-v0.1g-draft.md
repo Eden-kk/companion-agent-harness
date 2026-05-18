@@ -241,3 +241,5 @@ v0.1f owns the `proactivity_budget_remaining` budget-key alphabet
 - Issue #96 — `no_camera_memory`.
 
 [^1]: see `docs/roadmap-v0.1e-draft.md` §Anchor 2/3 and §Concern C2.
+
+**Operator note (Option C Stage 4):** hybrid duplex+chat-stream is now default (`--use-hybrid` ON); pass `--no-use-hybrid` to revert to duplex-only Path A.

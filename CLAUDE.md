@@ -102,6 +102,7 @@ These translate the invariants into commits-and-code-review form.
 - **Local:** editing, git, doc work, lightweight CI (unit tests + Stage 0 replay tests run locally).
 - **Remote:** `ssh b200` for model weights, GPU inference, integration tests. Code is git-synced from local to remote; model artifacts stay on b200.
 - **Reference:** [`docs/remote-dev.md`](docs/remote-dev.md) for the workflow specifics. Verify b200 and the venv on first remote session — they are not validated at bootstrap.
+- Hybrid duplex+chat-stream is now default; pass --no-use-hybrid to revert.
 
 ## What to work on next
 

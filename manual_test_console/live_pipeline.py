@@ -493,6 +493,7 @@ def build_live_pipeline(
     backchannel_model: Any = None,
     asr_model: Any = None,
     use_stubs: bool = False,
+    use_hybrid: bool = True,  # Matches argparse --use-hybrid default; explicit overrides via --no-use-hybrid
     audio_out_broker: AudioOutSinkTarget | None = None,
     tts_adapter: Any = None,
     vision_sidecar: Any = None,
@@ -740,6 +741,7 @@ def build_live_pipeline(
         tool_progress_emitter=None,
         background_reasoner=background_reasoner,
         use_streaming_speculative=use_streaming_speculative,
+        use_hybrid=use_hybrid,
     )
 
     sleep_agent: SleepTimeAgent | None = None

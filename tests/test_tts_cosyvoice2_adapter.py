@@ -163,7 +163,7 @@ def test_synthesize_streaming_flushes_end_of_stream(patched_cosyvoice) -> None:
 
 
 def test_cancelled_error_mid_stream_drains_queue(patched_cosyvoice) -> None:
-    """CancelledError mid-stream drains queue and joins producer within 100 ms."""
+    """CancelledError mid-stream drains queue and joins producer within 2.5 s (bounded by asyncio.wait_for timeout=2.0)."""
     # Use a slow stub: sleeps briefly between items to give cancellation a window
     slow_arrs = [np.zeros(4800, dtype=np.float32)] * 5
 

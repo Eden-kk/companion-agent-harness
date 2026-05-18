@@ -175,7 +175,10 @@ class CosyVoice2TtsAdapter:
                     queue.get_nowait()
                 except asyncio.QueueEmpty:
                     break
-            await producer_task
+            try:
+                await asyncio.wait_for(producer_task, timeout=2.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
 
     async def synthesize_streaming(
         self,
@@ -236,7 +239,10 @@ class CosyVoice2TtsAdapter:
                             queue.get_nowait()
                         except asyncio.QueueEmpty:
                             break
-                    await producer_task
+                    try:
+                        await asyncio.wait_for(producer_task, timeout=2.0)
+                    except (asyncio.TimeoutError, asyncio.CancelledError):
+                        pass
 
             async for chunk in text_chunks:
                 if not chunk:
