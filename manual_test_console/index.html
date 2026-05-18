@@ -573,7 +573,20 @@
   async function startCapture() {
     btnStart.disabled = true;
     try {
-      mediaStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: SAMPLE_RATE_TARGET, echoCancellation: true, noiseSuppression: true } });
+      // Mic-capture constraints: prefer RAW microphone level for downstream ML models
+      // (MiniCPM-o audio encoder, whisper-base ASR). Browser AGC + noiseSuppression
+      // attenuated mic signal by 5-10x, starving MiniCPM-o (Stage 4 mic-test
+      // confirmed via /tmp/repro-hybrid-stage6-instr-v2.jsonl, RMS=0.015-0.027 vs
+      // Kokoro TTS fixture RMS ~0.15+). Keep echoCancellation to prevent TTS feedback.
+      mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          sampleRate: SAMPLE_RATE_TARGET,
+          echoCancellation: true,    // KEEP — prevents TTS bleed-back into mic (esp. without headphones)
+          noiseSuppression: false,   // DISABLE — was killing soft speech as "noise"
+          autoGainControl: false     // DISABLE — Chrome defaults ON, attenuates speech to quiet baseline
+        }
+      });
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       const blob = new Blob([WORKLET_SRC], { type: "application/javascript" });
       const url = URL.createObjectURL(blob);
