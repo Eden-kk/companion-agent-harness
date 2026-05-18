@@ -140,9 +140,9 @@ async def test_audio_without_video_passes_none(tmp_path) -> None:
     )
 
     # Push three audio chunks; only the first consumes the frame; remainder None.
-    await orch._tee_to_foreground.put((b"chunk-1", "raw-audio-1"))
-    await orch._tee_to_foreground.put((b"chunk-2", "raw-audio-2"))
-    await orch._tee_to_foreground.put((b"chunk-3", "raw-audio-3"))
+    await orch._foreground_ring.put((b"chunk-1", "raw-audio-1"))
+    await orch._foreground_ring.put((b"chunk-2", "raw-audio-2"))
+    await orch._foreground_ring.put((b"chunk-3", "raw-audio-3"))
 
     gen = orch._bounded_frame_gen()
     out = [

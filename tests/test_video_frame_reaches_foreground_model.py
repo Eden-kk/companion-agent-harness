@@ -237,9 +237,9 @@ async def test_bounded_frame_gen_pairs_audio_with_video(tmp_path) -> None:
         vision_sidecar=sidecar,
     )
 
-    # Stage an audio frame onto _tee_to_foreground (bypass the audio_tee task
+    # Stage an audio frame onto _foreground_ring (bypass the audio_tee task
     # so this test stays synchronous-ish).
-    await orch._tee_to_foreground.put((b"audio-chunk-1", "raw-audio-evt-1"))
+    await orch._foreground_ring.put((b"audio-chunk-1", "raw-audio-evt-1"))
 
     # Start the generator; it should yield (audio, video) then block waiting
     # for more frames. Close the batch after the first yield.
@@ -277,7 +277,7 @@ async def test_bounded_frame_gen_passes_none_when_no_video(tmp_path) -> None:
         vision_sidecar=sidecar,
     )
 
-    await orch._tee_to_foreground.put((b"audio-chunk-1", "raw-audio-evt-1"))
+    await orch._foreground_ring.put((b"audio-chunk-1", "raw-audio-evt-1"))
 
     gen = orch._bounded_frame_gen()
     first = await asyncio.wait_for(gen.__anext__(), timeout=1.0)

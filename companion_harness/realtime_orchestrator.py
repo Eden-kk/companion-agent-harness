@@ -286,6 +286,9 @@ class StreamingRealtimeOrchestrator:
         self._tee_depth = _tee_depth
         self._tee_to_detectors: asyncio.Queue[tuple[bytes, str]] = asyncio.Queue(maxsize=_tee_depth)
         self._tee_to_foreground: asyncio.Queue[tuple[bytes, str]] = asyncio.Queue(maxsize=_tee_depth)
+        # Ring buffer between _tee_to_foreground and T3 consumers.
+        # Decouples tee drain rate from T3 processing rhythm.
+        self._foreground_ring: asyncio.Queue[tuple[bytes, str]] = asyncio.Queue(maxsize=512)
         # Per-tee drop counters for the 60s summary event.
         self._tee_detectors_drop_count: int = 0
         self._tee_foreground_drop_count: int = 0
@@ -402,6 +405,7 @@ class StreamingRealtimeOrchestrator:
         loop = asyncio.get_running_loop()
         self._tasks = [
             loop.create_task(self._audio_tee_task(), name="audio_tee"),
+            loop.create_task(self._foreground_tee_drain_task(), name="foreground_tee_drain"),
             loop.create_task(self._detector_fanout_task(), name="T1_detector_fanout"),
             loop.create_task(self._policy_gate_task(), name="T2_policy_gate"),
             loop.create_task(self._foreground_stream_task(), name="T3_foreground_stream"),
@@ -487,6 +491,33 @@ class StreamingRealtimeOrchestrator:
                     self._logger.log(self._emit_tee_summary(tee_name, drop_count, q.qsize()))
                 self._tee_detectors_drop_count = 0
                 self._tee_foreground_drop_count = 0
+
+    async def _foreground_tee_drain_task(self) -> None:
+        """Continuously drain _tee_to_foreground into _foreground_ring.
+
+        Decouples tee drain from T3's batch-gated processing rhythm. On ring
+        saturation, drop-oldest: pop the oldest item to make room and emit a
+        log_drop_or_degrade with tee_name='foreground_ring'.
+        """
+        while True:
+            item = await self._tee_to_foreground.get()
+            while True:
+                try:
+                    self._foreground_ring.put_nowait(item)
+                    break
+                except asyncio.QueueFull:
+                    try:
+                        dropped = self._foreground_ring.get_nowait()
+                        chunk_event_id = dropped[1] if isinstance(dropped[1], str) else ""
+                        self._logger.log(
+                            _make_degrade_event(
+                                [chunk_event_id] if chunk_event_id else [],
+                                "foreground_ring",
+                                self._foreground_ring.qsize(),
+                            )
+                        )
+                    except asyncio.QueueEmpty:
+                        pass  # raced with consumer; retry put_nowait
 
     def _emit_tee_summary(self, tee_name: str, drop_count_60s: int, current_queue_depth: int) -> Event:
         now_ms = int(time.monotonic() * 1000)
@@ -1200,7 +1231,7 @@ class StreamingRealtimeOrchestrator:
 
         async def _continuous_gen() -> AsyncIterator[tuple[bytes, bytes | None]]:
             while True:
-                frame_bytes, chunk_event_id = await self._tee_to_foreground.get()
+                frame_bytes, chunk_event_id = await self._foreground_ring.get()
                 latest_chunk_event_id[:] = [chunk_event_id]
                 yield frame_bytes, self._consume_video_or_none()
 
@@ -1276,12 +1307,12 @@ class StreamingRealtimeOrchestrator:
         return pair[0] if pair is not None else None
 
     async def _bounded_frame_gen(self):  # type: ignore[return]
-        # Synchronously drain frames already in the queue (current turn's speech
+        # Synchronously drain frames already in the ring (current turn's speech
         # audio accumulated before batch-open).  These frames are yielded without
         # any await so they reach infer_stream before T4's batch_close fires.
         while True:
             try:
-                frame_bytes, _ = self._tee_to_foreground.get_nowait()
+                frame_bytes, _ = self._foreground_ring.get_nowait()
             except asyncio.QueueEmpty:
                 break
             yield frame_bytes, self._consume_video_or_none()
@@ -1291,7 +1322,7 @@ class StreamingRealtimeOrchestrator:
         # Then wait for new frames (live streaming while the batch is open).
         while not self._batch_close_event.is_set():
             # Race between next frame and batch-close.
-            get_task = asyncio.ensure_future(self._tee_to_foreground.get())
+            get_task = asyncio.ensure_future(self._foreground_ring.get())
             close_task = asyncio.ensure_future(self._batch_close_event.wait())
             try:
                 done, pending = await asyncio.wait(
