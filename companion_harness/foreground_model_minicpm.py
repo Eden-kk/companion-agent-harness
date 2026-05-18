@@ -518,6 +518,7 @@ class MiniCPMStreamingModel:
         *,
         on_proposal: Callable[[ThinkerProposal, str], None],
         on_response_complete: Callable[[str], None],
+        on_response_started: Callable[[str], None] | None = None,
     ) -> None:
         """Path B: never-terminating consumption + callback per proposal.
 
@@ -528,6 +529,8 @@ class MiniCPMStreamingModel:
 
         on_response_complete(response_id) is called when the model transitions
         back to listen (False→True) after emitting ≥1 proposal for that response.
+        on_response_started(response_id) is called at the True→False is_listen
+        transition (model started speaking).
         """
         state: dict = {"response_id": None, "proposals": 0, "chars": 0}
 
@@ -535,6 +538,8 @@ class MiniCPMStreamingModel:
             rid = f"r-{uuid4().hex[:8]}"
             state["response_id"] = rid
             self._emit_response_event("assistant_response_started", rid, caused_by)
+            if on_response_started is not None:
+                on_response_started(rid)
 
         def _on_listen_back() -> None:
             rid = state["response_id"]

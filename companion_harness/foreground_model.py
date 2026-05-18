@@ -184,6 +184,7 @@ class ForegroundModel:
         *,
         on_proposal: Callable[[ThinkerProposal, str], None],
         on_response_complete: Callable[[str], None],
+        on_response_started: Callable[[str], None] | None = None,
     ) -> None:
         """Path B: forward to the underlying model's infer_stream_continuous.
 
@@ -194,6 +195,7 @@ class ForegroundModel:
             await self._model.infer_stream_continuous(  # type: ignore[attr-defined]
                 frame_iter, caused_by, on_proposal=on_proposal,
                 on_response_complete=on_response_complete,
+                on_response_started=on_response_started,
             )
         else:
             frame_evt = self._emit("foreground_frame", caused_by, "raw_audio")
@@ -242,6 +244,8 @@ class ForegroundModel:
         return self._model.restore_speculative_snapshot(caused_by=caused_by)  # type: ignore[union-attr]
 
     def has_speculative_snapshot(self) -> bool:
+        if not hasattr(self._model, "has_speculative_snapshot"):
+            return False
         return self._model.has_speculative_snapshot()  # type: ignore[union-attr]
 
     def clear_speculative_snapshot(self) -> None:

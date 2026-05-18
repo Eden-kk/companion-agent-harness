@@ -35,6 +35,7 @@ import hashlib
 import json
 import time
 import uuid
+from enum import Enum
 
 import numpy as np
 from collections import OrderedDict
@@ -145,6 +146,12 @@ _POLICY_DECISIONS_QUEUE_BOUND = 8
 _AUDIO_TEE_DEPTH_MIN = 32
 _AUDIO_TEE_DEPTH_MAX = 1024
 _CONV_HISTORY_MAX_TURNS = 6  # max {user, assistant} entries (3 pairs)
+
+
+class _DrainState(Enum):
+    IDLE = 0
+    DRAINING = 1
+    BARGE_IN_PENDING = 2
 
 
 def _drop_oldest_put(
@@ -419,6 +426,13 @@ class StreamingRealtimeOrchestrator:
         self._proposal_ring_committed_seq: int = 0
         self._proposal_ring_next_seq: int = 0
 
+        # Path B Phase C: drain-until-listen state machine.
+        self._drain_state: _DrainState = _DrainState.IDLE
+        self._active_drain_task: asyncio.Task[None] | None = None
+        self._active_response_id: str | None = None
+        self._drain_new_entry_event: asyncio.Event = asyncio.Event()
+        self._drain_complete_callbacks: dict[str, Callable[[str], None]] = {}
+
         self._seq = 0
         self._tasks: list[asyncio.Task[None]] = []
         self._started_event_id: str = ""
@@ -459,11 +473,13 @@ class StreamingRealtimeOrchestrator:
             )
 
     async def stop(self) -> None:
-        """Cancel all tasks (including barge-in watchdogs), emit orchestrator_stopped, drain logger."""
+        """Cancel all tasks (including barge-in watchdogs and active drain), emit orchestrator_stopped, drain logger."""
         for task in self._tasks:
             task.cancel()
         for task in self._barge_in_tasks:
             task.cancel()
+        if self._active_drain_task is not None and not self._active_drain_task.done():
+            self._active_drain_task.cancel()
         for task in self._tasks:
             try:
                 await task
@@ -472,6 +488,11 @@ class StreamingRealtimeOrchestrator:
         for task in self._barge_in_tasks:
             try:
                 await task
+            except (asyncio.CancelledError, Exception):
+                pass
+        if self._active_drain_task is not None:
+            try:
+                await self._active_drain_task
             except (asyncio.CancelledError, Exception):
                 pass
         self._tasks.clear()
@@ -575,7 +596,8 @@ class StreamingRealtimeOrchestrator:
         those consumers see frames.
         """
         while True:
-            if self._batch_open_event.is_set() or self._hybrid_state != "AMBIENT_DUPLEX":
+            if self._batch_open_event.is_set() or self._hybrid_state != "AMBIENT_DUPLEX" \
+                    or self._use_streaming_speculative:
                 await asyncio.sleep(0.05)
                 continue
             try:
@@ -1315,13 +1337,128 @@ class StreamingRealtimeOrchestrator:
             self._proposal_ring_next_seq += 1
             self._proposal_ring.append((seq, response_id, proposal))
             self._emit_proposer_token_buffered(seq, proposal, caused_by=latest_chunk_event_id or None, response_id=response_id)
+            if self._active_response_id == response_id:
+                self._drain_new_entry_event.set()
+
+        def _on_response_started(response_id: str) -> None:
+            if not self._use_streaming_speculative:
+                return
+            if self._active_drain_task is not None and not self._active_drain_task.done():
+                return
+            self._active_response_id = response_id
+            self._drain_state = _DrainState.DRAINING
+            # Pre-register the complete event BEFORE spawning the task so that
+            # on_response_complete (called synchronously from T3) doesn't race
+            # with the task body registering the callback after its first await.
+            drain_evt = asyncio.Event()
+            self._drain_complete_callbacks[response_id] = lambda _rid: drain_evt.set()
+            self._active_drain_task = asyncio.get_running_loop().create_task(
+                self._drain_response_task(response_id, drain_evt),
+                name=f"drain-{response_id}",
+            )
+
+        def _on_response_complete(rid: str) -> None:
+            cb = self._drain_complete_callbacks.get(rid)
+            if cb is not None:
+                cb(rid)
 
         await self._foreground_model.infer_stream_continuous(
             _continuous_gen(),
             caused_by=[self._started_event_id] if self._started_event_id else [],
             on_proposal=_on_proposal,
-            on_response_complete=lambda rid: None,
+            on_response_complete=_on_response_complete,
+            on_response_started=_on_response_started,
         )
+
+    async def _drain_response_task(self, response_id: str, drain_complete_event: asyncio.Event) -> None:
+        """Stream ring entries for response_id to TTS until assistant_response_complete fires.
+
+        Drains existing ring entries first, then waits for new ones via
+        _drain_new_entry_event.  Exits when on_response_complete fires
+        (signalled via drain_complete_event, pre-registered by caller) or on cancellation.
+        """
+
+        text_queue: asyncio.Queue[str | None] = asyncio.Queue()
+        drained_seq: int = 0  # index into _proposal_ring already sent to queue
+
+        async def _feed_queue() -> None:
+            nonlocal drained_seq
+            while True:
+                # Drain any ring entries not yet fed.
+                ring = self._proposal_ring
+                while drained_seq < len(ring):
+                    _, rid, proposal = ring[drained_seq]
+                    drained_seq += 1
+                    if rid == response_id:
+                        await text_queue.put(proposal.content)
+                # Exit when complete and no more entries pending.
+                if drain_complete_event.is_set():
+                    await text_queue.put(None)
+                    return
+                # Wait for new ring entry or completion signal.
+                self._drain_new_entry_event.clear()
+                wait_new = asyncio.get_running_loop().create_task(
+                    self._drain_new_entry_event.wait()
+                )
+                wait_done = asyncio.get_running_loop().create_task(
+                    drain_complete_event.wait()
+                )
+                await asyncio.wait(
+                    [wait_new, wait_done],
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                wait_new.cancel()
+                wait_done.cancel()
+
+        async def _stream_text_chunks() -> AsyncIterator[str]:
+            while True:
+                chunk = await text_queue.get()
+                if chunk is None:
+                    return
+                yield chunk
+
+        gen_event_id = self._audio_output.start_generation(
+            caused_by=[self._started_event_id] if self._started_event_id else []
+        )
+        chunks = self._tts_adapter.synthesize_streaming(  # type: ignore[attr-defined]
+            _stream_text_chunks(), []
+        )
+        play_task = asyncio.get_running_loop().create_task(
+            self._audio_output.play(chunks, gen_event_id),
+            name=f"play-drain-{response_id}",
+        )
+        self._audio_output.set_generation_task(play_task)
+        feeder_task = asyncio.get_running_loop().create_task(
+            _feed_queue(), name=f"drain-feed-{response_id}"
+        )
+        try:
+            await asyncio.gather(feeder_task, play_task)
+            self._logger.log(self._make_event(
+                event_id=self._new_event_id(),
+                event_type="drain_response_complete",
+                caused_by=[gen_event_id],
+                payload_kind="signal",
+            ))
+        except asyncio.CancelledError:
+            feeder_task.cancel()
+            try:
+                await feeder_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            raise
+        except Exception:
+            feeder_task.cancel()
+            try:
+                await feeder_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        finally:
+            self._drain_complete_callbacks.pop(response_id, None)
+            self._audio_output.set_generation_task(None)
+            if self._drain_state != _DrainState.BARGE_IN_PENDING:
+                self._active_drain_task = None
+                self._active_response_id = None
+                self._drain_state = _DrainState.IDLE
 
     def _emit_proposer_token_buffered(self, ring_seq: int, proposal: ThinkerProposal, *, caused_by: list[str] | None = None, response_id: str = "") -> None:
         if caused_by is None:
@@ -1442,16 +1579,36 @@ class StreamingRealtimeOrchestrator:
 
             if decision.action_type == "silence":
                 if self._use_streaming_speculative:
-                    # Path B: discard uncommitted ring tail, emit commit_or_discard.
-                    discarded = len(self._proposal_ring) - self._proposal_ring_committed_seq
-                    del self._proposal_ring[self._proposal_ring_committed_seq:]
-                    self._emit_commit_or_discard(
-                        committed=False,
-                        discarded_token_count=discarded,
-                        committed_token_count=0,
-                        signal_evt_id=signal_evt_id,
-                        policy_evt_id=policy_evt_id,
-                    )
+                    # Path B Phase C: cancel active drain, discard ring, restore snapshot.
+                    if self._active_drain_task is not None and not self._active_drain_task.done():
+                        self._active_drain_task.cancel()
+                        try:
+                            await self._active_drain_task
+                        except (asyncio.CancelledError, Exception):
+                            pass
+                    rid = self._active_response_id
+                    if rid is not None:
+                        self._proposal_ring[:] = [
+                            e for e in self._proposal_ring if e[1] != rid
+                        ]
+                        self._drain_complete_callbacks.pop(rid, None)
+                    if hasattr(self._foreground_model, "has_speculative_snapshot") and \
+                            self._foreground_model.has_speculative_snapshot():
+                        self._foreground_model.restore_speculative_snapshot(
+                            caused_by=[policy_evt_id]
+                        )
+                    self._logger.log(dataclasses.replace(
+                        self._make_event(
+                            event_id=self._new_event_id(),
+                            event_type="response_suppressed_by_policy",
+                            caused_by=[policy_evt_id],
+                            payload_kind="signal",
+                        ),
+                        payload_inline={"response_id": rid or ""},
+                    ))
+                    self._active_drain_task = None
+                    self._active_response_id = None
+                    self._drain_state = _DrainState.IDLE
                 else:
                     self.proposal_buffer.clear()
                     self._first_proposal_event.clear()
@@ -1672,39 +1829,27 @@ class StreamingRealtimeOrchestrator:
                 continue
 
             if self._use_streaming_speculative:
-                # Path B: no grace window — proposals already exist in the ring.
-                # Snapshot the uncommitted ring tail, advance committed_seq, emit event.
-                ring_tail = self._proposal_ring[self._proposal_ring_committed_seq:]
-                committed_count = len(ring_tail)
-                if not ring_tail:
-                    # Ring is empty — emit synthesis_skipped and continue.
-                    _skip_evt = self._make_event(
+                # Path B Phase C: drain task already running (spawned at assistant_response_started).
+                # EOU snapshot/commit is replaced by the drain-until-listen architecture.
+                # Policy=full_response here means "drain task is approved to continue."
+                # If no drain task is active (model not yet speaking), emit a no-op log and
+                # skip synthesis — the drain task will handle playback when it spawns.
+                self._logger.log(dataclasses.replace(
+                    self._make_event(
                         event_id=self._new_event_id(),
-                        event_type="synthesis_skipped_no_proposal",
+                        event_type="path_b_eou_policy_approved",
                         caused_by=[policy_evt_id],
                         payload_kind="signal",
-                    )
-                    self._logger.log(dataclasses.replace(
-                        _skip_evt,
-                        payload_inline={
-                            "dispatcher_state": "path_b_ring_empty",
-                            "batch_window_ms": 0,
-                            "batch_open_at_ms": 0,
-                            "batch_close_at_ms": int(time.monotonic() * 1000),
-                            "signal_evt_id": signal_evt_id,
-                        },
-                    ))
-                    self._decision_in_flight = False
-                    continue
-                snapshot = [p for _, _rid, p in ring_tail]
-                self._proposal_ring_committed_seq = len(self._proposal_ring)
-                self._emit_commit_or_discard(
-                    committed=True,
-                    discarded_token_count=0,
-                    committed_token_count=committed_count,
-                    signal_evt_id=signal_evt_id,
-                    policy_evt_id=policy_evt_id,
-                )
+                    ),
+                    payload_inline={
+                        "drain_active": self._active_drain_task is not None
+                            and not (self._active_drain_task.done() if self._active_drain_task else True),
+                        "response_id": self._active_response_id or "",
+                        "signal_evt_id": signal_evt_id,
+                    },
+                ))
+                self._decision_in_flight = False
+                continue
             else:
                 # Path A: grace window — wait for at least one proposal BEFORE snapshot (edge case h).
                 if not self.proposal_buffer:
