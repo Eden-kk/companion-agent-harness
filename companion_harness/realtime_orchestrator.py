@@ -1541,22 +1541,28 @@ class StreamingRealtimeOrchestrator:
                     ))
                 finally:
                     self._foreground_model.reset_streaming_session(caused_by=[policy_evt_id])
-                    self._transition_hybrid_state("RESETTING_TO_DUPLEX")
-                    _ret_evt = self._make_event(
-                        event_id=self._new_event_id(),
-                        event_type="hybrid_mode_returned_to_duplex",
-                        caused_by=[policy_evt_id, chat_started_evt_id] if chat_started_evt_id else [policy_evt_id],
-                        payload_kind="signal",
-                    )
-                    self._logger.log(dataclasses.replace(
-                        _ret_evt,
-                        payload_inline={
-                            "trigger": _trigger,
-                            "chat_chars_emitted": chars_count,
-                            "chat_duration_ms": int((time.monotonic() - chat_start_t) * 1000),
-                        },
-                    ))
-                    self._transition_hybrid_state("AMBIENT_DUPLEX")
+                    # Guard against race with _fire_barge_in which may have already
+                    # transitioned state to AMBIENT_DUPLEX via its early-return path.
+                    _barge_in_already_cleaned = self._hybrid_state == "AMBIENT_DUPLEX"
+                    if self._hybrid_state == "CHAT_STREAMING":
+                        self._transition_hybrid_state("RESETTING_TO_DUPLEX")
+                    if not _barge_in_already_cleaned:
+                        _ret_evt = self._make_event(
+                            event_id=self._new_event_id(),
+                            event_type="hybrid_mode_returned_to_duplex",
+                            caused_by=[policy_evt_id, chat_started_evt_id] if chat_started_evt_id else [policy_evt_id],
+                            payload_kind="signal",
+                        )
+                        self._logger.log(dataclasses.replace(
+                            _ret_evt,
+                            payload_inline={
+                                "trigger": _trigger,
+                                "chat_chars_emitted": chars_count,
+                                "chat_duration_ms": int((time.monotonic() - chat_start_t) * 1000),
+                            },
+                        ))
+                    if self._hybrid_state == "RESETTING_TO_DUPLEX":
+                        self._transition_hybrid_state("AMBIENT_DUPLEX")
                     self._audio_output.set_generation_task(None)
                     self._decision_in_flight = False
                 continue

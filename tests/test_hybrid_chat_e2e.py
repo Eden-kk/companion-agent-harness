@@ -294,12 +294,7 @@ async def test_hybrid_chat_stream_natural_end(tmp_path: Path) -> None:
         evt = ingest.ingest_chunk(session, _pcm_chunk(), _meta(i))
         await audio_in.put((_pcm_chunk(), evt.event_id))
 
-    # Directly trigger an EOU decision by putting a TurnSignal-derived signal
-    # into the policy decisions queue via inject_eou_signal.
-    # Instead: use the orchestrator's internal mechanism by sending a signal
-    # with high p_done directly — simulate by monkey-patching the smart_turn
-    # model to return (0.9, 0.1) for the next call and pushing a silence frame.
-    # Simpler: directly enqueue a TurnSignal via _t2_inbox.
+    # Directly trigger an EOU decision by enqueuing a TurnSignal via _t2_inbox.
     from companion_harness.schemas import TurnSignal
 
     turn_signal = TurnSignal(
@@ -459,3 +454,70 @@ async def test_hybrid_chat_stream_barge_in_mid_stream(tmp_path: Path) -> None:
             assert delta_ms <= 200, (
                 f"onset→hybrid_chat_stop_requested delta {delta_ms}ms exceeds 200ms bound"
             )
+
+
+# ---------------------------------------------------------------------------
+# Race: barge-in fires during EOU_PENDING_SWITCH before CHAT_STREAMING begins
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_hybrid_chat_stream_barge_in_before_drain_completes(tmp_path: Path) -> None:
+    """Barge-in during EOU_PENDING_SWITCH (play_task still None) must not AssertionError.
+
+    The race: _fire_barge_in early-return path transitions state to AMBIENT_DUPLEX;
+    T4 finally block must not then try AMBIENT_DUPLEX → RESETTING_TO_DUPLEX.
+    """
+    logger, received = _make_logger()
+    await logger.start()
+
+    ingest = InputIngest(logger=logger, blob_dir=tmp_path)
+    session_id = "test-hybrid-race"
+    session = ingest.open_session("test-client")
+    audio_in: asyncio.Queue = asyncio.Queue(maxsize=64)
+
+    orch = _build_orch(
+        session_id=session_id,
+        logger=logger,
+        ingest_session=session,
+        audio_in=audio_in,
+        deltas=["w0", "w1", "w2"],
+        tts_adapter=_SlowStreamingTtsAdapter(chunk_delay_ms=100),
+        hard_cancel_after_ms=20,
+    )
+    await orch.start()
+
+    for i in range(110):
+        evt = ingest.ingest_chunk(session, _pcm_chunk(), _meta(i))
+        await audio_in.put((_pcm_chunk(), evt.event_id))
+
+    from companion_harness.realtime_orchestrator import _VadOnsetFrame
+    from companion_harness.schemas import TurnSignal
+
+    turn_signal = TurnSignal(
+        detector="smart_turn",
+        p_done=0.9,
+        p_continue=0.1,
+        p_backchannel=0.0,
+        confidence=0.9,
+        evidence_event_ids=["test-race-eou-0001"],
+    )
+    # Inject EOU and barge-in back-to-back with a single yield between them so
+    # the event loop processes EOU (→ EOU_PENDING_SWITCH) before the onset fires,
+    # but _fire_barge_in runs while play_task is still None.
+    await orch._t2_inbox.put((turn_signal, "test-race-eou-0001"))
+    await asyncio.sleep(0)
+    onset_frame = _VadOnsetFrame(p_speech=0.9, frame_event_id="test-race-onset-0001")
+    await orch._t2_inbox.put(onset_frame)
+
+    # Wait for state to settle back to AMBIENT_DUPLEX.
+    for _ in range(100):
+        await asyncio.sleep(0.02)
+        if orch._hybrid_state == "AMBIENT_DUPLEX":
+            break
+
+    await orch.stop()
+
+    assert orch._hybrid_state == "AMBIENT_DUPLEX", (
+        f"Expected AMBIENT_DUPLEX after race, got {orch._hybrid_state}"
+    )
