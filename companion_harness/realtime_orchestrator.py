@@ -1469,7 +1469,13 @@ class StreamingRealtimeOrchestrator:
                 self._decision_in_flight = False
                 continue
 
-            if decision.primary_reason_code == ReasonCode.LONG_RESPONSE_GATED and self._use_hybrid:
+            # Route ALL full_response decisions through chat-stream when hybrid is on.
+            # The original LONG_RESPONSE_GATED >=25-char threshold (from plan-option-c-stage2-helpers.md v3 §2.4)
+            # proved too high for typical conversational turns per Stage 4 mic-test handbook (2026-05-18):
+            # 3 of 6 EOU_CONFIRMED+full_response turns fell through to duplex (4-word ceiling).
+            # Per-tier dispatch decision is now at action_type level, not reason_code level.
+            # LONG_RESPONSE_GATED ReasonCode is retained for tracing (replay invariant #5 unaffected).
+            if decision.action_type == "full_response" and self._use_hybrid:
                 self._transition_hybrid_state("EOU_PENDING_SWITCH")
                 try:
                     await asyncio.wait_for(self._t3_batch_done_event.wait(), timeout=0.5)

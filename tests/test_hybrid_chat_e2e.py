@@ -521,3 +521,122 @@ async def test_hybrid_chat_stream_barge_in_before_drain_completes(tmp_path: Path
     assert orch._hybrid_state == "AMBIENT_DUPLEX", (
         f"Expected AMBIENT_DUPLEX after race, got {orch._hybrid_state}"
     )
+
+
+# ---------------------------------------------------------------------------
+# §2.7 Test 4: EOU_CONFIRMED+full_response routes to chat-stream
+# ---------------------------------------------------------------------------
+
+
+def _eou_confirmed_policy(
+    inputs: PolicyInputs,
+    signal_event_ids: list[str],
+    p_backchannel: float = 0.0,
+    **kwargs: Any,
+) -> SpeakDecision:
+    """Return EOU_CONFIRMED (not LONG_RESPONSE_GATED) on high EOU probability."""
+    if inputs.eou_probability >= 0.8:
+        return SpeakDecision(
+            action_type="full_response",
+            primary_reason_code=ReasonCode.EOU_CONFIRMED,
+            supporting_reason_codes=[],
+            redacted_explanation=None,
+            caused_by=list(signal_event_ids),
+            budget_bucket="full_response",
+            allowed_prosody_tags=[],
+            max_duration_ms=None,
+        )
+    return SpeakDecision(
+        action_type="silence",
+        primary_reason_code=ReasonCode.NOT_ADDRESSED_TO_AGENT,
+        supporting_reason_codes=[],
+        redacted_explanation=None,
+        caused_by=list(signal_event_ids),
+        budget_bucket=None,
+        allowed_prosody_tags=[],
+        max_duration_ms=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_hybrid_eou_confirmed_full_response_routes_to_chat_stream(tmp_path: Path) -> None:
+    """EOU_CONFIRMED+full_response (short turn, <25 chars) must still route to chat-stream.
+
+    Regression guard: old gate checked primary_reason_code == LONG_RESPONSE_GATED,
+    which dropped short-but-complete turns to the duplex path (4-word ceiling).
+    """
+    deltas = ["Hello", " there", "!"]
+    logger, received = _make_logger()
+    await logger.start()
+
+    ingest = InputIngest(logger=logger, blob_dir=tmp_path)
+    session_id = "test-hybrid-eou-confirmed"
+    session = ingest.open_session("test-client")
+    audio_in: asyncio.Queue = asyncio.Queue(maxsize=64)
+
+    vad = VADDetector(
+        model=lambda _: 0.0,
+        session_id=session_id,
+        logger=logger,
+        speech_threshold=0.5,
+        silence_onset_ms=64,
+        frame_duration_ms=32,
+    )
+    smart_turn = SmartTurnDetector(
+        model=lambda _: (0.1, 0.9),
+        session_id=session_id,
+        logger=logger,
+    )
+    bc = BackchannelClassifier(
+        model=lambda _: 0.0,
+        session_id=session_id,
+        logger=logger,
+    )
+    model = _FakeHybridModel(deltas=deltas)
+    fg = ForegroundModel(model=model, session_id=session_id, logger=logger)
+    controller = AudioOutputController(session_id=session_id, logger=logger, sink=_noop_sink)
+    orch = StreamingRealtimeOrchestrator(
+        session_id=session_id,
+        logger=logger,
+        ingest_session=session,
+        audio_in=audio_in,
+        vad_detector=vad,
+        smart_turn_detector=smart_turn,
+        backchannel_classifier=bc,
+        policy_inputs_builder=_build_policy_inputs,
+        speak_policy=_eou_confirmed_policy,
+        foreground_model=fg,
+        audio_output=controller,
+        tts_adapter=_SlowStreamingTtsAdapter(chunk_delay_ms=15),
+        proposal_batch_window_ms=50,
+        hard_cancel_after_ms=30,
+        use_hybrid=True,
+    )
+    await orch.start()
+
+    for i in range(110):
+        evt = ingest.ingest_chunk(session, _pcm_chunk(), _meta(i))
+        await audio_in.put((_pcm_chunk(), evt.event_id))
+
+    from companion_harness.schemas import TurnSignal
+
+    turn_signal = TurnSignal(
+        detector="smart_turn",
+        p_done=0.9,
+        p_continue=0.1,
+        p_backchannel=0.0,
+        confidence=0.9,
+        evidence_event_ids=["test-sig-eou-confirmed-0001"],
+    )
+    await orch._t2_inbox.put((turn_signal, "test-sig-eou-confirmed-0001"))
+
+    await asyncio.sleep(1.5)
+    await orch.stop()
+
+    types_set = {e.event_type for e in received}
+    assert "chat_stream_turn_started" in types_set, (
+        f"EOU_CONFIRMED+full_response did not route to chat-stream. Got types: {sorted(types_set)}"
+    )
+    assert "chat_stream_text_delta" in types_set, (
+        f"Missing chat_stream_text_delta. Got types: {sorted(types_set)}"
+    )
