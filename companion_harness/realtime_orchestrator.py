@@ -1712,15 +1712,21 @@ class StreamingRealtimeOrchestrator:
     # ------------------------------------------------------------------
 
     def _should_emit_speech_onset(self, frame: _VadOnsetFrame) -> bool:
+        hybrid_pre_audio = self._use_hybrid and self._hybrid_state in (
+            "EOU_PENDING_SWITCH", "CHAT_STREAMING",
+        )
         return (
             frame.p_speech > self._p_speech_thresh
-            and self._audio_output.is_playing
+            and (self._audio_output.is_playing or hybrid_pre_audio)
             and not self._speech_onset_debounce_active
         )
 
     def is_barge_in_trigger(self) -> bool:
+        hybrid_pre_audio = self._use_hybrid and self._hybrid_state in (
+            "EOU_PENDING_SWITCH", "CHAT_STREAMING",
+        )
         return (
-            self._audio_output.is_playing
+            (self._audio_output.is_playing or hybrid_pre_audio)
             and not self._audio_output.is_synthesizing  # don't barge-in during TTS synthesis window
             and not self._barge_in_in_flight
             and self._latest_p_backchannel < self._p_backchannel_thresh
@@ -1745,6 +1751,15 @@ class StreamingRealtimeOrchestrator:
             return
         try:
             stop_requested_evt_id = self._audio_output.request_stop(caused_by=[onset_evt_id])
+            if self._use_hybrid and self._hybrid_state == "CHAT_STREAMING":
+                self._foreground_model.request_chat_stop()
+                self._logger.log(self._make_event(
+                    event_id=self._new_event_id(),
+                    event_type="hybrid_chat_stop_requested",
+                    caused_by=[onset_evt_id],
+                    payload_kind="signal",
+                ))
+                self._transition_hybrid_state("RESETTING_TO_DUPLEX")
             # Cancel any in-flight tool dispatch (Task 7).
             if self._tool_router is not None and self._inflight_tool_call_id is not None:
                 await self._tool_router.cancel(self._inflight_tool_call_id)
