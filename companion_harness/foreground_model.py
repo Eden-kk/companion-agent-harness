@@ -239,22 +239,16 @@ class ForegroundModel:
         return None
 
     def restore_speculative_snapshot(self, *, caused_by: list[str]) -> bool:
-        if hasattr(self._model, "restore_speculative_snapshot"):
-            return self._model.restore_speculative_snapshot(caused_by=caused_by)  # type: ignore[union-attr]
-        return False
+        return self._model.restore_speculative_snapshot(caused_by=caused_by)  # type: ignore[union-attr]
 
     def has_speculative_snapshot(self) -> bool:
-        if hasattr(self._model, "has_speculative_snapshot"):
-            return self._model.has_speculative_snapshot()  # type: ignore[union-attr]
-        return False
+        return self._model.has_speculative_snapshot()  # type: ignore[union-attr]
 
     def clear_speculative_snapshot(self) -> None:
-        if hasattr(self._model, "clear_speculative_snapshot"):
-            self._model.clear_speculative_snapshot()  # type: ignore[union-attr]
+        self._model.clear_speculative_snapshot()  # type: ignore[union-attr]
 
     def streaming_prefill_text(self, text_list: list[str], *, caused_by: list[str]) -> None:
-        if hasattr(self._model, "streaming_prefill_text"):
-            self._model.streaming_prefill_text(text_list=text_list, caused_by=caused_by)  # type: ignore[union-attr]
+        self._model.streaming_prefill_text(text_list=text_list, caused_by=caused_by)  # type: ignore[union-attr]
 
     # ------------------------------------------------------------------
 

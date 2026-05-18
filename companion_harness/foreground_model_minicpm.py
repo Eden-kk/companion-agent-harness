@@ -194,7 +194,6 @@ class MiniCPMStreamingModel:
         # the event loop drains audio frames while inference runs.
         self._inference_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="minicpm-infer")
         self._chat_stop_flag = threading.Event()
-        self._on_listen_transition: Callable[[], None] | None = None
 
     def set_session(self, session_id: str, logger: "EventLogger") -> None:
         """Bind this singleton model to a new ingest session.
@@ -410,6 +409,8 @@ class MiniCPMStreamingModel:
         frame_iter: AsyncIterator[tuple[bytes, bytes | None]],
         caused_by: list[str],
         context_items: tuple[MemoryItem, ...] = (),
+        on_listen_transition: Callable[[], None] | None = None,
+        on_speak_started: Callable[[], None] | None = None,
     ) -> AsyncGenerator[ThinkerProposal, None]:
         """Coroutine returning an AsyncGenerator of ThinkerProposal candidates.
 
@@ -453,8 +454,10 @@ class MiniCPMStreamingModel:
                 result = await loop.run_in_executor(self._inference_executor, _gpu_work)
                 prev_is_listen = self._last_is_listen
                 self._last_is_listen = bool(result.get("is_listen", True))
-                if not prev_is_listen and self._last_is_listen and self._on_listen_transition is not None:
-                    self._on_listen_transition()
+                if prev_is_listen and not self._last_is_listen and on_speak_started is not None:
+                    on_speak_started()
+                if not prev_is_listen and self._last_is_listen and on_listen_transition is not None:
+                    on_listen_transition()
                 invocation_evt = self._emit_invocation(
                     self._last_is_listen, caused_by
                 )
@@ -526,6 +529,11 @@ class MiniCPMStreamingModel:
         """
         state: dict = {"response_id": None, "proposals": 0, "chars": 0}
 
+        def _on_speak_started() -> None:
+            rid = f"r-{uuid4().hex[:8]}"
+            state["response_id"] = rid
+            self._emit_response_event("assistant_response_started", rid, caused_by)
+
         def _on_listen_back() -> None:
             rid = state["response_id"]
             if rid is not None and state["proposals"] > 0:
@@ -540,24 +548,17 @@ class MiniCPMStreamingModel:
             state["proposals"] = 0
             state["chars"] = 0
 
-        self._on_listen_transition = _on_listen_back
-        try:
-            gen = await self.infer_stream(frame_iter, caused_by)
-            async for proposal in gen:
-                if state["response_id"] is None:
-                    # True→False: start of new response
-                    rid = f"r-{uuid4().hex[:8]}"
-                    state["response_id"] = rid
-                    self._emit_response_event(
-                        "assistant_response_started", rid, caused_by
-                    )
-                state["proposals"] += 1
-                state["chars"] += len(proposal.content)
-                on_proposal(proposal)
-            # Frame iter exhausted — fire complete if a response was in flight
-            _on_listen_back()
-        finally:
-            self._on_listen_transition = None
+        gen = await self.infer_stream(
+            frame_iter, caused_by,
+            on_listen_transition=_on_listen_back,
+            on_speak_started=_on_speak_started,
+        )
+        async for proposal in gen:
+            state["proposals"] += 1
+            state["chars"] += len(proposal.content)
+            on_proposal(proposal)
+        # Frame iter exhausted — fire complete if a response was in flight
+        _on_listen_back()
 
     def reset_streaming_session(self, *, caused_by: list[str]) -> "Event":
         """Clear duplex KV cache (audio_past_key_values + llm_past_key_values).
@@ -587,7 +588,7 @@ class MiniCPMStreamingModel:
 
     def restore_speculative_snapshot(self, *, caused_by: list[str]) -> bool:
         result = self._duplex.model.restore_speculative_snapshot()
-        self._emit_response_event("speculative_snapshot_restored", "", caused_by)
+        self._emit_response_event("speculative_snapshot_restored", None, caused_by)
         return result
 
     def has_speculative_snapshot(self) -> bool:
@@ -596,8 +597,8 @@ class MiniCPMStreamingModel:
     def clear_speculative_snapshot(self) -> None:
         self._duplex.model.clear_speculative_snapshot()
 
-    def streaming_prefill_text(self, text_list: list[str], *, caused_by: list[str]) -> None:
-        self._duplex.streaming_prefill(text_list=text_list)
+    def streaming_prefill_text(self, text_list: list[str], *, caused_by: list[str]) -> dict:
+        return self._duplex.streaming_prefill(text_list=text_list)
 
     # ------------------------------------------------------------------
 
@@ -641,14 +642,16 @@ class MiniCPMStreamingModel:
     def _emit_response_event(
         self,
         event_type: str,
-        response_id: str,
+        response_id: str | None,
         caused_by: list[str],
         extra: dict | None = None,
     ) -> Event:
         now_ms = int(time.monotonic() * 1000)
         seq = self._next_seq()
         event_id = f"{self._session_id}-resp-{seq}-{now_ms}"
-        payload = {"response_id": response_id, "ts_mono_ms": now_ms}
+        payload: dict = {"ts_mono_ms": now_ms}
+        if response_id is not None:
+            payload["response_id"] = response_id
         if extra:
             payload.update(extra)
         payload_hash = hashlib.sha256(

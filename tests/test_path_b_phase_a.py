@@ -218,13 +218,17 @@ async def test_streaming_prefill_text_passthrough() -> None:
 
 @pytest.mark.asyncio
 async def test_snapshot_apis_noop_on_missing_model() -> None:
-    """Wrapper gracefully no-ops when underlying model lacks snapshot methods."""
+    """save no-ops when model lacks the method; restore/has/clear raise AttributeError."""
     inner = MagicMock(spec=[])  # empty spec — no methods
     logger = _make_logger()
     fm = ForegroundModel(model=inner, session_id="s4", logger=logger)
 
     assert fm.save_speculative_snapshot() is None
-    assert fm.restore_speculative_snapshot(caused_by=[]) is False
-    assert fm.has_speculative_snapshot() is False
-    fm.clear_speculative_snapshot()  # no exception
-    fm.streaming_prefill_text(["x"], caused_by=[])  # no exception
+    with pytest.raises(AttributeError):
+        fm.restore_speculative_snapshot(caused_by=[])
+    with pytest.raises(AttributeError):
+        fm.has_speculative_snapshot()
+    with pytest.raises(AttributeError):
+        fm.clear_speculative_snapshot()
+    with pytest.raises(AttributeError):
+        fm.streaming_prefill_text(["x"], caused_by=[])
