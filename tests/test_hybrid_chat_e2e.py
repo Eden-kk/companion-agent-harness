@@ -67,6 +67,7 @@ class _FakeHybridModel:
         *,
         context_items: tuple = (),
         caused_by: list[str],
+        prior_turns=None,
     ) -> AsyncGenerator[ThinkerProposal, None]:
         deltas = list(self._deltas)
 

@@ -144,6 +144,7 @@ _TURN_SIGNAL_QUEUE_BOUND = 32
 _POLICY_DECISIONS_QUEUE_BOUND = 8
 _AUDIO_TEE_DEPTH_MIN = 32
 _AUDIO_TEE_DEPTH_MAX = 1024
+_CONV_HISTORY_MAX_TURNS = 6  # max {user, assistant} entries (3 pairs)
 
 
 def _drop_oldest_put(
@@ -403,6 +404,10 @@ class StreamingRealtimeOrchestrator:
         self._hybrid_state: str = "AMBIENT_DUPLEX"
         self._latest_hybrid_audio_snapshot: bytes | None = None
         self._chat_streaming_start_time: float = 0.0
+        # Conversation history for hybrid chat-stream context injection.
+        # Each entry is {"role": "user"|"assistant", "content": str}.
+        # Capped at _CONV_HISTORY_MAX_TURNS entries (FIFO eviction).
+        self._conv_history: list[dict] = []
 
         # Path B (§3.3): proposal ring buffer shared by T3 (writer) and T4/barge-in (readers).
         # Only used when _use_streaming_speculative is True; inert otherwise.
@@ -834,6 +839,10 @@ class StreamingRealtimeOrchestrator:
                     payload_ref=f"orchestrator://{transcript_evt_id}",
                 )
                 self._logger.log(transcript_evt)
+                if self._use_hybrid and transcript:
+                    self._conv_history.append({"role": "user", "content": transcript})
+                    if len(self._conv_history) > _CONV_HISTORY_MAX_TURNS:
+                        self._conv_history.pop(0)
 
             # --- Retrieval: fires on every EOU before decide() (plan §4.2 v4) ---
             stores_queried: list[str] = []
@@ -1617,6 +1626,7 @@ class StreamingRealtimeOrchestrator:
                             policy_evt_id=policy_evt_id,
                             gen_event_id=gen_event_id,
                             allowed_prosody_tags=decision.allowed_prosody_tags,
+                            prior_turns=list(self._conv_history),
                         )
                     )
                 except asyncio.CancelledError:
@@ -1778,6 +1788,7 @@ class StreamingRealtimeOrchestrator:
         policy_evt_id: str,
         gen_event_id: str,
         allowed_prosody_tags: list[str],
+        prior_turns: list[dict] | None = None,
     ) -> tuple[str, int, float]:
         """Invoke chat_stream_turn, pipe deltas into synthesize_streaming via queue.
 
@@ -1788,16 +1799,19 @@ class StreamingRealtimeOrchestrator:
         chars_count = 0
         chat_start_t = time.monotonic()
         chat_started_evt_id = self._new_event_id()
+        _assistant_text_parts: list[str] = []
 
         async def _consume_chat_deltas() -> None:
             nonlocal chars_count
             try:
                 gen = await self._foreground_model.chat_stream_turn(
                     audio_np, context_items=(), caused_by=[policy_evt_id],
+                    prior_turns=prior_turns,
                 )
                 async for proposal in gen:
                     await text_queue.put(proposal.content)
                     chars_count += len(proposal.content)
+                    _assistant_text_parts.append(proposal.content)
                     self._logger.log(self._make_event(
                         event_id=self._new_event_id(),
                         event_type="chat_stream_text_delta",
@@ -1862,6 +1876,12 @@ class StreamingRealtimeOrchestrator:
                     await asyncio.wait_for(asyncio.shield(consumer_task), timeout=0.5)
                 except (asyncio.TimeoutError, asyncio.CancelledError):
                     pass
+
+        assistant_text = "".join(_assistant_text_parts)
+        if assistant_text:
+            self._conv_history.append({"role": "assistant", "content": assistant_text})
+            if len(self._conv_history) > _CONV_HISTORY_MAX_TURNS:
+                self._conv_history.pop(0)
 
         return (chat_started_evt_id, chars_count, chat_start_t)
 

@@ -251,6 +251,7 @@ class MiniCPMStreamingModel:
         *,
         context_items: tuple[MemoryItem, ...] = (),
         caused_by: list[str],
+        prior_turns: list[dict] | None = None,
     ) -> AsyncGenerator[ThinkerProposal, None]:
         """Per-EOU turn-based chat(stream=True). See parent §2.4.
         audio: float32 in [-1, 1] at 16 kHz, 1–30 s.
@@ -273,8 +274,13 @@ class MiniCPMStreamingModel:
         else:
             combined = base_prompt
 
+        history_entries = [
+            {"role": t["role"], "content": [t["content"]]}
+            for t in (prior_turns or [])
+        ]
         msgs = [
             {"role": "system", "content": [combined]},
+            *history_entries,
             {"role": "user",   "content": [audio, _DEFAULT_USER_INSTRUCTION]},
         ]
 

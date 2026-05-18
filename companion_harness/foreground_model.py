@@ -203,14 +203,15 @@ class ForegroundModel:
                 on_proposal(proposal)
 
     async def chat_stream_turn(
-        self, audio, *, context_items=(), caused_by,
+        self, audio, *, context_items=(), caused_by, prior_turns=None,
     ) -> AsyncGenerator[ThinkerProposal, None]:
         """Coroutine that awaits the inner async generator and returns a wrapped one.
         Callers: gen = await fm.chat_stream_turn(...); async for p in gen: ...
         """
         frame_evt = self._emit("foreground_frame", caused_by, "raw_audio")
         inner = await self._model.chat_stream_turn(  # type: ignore[attr-defined]
-            audio, context_items=context_items, caused_by=[frame_evt.event_id]
+            audio, context_items=context_items, caused_by=[frame_evt.event_id],
+            prior_turns=prior_turns,
         )
         return self._wrap_chat_stream(inner, frame_evt)
 
