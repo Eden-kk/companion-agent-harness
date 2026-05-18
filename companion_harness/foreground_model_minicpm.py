@@ -32,6 +32,7 @@ import asyncio
 import hashlib
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, AsyncGenerator, AsyncIterator
 
@@ -165,6 +166,10 @@ class MiniCPMStreamingModel:
         self._logger = logger
         self._session_id = session_id
         self._seq = 0
+        # Single-worker executor: GPU duplex model is single-instance; serialised
+        # access is already implicit. PyTorch releases the GIL during CUDA work so
+        # the event loop drains audio frames while inference runs.
+        self._inference_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="minicpm-infer")
 
     def set_session(self, session_id: str, logger: "EventLogger") -> None:
         """Bind this singleton model to a new ingest session.
@@ -287,17 +292,22 @@ class MiniCPMStreamingModel:
 
             buf = np.array([], dtype=np.float32)
 
-            def _process_chunk(pcm_float: np.ndarray) -> ThinkerProposal | None:
-                duplex.streaming_prefill(audio_waveform=pcm_float)
-                result = duplex.streaming_generate(
-                    max_new_speak_tokens_per_chunk=_MAX_NEW_SPEAK_TOKENS_PER_CHUNK,
-                    temperature=duplex.temperature,
-                    top_k=duplex.top_k,
-                    top_p=duplex.top_p,
-                    listen_prob_scale=_LISTEN_PROB_SCALE,
-                    text_repetition_penalty=duplex.text_repetition_penalty,
-                    text_repetition_window_size=duplex.text_repetition_window_size,
-                )
+            async def _process_chunk(pcm_float: np.ndarray) -> ThinkerProposal | None:
+                loop = asyncio.get_running_loop()
+
+                def _gpu_work() -> dict:
+                    duplex.streaming_prefill(audio_waveform=pcm_float)
+                    return duplex.streaming_generate(
+                        max_new_speak_tokens_per_chunk=_MAX_NEW_SPEAK_TOKENS_PER_CHUNK,
+                        temperature=duplex.temperature,
+                        top_k=duplex.top_k,
+                        top_p=duplex.top_p,
+                        listen_prob_scale=_LISTEN_PROB_SCALE,
+                        text_repetition_penalty=duplex.text_repetition_penalty,
+                        text_repetition_window_size=duplex.text_repetition_window_size,
+                    )
+
+                result = await loop.run_in_executor(self._inference_executor, _gpu_work)
                 self._last_is_listen = bool(result.get("is_listen", True))
                 invocation_evt = self._emit_invocation(
                     self._last_is_listen, caused_by
@@ -335,8 +345,7 @@ class MiniCPMStreamingModel:
                 buf = np.concatenate([buf, samples])
                 while len(buf) >= _CHUNK_SAMPLES:
                     chunk, buf = buf[:_CHUNK_SAMPLES], buf[_CHUNK_SAMPLES:]
-                    proposal = _process_chunk(chunk)
-                    await asyncio.sleep(0)
+                    proposal = await _process_chunk(chunk)
                     if proposal is not None:
                         yield proposal
 
@@ -345,8 +354,7 @@ class MiniCPMStreamingModel:
                 # pad to full chunk with silence so streaming_prefill succeeds
                 pad = np.zeros(_CHUNK_SAMPLES - len(buf), dtype=np.float32)
                 chunk = np.concatenate([buf, pad])
-                proposal = _process_chunk(chunk)
-                await asyncio.sleep(0)
+                proposal = await _process_chunk(chunk)
                 if proposal is not None:
                     yield proposal
 
@@ -388,6 +396,10 @@ class MiniCPMStreamingModel:
         self._last_is_listen = True
         self._last_native_duplex_event_id = None
         return self._emit_session_reset(caused_by)
+
+    def close(self) -> None:
+        """Shut down the inference executor. Call on orchestrator teardown."""
+        self._inference_executor.shutdown(wait=False)
 
     # ------------------------------------------------------------------
 
