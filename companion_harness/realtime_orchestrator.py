@@ -402,6 +402,7 @@ class StreamingRealtimeOrchestrator:
 
         self._hybrid_state: str = "AMBIENT_DUPLEX"
         self._latest_hybrid_audio_snapshot: bytes | None = None
+        self._chat_streaming_start_time: float = 0.0
 
         # Path B (§3.3): proposal ring buffer shared by T3 (writer) and T4/barge-in (readers).
         # Only used when _use_streaming_speculative is True; inert otherwise.
@@ -1481,12 +1482,14 @@ class StreamingRealtimeOrchestrator:
                     await asyncio.wait_for(self._t3_batch_done_event.wait(), timeout=0.5)
                     self._t3_batch_done_event.clear()
                 except asyncio.TimeoutError:
-                    self._logger.log(self._make_event(
-                        event_id=self._new_event_id(),
-                        event_type="hybrid_mode_switch_blocked",
-                        caused_by=[policy_evt_id],
-                        payload_kind="signal",
-                        extra_hash="duplex_drain_timeout",
+                    self._logger.log(dataclasses.replace(
+                        self._make_event(
+                            event_id=self._new_event_id(),
+                            event_type="hybrid_mode_switch_blocked",
+                            caused_by=[policy_evt_id],
+                            payload_kind="signal",
+                        ),
+                        payload_inline={"reason": "duplex_drain_timeout"},
                     ))
                     self._transition_hybrid_state("AMBIENT_DUPLEX")
                     self._decision_in_flight = False
@@ -1504,23 +1507,24 @@ class StreamingRealtimeOrchestrator:
 
                 audio_bytes = self._latest_hybrid_audio_snapshot
                 self._latest_hybrid_audio_snapshot = None
-                if audio_bytes is None or len(audio_bytes) < _MIN_HYBRID_CHAT_AUDIO_SAMPLES * 2:
-                    self._logger.log(self._make_event(
-                        event_id=self._new_event_id(),
-                        event_type="hybrid_mode_switch_blocked",
-                        caused_by=[policy_evt_id],
-                        payload_kind="signal",
-                        extra_hash="insufficient_audio_buffer",
-                    ))
-                    self._transition_hybrid_state("AMBIENT_DUPLEX")
-                    self._decision_in_flight = False
-                    continue
+                audio_bytes_len = len(audio_bytes) if audio_bytes is not None else 0
+                if audio_bytes_len > 0:
+                    audio_np = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+                    samples = int(audio_np.size)
+                    duration_s = round(samples / 16000.0, 3)
+                    rms = round(float(np.sqrt(np.mean(audio_np ** 2))) if samples > 0 else 0.0, 4)
+                    min_val = round(float(audio_np.min()), 4) if samples > 0 else 0.0
+                    max_val = round(float(audio_np.max()), 4) if samples > 0 else 0.0
+                    abs_max = round(float(np.abs(audio_np).max()), 4) if samples > 0 else 0.0
+                else:
+                    audio_np = None
+                    samples = 0
+                    duration_s = 0.0
+                    rms = 0.0
+                    min_val = 0.0
+                    max_val = 0.0
+                    abs_max = 0.0
 
-                audio_np = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-
-                # Diagnostic — capture audio stats to compare against Stage 1 probe baseline
-                # (Stage 1 used 30s Kokoro fixture; real mic may be lower amplitude. Helps debug zero-output case.)
-                audio_rms = float(np.sqrt(np.mean(audio_np ** 2))) if audio_np.size > 0 else 0.0
                 self._logger.log(dataclasses.replace(
                     self._make_event(
                         event_id=self._new_event_id(),
@@ -1529,14 +1533,48 @@ class StreamingRealtimeOrchestrator:
                         payload_kind="signal",
                     ),
                     payload_inline={
-                        "samples": int(audio_np.size),
-                        "duration_s": round(audio_np.size / 16000.0, 3),
-                        "rms": round(audio_rms, 4),
-                        "min": round(float(audio_np.min()), 4) if audio_np.size > 0 else 0.0,
-                        "max": round(float(audio_np.max()), 4) if audio_np.size > 0 else 0.0,
-                        "abs_max": round(float(np.abs(audio_np).max()), 4) if audio_np.size > 0 else 0.0,
+                        "bytes_len": audio_bytes_len,
+                        "is_none": audio_bytes is None,
+                        "samples": samples,
+                        "duration_s": duration_s,
+                        "rms": rms,
+                        "min": min_val,
+                        "max": max_val,
+                        "abs_max": abs_max,
                     },
                 ))
+
+                if audio_np is not None:
+                    audio_abs_max = float(np.abs(audio_np).max()) if audio_np.size > 0 else 0.0
+                    if audio_abs_max > 0.01:
+                        audio_np = audio_np * (0.9 / audio_abs_max)
+                    self._logger.log(dataclasses.replace(
+                        self._make_event(
+                            event_id=self._new_event_id(),
+                            event_type="hybrid_audio_normalized",
+                            caused_by=[policy_evt_id],
+                            payload_kind="signal",
+                        ),
+                        payload_inline={
+                            "original_abs_max": round(audio_abs_max, 4),
+                            "scale_factor": round(0.9 / audio_abs_max, 4) if audio_abs_max > 0.01 else 1.0,
+                            "new_rms": round(float(np.sqrt(np.mean(audio_np ** 2))), 4) if audio_np.size > 0 else 0.0,
+                        },
+                    ))
+
+                if audio_bytes is None or audio_bytes_len < _MIN_HYBRID_CHAT_AUDIO_SAMPLES * 2:
+                    self._logger.log(dataclasses.replace(
+                        self._make_event(
+                            event_id=self._new_event_id(),
+                            event_type="hybrid_mode_switch_blocked",
+                            caused_by=[policy_evt_id],
+                            payload_kind="signal",
+                        ),
+                        payload_inline={"reason": "insufficient_audio_buffer"},
+                    ))
+                    self._transition_hybrid_state("AMBIENT_DUPLEX")
+                    self._decision_in_flight = False
+                    continue
 
                 self._foreground_model.reset_streaming_session(caused_by=[policy_evt_id])
 
@@ -1766,13 +1804,32 @@ class StreamingRealtimeOrchestrator:
             name=f"play-{gen_event_id}",
         )
         self._audio_output.set_generation_task(play_task)
+        discarded = 0
+        while True:
+            try:
+                self._foreground_ring.get_nowait()
+                discarded += 1
+            except asyncio.QueueEmpty:
+                break
+        if discarded > 0:
+            self._logger.log(dataclasses.replace(
+                self._make_event(
+                    event_id=self._new_event_id(),
+                    event_type="foreground_ring_cleared_at_chat_stream_entry",
+                    caused_by=[policy_evt_id],
+                    payload_kind="signal",
+                ),
+                payload_inline={"discarded_frame_count": discarded},
+            ))
         self._transition_hybrid_state("CHAT_STREAMING")
+        self._chat_streaming_start_time = time.monotonic()
         try:
             await play_task
         except asyncio.CancelledError:
             consumer_task.cancel()
             raise
         finally:
+            self._chat_streaming_start_time = 0.0
             if not consumer_task.done():
                 try:
                     await asyncio.wait_for(asyncio.shield(consumer_task), timeout=0.5)
@@ -1911,8 +1968,10 @@ class StreamingRealtimeOrchestrator:
     # ------------------------------------------------------------------
 
     def _should_emit_speech_onset(self, frame: _VadOnsetFrame) -> bool:
-        hybrid_pre_audio = self._use_hybrid and self._hybrid_state in (
-            "EOU_PENDING_SWITCH", "CHAT_STREAMING",
+        hybrid_pre_audio = (
+            self._use_hybrid
+            and self._hybrid_state in ("EOU_PENDING_SWITCH", "CHAT_STREAMING")
+            and (time.monotonic() - self._chat_streaming_start_time) > 0.5
         )
         return (
             frame.p_speech > self._p_speech_thresh
@@ -1921,8 +1980,10 @@ class StreamingRealtimeOrchestrator:
         )
 
     def is_barge_in_trigger(self) -> bool:
-        hybrid_pre_audio = self._use_hybrid and self._hybrid_state in (
-            "EOU_PENDING_SWITCH", "CHAT_STREAMING",
+        hybrid_pre_audio = (
+            self._use_hybrid
+            and self._hybrid_state in ("EOU_PENDING_SWITCH", "CHAT_STREAMING")
+            and (time.monotonic() - self._chat_streaming_start_time) > 0.5
         )
         return (
             (self._audio_output.is_playing or hybrid_pre_audio)

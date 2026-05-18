@@ -367,7 +367,7 @@ async def test_hybrid_chat_stream_barge_in_mid_stream(tmp_path: Path) -> None:
     Timing assertion uses event-timestamp delta (NOT wall-clock) to avoid CI flakiness.
     onset event timestamp_mono_ms → hybrid_chat_stop_requested event timestamp_mono_ms.
     """
-    deltas = [f"word{i:02d}" for i in range(8)]  # 8 deltas
+    deltas = [f"word{i:02d}" for i in range(8)]  # 8 deltas × 200ms TTS = 1600ms > 600ms grace
     logger, received = _make_logger()
     await logger.start()
 
@@ -382,8 +382,8 @@ async def test_hybrid_chat_stream_barge_in_mid_stream(tmp_path: Path) -> None:
         ingest_session=session,
         audio_in=audio_in,
         deltas=deltas,
-        tts_adapter=_SlowStreamingTtsAdapter(chunk_delay_ms=50),
-        hard_cancel_after_ms=20,
+        tts_adapter=_SlowStreamingTtsAdapter(chunk_delay_ms=200),
+        hard_cancel_after_ms=50,
     )
     await orch.start()
 
@@ -410,6 +410,10 @@ async def test_hybrid_chat_stream_barge_in_mid_stream(tmp_path: Path) -> None:
         await asyncio.sleep(0.01)
         if orch._hybrid_state == "CHAT_STREAMING":
             break
+
+    # Allow the 500ms barge-in grace window to expire before injecting onset.
+    # 650ms ensures the onset fires mid-chunk with chunk_delay_ms=200 (not at a boundary).
+    await asyncio.sleep(0.65)
 
     # Inject a VAD onset frame directly into T2 inbox with high p_speech.
     # This replicates what T1 sends during actual speech; p_speech > 0.5 (threshold).
