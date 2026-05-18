@@ -1479,7 +1479,11 @@ class StreamingRealtimeOrchestrator:
             if decision.action_type == "full_response" and self._use_hybrid:
                 self._transition_hybrid_state("EOU_PENDING_SWITCH")
                 try:
-                    await asyncio.wait_for(self._t3_batch_done_event.wait(), timeout=0.5)
+                    # T3 may be mid-GPU-call (streaming_prefill + streaming_generate take ~1s after
+                    # commit 7d3b2ba executor fix). 0.5s was too tight — empirically blocked every
+                    # turn in Stage 4 mic-test (2026-05-18 /tmp/repro-hybrid-stage6-final.jsonl).
+                    # 3.0s gives 3x margin over worst-case GPU chunk.
+                    await asyncio.wait_for(self._t3_batch_done_event.wait(), timeout=3.0)
                     self._t3_batch_done_event.clear()
                 except asyncio.TimeoutError:
                     self._logger.log(dataclasses.replace(
