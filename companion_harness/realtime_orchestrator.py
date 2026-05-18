@@ -1314,8 +1314,7 @@ class StreamingRealtimeOrchestrator:
             seq = self._proposal_ring_next_seq
             self._proposal_ring_next_seq += 1
             self._proposal_ring.append((seq, response_id, proposal))
-            caused_by = (latest_chunk_event_id + [self._started_event_id]) if latest_chunk_event_id else ([self._started_event_id] if self._started_event_id else [])
-            self._emit_proposer_token_buffered(seq, proposal, caused_by=caused_by, response_id=response_id)
+            self._emit_proposer_token_buffered(seq, proposal, caused_by=latest_chunk_event_id or None, response_id=response_id)
 
         await self._foreground_model.infer_stream_continuous(
             _continuous_gen(),

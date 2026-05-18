@@ -173,7 +173,7 @@ class _CountingStreamingModel:
                     max_utterance_ms=5000,
                     cooldown_consumed="speech_turn",
                     caused_by=list(caused_by),
-                ), "")
+                ), f"r-stub-{proposal_idx}")
                 proposal_idx += 1
         self._consumed_event.set()
 
@@ -307,6 +307,7 @@ async def test_continuous_proposer_keeps_tokens_across_turns(tmp_path: Path) -> 
     # Ring must have monotonically increasing seq numbers.
     seqs = [seq for seq, _, _ in orch._proposal_ring]
     assert seqs == sorted(seqs), "ring seqs are not monotonic"
+    assert all(rid for _, rid, _ in orch._proposal_ring), "ring must not contain empty response_id"
 
     # At least one proposer_token_buffered event must have been emitted.
     token_events = [e for e in received if e.event_type == "proposer_token_buffered"]

@@ -252,7 +252,7 @@ EVENT_TYPE_SCHEMAS: dict[str, StageSixEventSchema] = {
         subject_class="self",
         sensitivity="safe",
         retention_policy_id="signal_default_30d",
-        required_fields=("ring_seq", "is_listen", "text_preview"),
+        required_fields=("ring_seq", "is_listen", "text_preview", "response_id"),
         notes=(
             "Emitted once per ring-append in Path B (flag ON). "
             "ring_seq is the monotonic index; text_preview is truncated "
