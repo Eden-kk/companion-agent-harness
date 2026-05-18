@@ -247,8 +247,8 @@ class ForegroundModel:
     def clear_speculative_snapshot(self) -> None:
         self._model.clear_speculative_snapshot()  # type: ignore[union-attr]
 
-    def streaming_prefill_text(self, text_list: list[str], *, caused_by: list[str]) -> None:
-        self._model.streaming_prefill_text(text_list=text_list, caused_by=caused_by)  # type: ignore[union-attr]
+    def streaming_prefill_text(self, text_list: list[str], *, caused_by: list[str]) -> dict:
+        return self._model.streaming_prefill_text(text_list=text_list, caused_by=caused_by)  # type: ignore[union-attr]
 
     # ------------------------------------------------------------------
 
