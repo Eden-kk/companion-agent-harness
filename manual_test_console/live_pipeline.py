@@ -487,7 +487,7 @@ def build_live_pipeline(
     ingest_session: IngestSession,
     foreground_duplex_model: Any,
     decision_trace_dir: Path | None = None,
-    proposal_batch_window_ms: int = 600,  # 600ms covers context-loaded 2nd-turn first-token latency on b200 MiniCPM; 200ms was cold-cache only (see F0c finding 2026-05-16).
+    proposal_batch_window_ms: int = 2500,  # 2500ms matches measured MiniCPM-o _process_chunk latency (1.6-3.1s); 600ms caused 100% synthesis_skipped_no_proposal timeouts.
     vad_model: Any = None,
     smart_turn_model: Any = None,
     backchannel_model: Any = None,
