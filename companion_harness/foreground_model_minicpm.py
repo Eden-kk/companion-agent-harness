@@ -295,7 +295,7 @@ class MiniCPMStreamingModel:
                     max_new_tokens=_CHAT_STREAM_MAX_NEW_TOKENS,
                     temperature=_CHAT_STREAM_TEMPERATURE,
                     # NOTE: stopping_criteria injection is currently a no-op in MiniCPM-o
-                    # (silently dropped by prepare_generation_config at modeling_minicpmo.py:1022).
+                    # (no evidence it reaches llm.generate via _decode_stream kwargs).
                     # Kept defensively; Layer 1 (per-delta flag poll below) is the actual
                     # cancellation mechanism. Stage 1 Probe C verified this defect.
                     stopping_criteria=StoppingCriteriaList([_FlagStop(self._chat_stop_flag)]),
@@ -305,8 +305,9 @@ class MiniCPMStreamingModel:
         loop = asyncio.get_running_loop()
         fut = loop.run_in_executor(self._inference_executor, _run_chat)
 
-        # Wait for chat() to return the streamer (it returns once the background
-        # generate thread is running, before any tokens arrive — TTFT 2–3s).
+        # Wait for chat() to return the streamer. chat() blocks for embedding
+        # computation (audio preprocessing + get_omni_embedding) before spawning
+        # the generation thread — this is the dominant TTFT cost (~2-3s).
         await fut
         streamer = _streamer_holder[0]
 
