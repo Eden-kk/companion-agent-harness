@@ -54,9 +54,9 @@ async def test_chat_stream_turn_yields_three_proposals() -> None:
     tokens = ["Hello", " world", "!"]
     streamer = _FakeStreamer(tokens)
     model = _build_model()
+    model._base.chat.return_value = streamer
 
     with (
-        patch("companion_harness.foreground_model_minicpm.TextIteratorStreamer", return_value=streamer),
         patch("companion_harness.foreground_model_minicpm.StoppingCriteria"),
         patch("companion_harness.foreground_model_minicpm.StoppingCriteriaList"),
     ):
@@ -77,9 +77,9 @@ async def test_request_chat_stop_causes_early_return() -> None:
     tokens = ["Hello", " world", "!"]
     streamer = _FakeStreamer(tokens)
     model = _build_model()
+    model._base.chat.return_value = streamer
 
     with (
-        patch("companion_harness.foreground_model_minicpm.TextIteratorStreamer", return_value=streamer),
         patch("companion_harness.foreground_model_minicpm.StoppingCriteria"),
         patch("companion_harness.foreground_model_minicpm.StoppingCriteriaList"),
     ):
@@ -110,9 +110,9 @@ async def test_request_chat_stop_mid_stream_cancels_next_delta() -> None:
 
     streamer = _BlockingStreamer()
     model = _build_model()
+    model._base.chat.return_value = streamer
 
     with (
-        patch("companion_harness.foreground_model_minicpm.TextIteratorStreamer", return_value=streamer),
         patch("companion_harness.foreground_model_minicpm.StoppingCriteria"),
         patch("companion_harness.foreground_model_minicpm.StoppingCriteriaList"),
     ):
@@ -137,11 +137,11 @@ async def test_no_orphan_threads_after_full_iteration() -> None:
     tokens = ["word"]
     streamer = _FakeStreamer(tokens)
     model = _build_model()
+    model._base.chat.return_value = streamer
 
     threads_before = threading.active_count()
 
     with (
-        patch("companion_harness.foreground_model_minicpm.TextIteratorStreamer", return_value=streamer),
         patch("companion_harness.foreground_model_minicpm.StoppingCriteria"),
         patch("companion_harness.foreground_model_minicpm.StoppingCriteriaList"),
     ):
@@ -162,9 +162,9 @@ async def test_special_tokens_stripped() -> None:
     tokens = ["<|im_start|>Hello<|im_end|>"]
     streamer = _FakeStreamer(tokens)
     model = _build_model()
+    model._base.chat.return_value = streamer
 
     with (
-        patch("companion_harness.foreground_model_minicpm.TextIteratorStreamer", return_value=streamer),
         patch("companion_harness.foreground_model_minicpm.StoppingCriteria"),
         patch("companion_harness.foreground_model_minicpm.StoppingCriteriaList"),
     ):

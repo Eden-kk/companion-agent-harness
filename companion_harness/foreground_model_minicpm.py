@@ -41,7 +41,7 @@ from typing import TYPE_CHECKING, AsyncGenerator, AsyncIterator
 
 import numpy as np
 import torch
-from transformers import AutoModel, AutoTokenizer, StoppingCriteria, StoppingCriteriaList, TextIteratorStreamer
+from transformers import AutoModel, AutoTokenizer, StoppingCriteria, StoppingCriteriaList
 
 from companion_harness.schemas import Event, MemoryItem, ThinkerProposal
 
@@ -278,11 +278,15 @@ class MiniCPMStreamingModel:
             {"role": "user",   "content": [audio, _DEFAULT_USER_INSTRUCTION]},
         ]
 
-        streamer = TextIteratorStreamer(self._tokenizer, skip_special_tokens=False, timeout=10.0)
+        # chat(stream=True) builds its own internal TextIteratorStreamer and returns it.
+        # Passing streamer= as a kwarg is silently dropped by prepare_generation_config
+        # (modeling_minicpmo.py:1022). We must iterate the returned streamer, not an
+        # external one.
+        _streamer_holder: list = []
 
         def _run_chat():
             with torch.no_grad():
-                self._base.chat(
+                inner = self._base.chat(
                     msgs=msgs,
                     tokenizer=self._tokenizer,
                     stream=True,
@@ -295,11 +299,16 @@ class MiniCPMStreamingModel:
                     # Kept defensively; Layer 1 (per-delta flag poll below) is the actual
                     # cancellation mechanism. Stage 1 Probe C verified this defect.
                     stopping_criteria=StoppingCriteriaList([_FlagStop(self._chat_stop_flag)]),
-                    streamer=streamer,
                 )
+            _streamer_holder.append(inner)
 
         loop = asyncio.get_running_loop()
         fut = loop.run_in_executor(self._inference_executor, _run_chat)
+
+        # Wait for chat() to return the streamer (it returns once the background
+        # generate thread is running, before any tokens arrive — TTFT 2–3s).
+        await fut
+        streamer = _streamer_holder[0]
 
         async def _bridge():
             try:
@@ -325,12 +334,6 @@ class MiniCPMStreamingModel:
                     )
             finally:
                 self._chat_stop_flag.set()
-                try:
-                    await fut
-                except Exception as exc:
-                    logging.getLogger(__name__).error(
-                        "chat_stream_turn executor raised", exc_info=exc,
-                    )
 
         return _bridge()
 
