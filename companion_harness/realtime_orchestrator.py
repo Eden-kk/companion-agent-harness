@@ -1643,6 +1643,7 @@ class StreamingRealtimeOrchestrator:
         return (
             frame.p_speech > self._p_speech_thresh
             and self._audio_output.is_playing
+            and not self._audio_output.is_synthesizing  # don't emit speech onset during TTS synthesis window — avoids false barge-in from acoustic echo
             and not self._speech_onset_debounce_active
         )
 
