@@ -401,10 +401,6 @@ class StreamingRealtimeOrchestrator:
             "use_hybrid mutex with use_streaming_speculative"
 
         self._hybrid_state: str = "AMBIENT_DUPLEX"
-        self._duplex_drained_event = asyncio.Event()
-        self._chat_completed_event = asyncio.Event()
-        self._ambient_ready_event  = asyncio.Event()
-        self._mode_switch_lock     = asyncio.Lock()
         self._latest_hybrid_audio_snapshot: bytes | None = None
 
         # Path B (§3.3): proposal ring buffer shared by T3 (writer) and T4/barge-in (readers).
@@ -1536,11 +1532,14 @@ class StreamingRealtimeOrchestrator:
                 finally:
                     self._foreground_model.reset_streaming_session(caused_by=[policy_evt_id])
                     self._transition_hybrid_state("RESETTING_TO_DUPLEX")
-                    self._logger.log(self._make_event(
+                    _ret_evt = self._make_event(
                         event_id=self._new_event_id(),
                         event_type="hybrid_mode_returned_to_duplex",
                         caused_by=[policy_evt_id, chat_started_evt_id] if chat_started_evt_id else [policy_evt_id],
                         payload_kind="signal",
+                    )
+                    self._logger.log(dataclasses.replace(
+                        _ret_evt,
                         payload_inline={
                             "trigger": _trigger,
                             "chat_chars_emitted": chars_count,
@@ -1884,7 +1883,7 @@ class StreamingRealtimeOrchestrator:
         )
         return (
             (self._audio_output.is_playing or hybrid_pre_audio)
-            and not self._audio_output.is_synthesizing  # don't barge-in during TTS synthesis window
+            and (not self._audio_output.is_synthesizing or hybrid_pre_audio)  # bypass synthesis window for hybrid chat states
             and not self._barge_in_in_flight
             and self._latest_p_backchannel < self._p_backchannel_thresh
         )
