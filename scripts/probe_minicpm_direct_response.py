@@ -207,8 +207,9 @@ def main() -> int:
     t_loaded = time.monotonic()
     print(f"  model loaded in {round((t_loaded - t_load_start) * 1000)} ms", flush=True)
 
+    from companion_harness.foreground_model_minicpm import _DEFAULT_DUPLEX_SYSTEM_PROMPT
     duplex = model._duplex
-    duplex.prepare(prefix_system_prompt="Streaming Omni Conversation.")
+    duplex.prepare(prefix_system_prompt=_DEFAULT_DUPLEX_SYSTEM_PROMPT)
 
     # --- feed audio chunks ---
     print("\nFeeding audio chunks...", flush=True)

@@ -48,6 +48,8 @@ __all__ = ["MiniCPMDuplexModel", "MiniCPMStreamingModel"]
 
 _MODEL_ID = "openbmb/MiniCPM-o-4_5"
 
+_DEFAULT_DUPLEX_SYSTEM_PROMPT = """You are a warm, conversational voice companion. The user is talking to you out loud. When they finish speaking, respond with one or two natural, complete sentences — not a single word, not a long monologue. Be specific and engaged. If the user asks a question, answer it directly first, then add one short follow-up thought."""
+
 # 16 kHz PCM16 — 1 second of audio = 16000 int16 samples = 32000 bytes
 _SAMPLE_RATE = 16000
 _CHUNK_SAMPLES = _SAMPLE_RATE  # 1-second chunks match MiniCPMODuplex default CHUNK_MS=1000
@@ -266,7 +268,7 @@ class MiniCPMStreamingModel:
         """
         async def _gen() -> AsyncGenerator[ThinkerProposal, None]:
             duplex = self._duplex
-            base_prompt = "Streaming Omni Conversation."
+            base_prompt = _DEFAULT_DUPLEX_SYSTEM_PROMPT
             if context_items:
                 # MiniCPM-o does not support mid-session re-prepare; context is
                 # folded at first-call only. Follow-up: v0.1j to pass live query.
