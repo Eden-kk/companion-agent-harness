@@ -1518,6 +1518,26 @@ class StreamingRealtimeOrchestrator:
 
                 audio_np = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
 
+                # Diagnostic — capture audio stats to compare against Stage 1 probe baseline
+                # (Stage 1 used 30s Kokoro fixture; real mic may be lower amplitude. Helps debug zero-output case.)
+                audio_rms = float(np.sqrt(np.mean(audio_np ** 2))) if audio_np.size > 0 else 0.0
+                self._logger.log(dataclasses.replace(
+                    self._make_event(
+                        event_id=self._new_event_id(),
+                        event_type="hybrid_audio_snapshot_stats",
+                        caused_by=[policy_evt_id],
+                        payload_kind="signal",
+                    ),
+                    payload_inline={
+                        "samples": int(audio_np.size),
+                        "duration_s": round(audio_np.size / 16000.0, 3),
+                        "rms": round(audio_rms, 4),
+                        "min": round(float(audio_np.min()), 4) if audio_np.size > 0 else 0.0,
+                        "max": round(float(audio_np.max()), 4) if audio_np.size > 0 else 0.0,
+                        "abs_max": round(float(np.abs(audio_np).max()), 4) if audio_np.size > 0 else 0.0,
+                    },
+                ))
+
                 self._foreground_model.reset_streaming_session(caused_by=[policy_evt_id])
 
                 gen_event_id = self._audio_output.start_generation(caused_by=[policy_evt_id])
