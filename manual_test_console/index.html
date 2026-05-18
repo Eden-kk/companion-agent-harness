@@ -96,7 +96,12 @@
   .seam-row .seam-toggle:hover { border-color: var(--accent); color: var(--accent); }
   .seam-row .seam-toggle:disabled { opacity: 0.45; cursor: not-allowed; }
   /* ---- Audit filter bar (F2) ---- */
-  .filter-bar { background: #11151c; border-bottom: 1px solid #1f2530; padding: 5px 10px; display: flex; flex-direction: column; gap: 4px; flex-shrink: 0; }
+  .filter-bar-details { background: #11151c; border-bottom: 1px solid #1f2530; flex-shrink: 0; }
+  .filter-bar-details > summary { padding: 4px 10px; font-size: 10px; color: var(--muted); cursor: pointer; user-select: none; list-style: none; display: flex; align-items: center; gap: 5px; }
+  .filter-bar-details > summary::before { content: "\25B6"; font-size: 8px; }
+  .filter-bar-details[open] > summary::before { content: "\25BC"; }
+  .filter-bar-details > summary:hover { color: var(--fg); }
+  .filter-bar { background: #11151c; padding: 0 10px 5px; display: flex; flex-direction: column; gap: 4px; }
   .filter-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
   .filter-row .filter-label { font-size: 10px; color: var(--muted); white-space: nowrap; }
   .filter-search { background: #161a22; color: var(--fg); border: 1px solid #2c3340; padding: 2px 6px; border-radius: 3px; font: inherit; font-size: 10.5px; flex: 1; min-width: 80px; }
@@ -166,25 +171,28 @@
   </section>
   <section class="panel">
     <h2>TurnSignals / SpeakDecisions / causal chain</h2>
-    <div class="filter-bar" id="audit-filter-bar">
-      <div class="filter-row">
-        <span class="filter-label">search:</span>
-        <input id="filter-search" class="filter-search" type="text" placeholder="event type, payload, caused_by…" autocomplete="off" />
-        <button id="filter-rc-btn" class="filter-chip" title="Filter by reason code">reason code: all</button>
-        <span class="filter-label">cap:</span>
-        <select id="filter-cap" class="filter-chip" title="Retained-line cap for audit panel" style="padding:1px 4px;cursor:pointer;">
-          <option value="100">100</option>
-          <option value="500" selected>500</option>
-          <option value="1000">1000</option>
-          <option value="0">unlimited</option>
-        </select>
-        <span id="filter-counter" class="filter-counter">Showing 0 of 0</span>
+    <details class="filter-bar-details" id="audit-filter-bar">
+      <summary>Filters</summary>
+      <div class="filter-bar">
+        <div class="filter-row">
+          <span class="filter-label">search:</span>
+          <input id="filter-search" class="filter-search" type="text" placeholder="event type, payload, caused_by…" autocomplete="off" />
+          <button id="filter-rc-btn" class="filter-chip" title="Filter by reason code">reason code: all</button>
+          <span class="filter-label">cap:</span>
+          <select id="filter-cap" class="filter-chip" title="Retained-line cap for audit panel" style="padding:1px 4px;cursor:pointer;">
+            <option value="100">100</option>
+            <option value="500" selected>500</option>
+            <option value="1000">1000</option>
+            <option value="0">unlimited</option>
+          </select>
+          <span id="filter-counter" class="filter-counter">Showing 0 of 0</span>
+        </div>
+        <div class="filter-row">
+          <span class="filter-label">types:</span>
+          <div class="type-checklist" id="type-checklist"></div>
+        </div>
       </div>
-      <div class="filter-row">
-        <span class="filter-label">types:</span>
-        <div class="type-checklist" id="type-checklist"></div>
-      </div>
-    </div>
+    </details>
     <div class="rows" id="signal-rows"></div>
     <div class="log" id="log"></div>
   </section>
