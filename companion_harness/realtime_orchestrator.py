@@ -511,7 +511,7 @@ class StreamingRealtimeOrchestrator:
                 self._tee_foreground_drop_count += 1
             # Accumulate per-turn audio for ASR (consumed + cleared in T2 on EOU).
             # Skip when no ASR is wired so the buffer never grows unbounded.
-            if self._asr_model is not None:
+            if self._asr_model is not None or self._use_hybrid:
                 self._turn_audio_buffer.extend(frame_bytes)
             # Periodic 60s drop summary for operator observability.
             now_ms = time.monotonic() * 1000
@@ -764,9 +764,17 @@ class StreamingRealtimeOrchestrator:
             # audio does not leak into the next turn. When asr_model is None,
             # transcript stays "" (backward compatible).
             transcript = ""
-            if self._asr_model is not None:
-                if self._turn_audio_buffer:
+            if self._asr_model is not None or self._use_hybrid:
+                if self._asr_model is not None and self._turn_audio_buffer:
                     transcript = self._asr_model(bytes(self._turn_audio_buffer))
+                if self._use_hybrid and self._turn_audio_buffer:
+                    if self._latest_hybrid_audio_snapshot is not None:
+                        self._logger.log(self._make_event(
+                            event_id=self._new_event_id(),
+                            event_type="hybrid_audio_snapshot_overwrite_warning",
+                            payload_kind="signal",
+                        ))
+                    self._latest_hybrid_audio_snapshot = bytes(self._turn_audio_buffer)
                 self._turn_audio_buffer.clear()
             inputs.user_transcript = transcript
 
