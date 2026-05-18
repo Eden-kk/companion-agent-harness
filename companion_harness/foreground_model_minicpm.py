@@ -29,6 +29,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import re as _re
 import logging
@@ -194,6 +195,7 @@ class MiniCPMStreamingModel:
         # the event loop drains audio frames while inference runs.
         self._inference_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="minicpm-infer")
         self._chat_stop_flag = threading.Event()
+        self._snapshot_cache = None
 
     def set_session(self, session_id: str, logger: "EventLogger") -> None:
         """Bind this singleton model to a new ingest session.
@@ -514,7 +516,7 @@ class MiniCPMStreamingModel:
         frame_iter: AsyncIterator[tuple[bytes, bytes | None]],
         caused_by: list[str],
         *,
-        on_proposal: Callable[[ThinkerProposal], None],
+        on_proposal: Callable[[ThinkerProposal, str], None],
         on_response_complete: Callable[[str], None],
     ) -> None:
         """Path B: never-terminating consumption + callback per proposal.
@@ -556,7 +558,7 @@ class MiniCPMStreamingModel:
         async for proposal in gen:
             state["proposals"] += 1
             state["chars"] += len(proposal.content)
-            on_proposal(proposal)
+            on_proposal(proposal, state["response_id"] or "")
         # Frame iter exhausted — fire complete if a response was in flight
         _on_listen_back()
 
@@ -584,18 +586,21 @@ class MiniCPMStreamingModel:
         self._inference_executor.shutdown(wait=False)
 
     def save_speculative_snapshot(self) -> Any:
-        return self._duplex.model.save_speculative_snapshot()
+        self._snapshot_cache = copy.deepcopy(self._duplex.decoder.cache)
+        return self._snapshot_cache
 
     def restore_speculative_snapshot(self, *, caused_by: list[str]) -> bool:
-        result = self._duplex.model.restore_speculative_snapshot()
+        if self._snapshot_cache is None:
+            return False
+        self._duplex.decoder.cache = copy.deepcopy(self._snapshot_cache)
         self._emit_response_event("speculative_snapshot_restored", None, caused_by)
-        return result
+        return True
 
     def has_speculative_snapshot(self) -> bool:
-        return self._duplex.model.has_speculative_snapshot()
+        return self._snapshot_cache is not None
 
     def clear_speculative_snapshot(self) -> None:
-        self._duplex.model.clear_speculative_snapshot()
+        self._snapshot_cache = None
 
     def streaming_prefill_text(self, text_list: list[str], *, caused_by: list[str]) -> dict:
         return self._duplex.streaming_prefill(text_list=text_list)

@@ -87,7 +87,7 @@ class _FakeModel:
         frame_iter: AsyncIterator[tuple[bytes, bytes | None]],
         caused_by: list[str],
         *,
-        on_proposal: Callable[[ThinkerProposal], None],
+        on_proposal: Callable[[ThinkerProposal, str], None],
         on_response_complete: Callable[[str], None],
     ) -> None:
         from uuid import uuid4
@@ -109,7 +109,7 @@ class _FakeModel:
                     state["response_id"] = f"r-{uuid4().hex[:8]}"
                 state["proposals"] += 1
                 state["chars"] += len(proposal.content)
-                on_proposal(proposal)
+                on_proposal(proposal, state["response_id"])
             _on_listen_back()
         finally:
             self._on_listen_transition = None
@@ -140,7 +140,7 @@ async def test_on_response_complete_fires_once_per_response() -> None:
     await fm.infer_stream_continuous(
         _frames(5),
         ["root"],
-        on_proposal=collected.append,
+        on_proposal=lambda p, _rid: collected.append(p),
         on_response_complete=completed.append,
     )
 
@@ -166,7 +166,7 @@ async def test_on_response_complete_not_fired_without_proposal() -> None:
     await fm.infer_stream_continuous(
         _frames(3),
         ["root"],
-        on_proposal=lambda p: None,
+        on_proposal=lambda p, _rid: None,
         on_response_complete=completed.append,
     )
 
@@ -232,3 +232,50 @@ async def test_snapshot_apis_noop_on_missing_model() -> None:
         fm.clear_speculative_snapshot()
     with pytest.raises(AttributeError):
         fm.streaming_prefill_text(["x"], caused_by=[])
+
+
+@pytest.mark.asyncio
+async def test_ring_entries_tagged_with_response_id() -> None:
+    """Phase B: ring entries are 3-tuples with response_id; id changes per response cycle."""
+    script = [
+        (False, "word1"),   # speak — response A
+        (False, "word2"),   # speak — response A
+        (True,  None),      # listen — response A complete
+        (False, "word3"),   # speak — response B
+        (True,  None),      # listen — response B complete
+    ]
+    model = _FakeModel(script)
+    logger = _make_logger()
+    fm = ForegroundModel(model=model, session_id="s5", logger=logger)
+
+    ring: list[tuple[int, str, Any]] = []
+
+    def _collect(proposal: Any, response_id: str) -> None:
+        ring.append((len(ring), response_id, proposal))
+
+    completed: list[str] = []
+    await fm.infer_stream_continuous(
+        _frames(5),
+        ["root"],
+        on_proposal=_collect,
+        on_response_complete=completed.append,
+    )
+
+    assert len(ring) == 3, f"expected 3 ring entries, got {len(ring)}"
+
+    # Each entry is a 3-tuple.
+    for entry in ring:
+        assert len(entry) == 3
+
+    # response_id must be non-empty for all entries.
+    for _, rid, _ in ring:
+        assert rid, f"response_id must not be empty, got {rid!r}"
+
+    # First two proposals share response A; third is response B.
+    rid_a = ring[0][1]
+    assert ring[1][1] == rid_a, "word1 and word2 should share the same response_id"
+    rid_b = ring[2][1]
+    assert rid_b != rid_a, "response B must have a different response_id than response A"
+
+    # completed response_ids match what was tagged in the ring.
+    assert set(completed) == {rid_a, rid_b}

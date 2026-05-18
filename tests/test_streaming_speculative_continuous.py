@@ -156,7 +156,7 @@ class _CountingStreamingModel:
         frame_iter: AsyncIterator[tuple[bytes, bytes | None]],
         caused_by: list[str],
         *,
-        on_proposal: Callable[[ThinkerProposal], None],
+        on_proposal: Callable[[ThinkerProposal, str], None],
         on_response_complete: Callable[[str], None],
     ) -> None:
         self.infer_stream_continuous_call_count += 1
@@ -173,7 +173,7 @@ class _CountingStreamingModel:
                     max_utterance_ms=5000,
                     cooldown_consumed="speech_turn",
                     caused_by=list(caused_by),
-                ))
+                ), "")
                 proposal_idx += 1
         self._consumed_event.set()
 
@@ -305,7 +305,7 @@ async def test_continuous_proposer_keeps_tokens_across_turns(tmp_path: Path) -> 
     assert model.infer_stream_continuous_call_count == 1
 
     # Ring must have monotonically increasing seq numbers.
-    seqs = [seq for seq, _ in orch._proposal_ring]
+    seqs = [seq for seq, _, _ in orch._proposal_ring]
     assert seqs == sorted(seqs), "ring seqs are not monotonic"
 
     # At least one proposer_token_buffered event must have been emitted.

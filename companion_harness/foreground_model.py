@@ -182,7 +182,7 @@ class ForegroundModel:
         frame_iter: AsyncIterator[tuple[bytes, bytes | None]],
         caused_by: list[str],
         *,
-        on_proposal: Callable[[ThinkerProposal], None],
+        on_proposal: Callable[[ThinkerProposal, str], None],
         on_response_complete: Callable[[str], None],
     ) -> None:
         """Path B: forward to the underlying model's infer_stream_continuous.
@@ -202,7 +202,7 @@ class ForegroundModel:
             ):
                 if not proposal.caused_by:
                     proposal.caused_by = [frame_evt.event_id]
-                on_proposal(proposal)
+                on_proposal(proposal, "")
 
     async def chat_stream_turn(
         self, audio, *, context_items=(), caused_by, prior_turns=None,

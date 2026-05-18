@@ -415,7 +415,7 @@ class StreamingRealtimeOrchestrator:
         # Path B (§3.3): proposal ring buffer shared by T3 (writer) and T4/barge-in (readers).
         # Only used when _use_streaming_speculative is True; inert otherwise.
         # Single-threaded asyncio; no lock needed — no await between read and write.
-        self._proposal_ring: list[tuple[int, ThinkerProposal]] = []
+        self._proposal_ring: list[tuple[int, str, ThinkerProposal]] = []  # (seq, response_id, proposal)
         self._proposal_ring_committed_seq: int = 0
         self._proposal_ring_next_seq: int = 0
 
@@ -1310,12 +1310,12 @@ class StreamingRealtimeOrchestrator:
                 latest_chunk_event_id[:] = [chunk_event_id]
                 yield frame_bytes, self._consume_video_or_none()
 
-        def _on_proposal(proposal: ThinkerProposal) -> None:
+        def _on_proposal(proposal: ThinkerProposal, response_id: str) -> None:
             seq = self._proposal_ring_next_seq
             self._proposal_ring_next_seq += 1
-            self._proposal_ring.append((seq, proposal))
+            self._proposal_ring.append((seq, response_id, proposal))
             caused_by = (latest_chunk_event_id + [self._started_event_id]) if latest_chunk_event_id else ([self._started_event_id] if self._started_event_id else [])
-            self._emit_proposer_token_buffered(seq, proposal, caused_by=caused_by)
+            self._emit_proposer_token_buffered(seq, proposal, caused_by=caused_by, response_id=response_id)
 
         await self._foreground_model.infer_stream_continuous(
             _continuous_gen(),
@@ -1324,7 +1324,7 @@ class StreamingRealtimeOrchestrator:
             on_response_complete=lambda rid: None,
         )
 
-    def _emit_proposer_token_buffered(self, ring_seq: int, proposal: ThinkerProposal, *, caused_by: list[str] | None = None) -> None:
+    def _emit_proposer_token_buffered(self, ring_seq: int, proposal: ThinkerProposal, *, caused_by: list[str] | None = None, response_id: str = "") -> None:
         if caused_by is None:
             caused_by = [self._started_event_id] if self._started_event_id else []
         evt = dataclasses.replace(
@@ -1336,6 +1336,7 @@ class StreamingRealtimeOrchestrator:
             ),
             payload_inline={
                 "ring_seq": ring_seq,
+                "response_id": response_id,
                 "is_listen": False,
                 "text_preview": proposal.content[:32],
             },
@@ -1696,7 +1697,7 @@ class StreamingRealtimeOrchestrator:
                     ))
                     self._decision_in_flight = False
                     continue
-                snapshot = [p for _, p in ring_tail]
+                snapshot = [p for _, _rid, p in ring_tail]
                 self._proposal_ring_committed_seq = len(self._proposal_ring)
                 self._emit_commit_or_discard(
                     committed=True,
