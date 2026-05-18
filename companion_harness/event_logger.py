@@ -8,6 +8,7 @@ Stage 0 (replay + causal provenance contract tests).
 from __future__ import annotations
 
 import asyncio
+import sys
 import time
 from collections.abc import Callable, Awaitable
 
@@ -35,6 +36,7 @@ class EventLogger:
         self._seq = 0
         self._dropped = 0
         self._subscribers: list[Sink] = []
+        self._sub_tasks: set[asyncio.Task[None]] = set()
 
     def subscribe(self, callback: Sink) -> None:
         if self._task is not None:
@@ -76,6 +78,8 @@ class EventLogger:
         except asyncio.CancelledError:
             pass
         self._task = None
+        if self._sub_tasks:
+            await asyncio.gather(*self._sub_tasks, return_exceptions=True)
 
     async def _drain(self) -> None:
         while True:
@@ -83,10 +87,9 @@ class EventLogger:
             try:
                 await self._sink(event)
                 for sub in self._subscribers:
-                    try:
-                        await sub(event)
-                    except Exception:
-                        pass
+                    t = asyncio.create_task(self._safe_subscriber_call(sub, event))
+                    self._sub_tasks.add(t)
+                    t.add_done_callback(self._sub_tasks.discard)
             finally:
                 self._queue.task_done()
             if self._dropped > 0:
@@ -95,6 +98,14 @@ class EventLogger:
                     await self._sink(self._make_degrade_event(count))
                 except Exception:
                     pass
+
+    async def _safe_subscriber_call(self, sub: Sink, event: Event) -> None:
+        try:
+            await sub(event)
+        except Exception as exc:
+            import traceback
+            print(f"EventLogger subscriber {sub!r} failed: {exc}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
 
     def _make_degrade_event(self, dropped_count: int) -> Event:
         self._seq += 1
