@@ -1665,6 +1665,80 @@ class StreamingRealtimeOrchestrator:
                 self._audio_output.set_generation_task(None)
                 self._decision_in_flight = False
 
+    async def _run_hybrid_chat_stream(
+        self,
+        *,
+        audio_np,
+        policy_evt_id: str,
+        gen_event_id: str,
+        allowed_prosody_tags: list[str],
+    ) -> tuple[str, int, float]:
+        """Invoke chat_stream_turn, pipe deltas into synthesize_streaming via queue.
+
+        Returns (chat_started_evt_id, chars_count, chat_start_t).
+        Raises CancelledError on barge-in (caller sets _trigger="barge_in").
+        """
+        text_queue: asyncio.Queue[str | None] = asyncio.Queue()
+        chars_count = 0
+        chat_start_t = time.monotonic()
+        chat_started_evt_id = self._new_event_id()
+
+        async def _consume_chat_deltas() -> None:
+            nonlocal chars_count
+            try:
+                gen = await self._foreground_model.chat_stream_turn(
+                    audio_np, context_items=(), caused_by=[policy_evt_id],
+                )
+                async for proposal in gen:
+                    await text_queue.put(proposal.content)
+                    chars_count += len(proposal.content)
+                    self._logger.log(self._make_event(
+                        event_id=self._new_event_id(),
+                        event_type="chat_stream_text_delta",
+                        caused_by=[chat_started_evt_id],
+                        payload_kind="signal",
+                    ))
+            finally:
+                await text_queue.put(None)
+
+        async def _stream_text_chunks() -> AsyncIterator[str]:
+            while True:
+                chunk = await text_queue.get()
+                if chunk is None:
+                    return
+                yield chunk
+
+        self._logger.log(self._make_event(
+            event_id=chat_started_evt_id,
+            event_type="chat_stream_turn_started",
+            caused_by=[policy_evt_id],
+            payload_kind="signal",
+        ))
+        consumer_task = asyncio.get_running_loop().create_task(
+            _consume_chat_deltas(), name=f"chat-stream-consumer-{policy_evt_id}"
+        )
+        chunks = self._tts_adapter.synthesize_streaming(  # type: ignore[attr-defined]
+            _stream_text_chunks(), allowed_prosody_tags
+        )
+        play_task = asyncio.get_running_loop().create_task(
+            self._audio_output.play(chunks, gen_event_id),
+            name=f"play-{gen_event_id}",
+        )
+        self._audio_output.set_generation_task(play_task)
+        try:
+            await play_task
+        except asyncio.CancelledError:
+            consumer_task.cancel()
+            raise
+        finally:
+            if not consumer_task.done():
+                try:
+                    await asyncio.wait_for(asyncio.shield(consumer_task), timeout=0.5)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    pass
+
+        return (chat_started_evt_id, chars_count, chat_start_t)
+
     async def _smart_path_task(self) -> None:
         """T5: Drain smart_path_queue; drive BackgroundReasoner; inject context (OQ-12)."""
         from companion_harness.background_reasoner import (
