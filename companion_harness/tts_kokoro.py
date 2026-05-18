@@ -64,7 +64,6 @@ structurally enforces the policy → synthesis edge.
 
 from __future__ import annotations
 
-import time
 from collections.abc import AsyncGenerator, AsyncIterator
 
 import numpy as np
@@ -79,9 +78,6 @@ _SAMPLE_RATE = 24000
 
 # 200 ms of PCM16 at 24 kHz mono: 24000 samples/s * 0.2 s * 2 bytes/sample
 _MAX_CHUNK_BYTES = 9600
-
-# Wall-time cap to flush clause buffer when no boundary character appears.
-_CLAUSE_BUFFER_CAP_MS = 200
 
 _CLAUSE_BOUNDARY_CHARS = frozenset(".!?,;")
 
@@ -155,15 +151,13 @@ class KokoroTtsAdapter:
         text_chunks: AsyncIterator[str],
         prosody_tags: list[str],
     ) -> AsyncGenerator[bytes, None]:
-        """Stream PCM out as text chunks arrive. Hybrid clause-boundary + wall-cap policy.
+        """Stream PCM out as text chunks arrive. Drains at clause boundaries only.
 
         Accumulates incoming text into a clause buffer and fires Kokoro's
-        create_stream when either (a) a clause-boundary character is seen or
-        (b) _CLAUSE_BUFFER_CAP_MS wall-time has elapsed since the last drain.
+        create_stream when a clause-boundary character is seen.
         Remaining buffer is flushed when text_chunks is exhausted.
         """
         buf: list[str] = []
-        last_drain_ms: float = time.monotonic() * 1000
 
         async def _drain(text: str) -> AsyncIterator[bytes]:
             async for samples, _sr in self._kokoro.create_stream(
@@ -182,13 +176,10 @@ class KokoroTtsAdapter:
             if not chunk:
                 continue
             buf.append(chunk)
-            now_ms = time.monotonic() * 1000
             has_boundary = any(ch in _CLAUSE_BOUNDARY_CHARS for ch in chunk)
-            cap_elapsed = (now_ms - last_drain_ms) >= _CLAUSE_BUFFER_CAP_MS
-            if has_boundary or cap_elapsed:
+            if has_boundary:
                 text = "".join(buf)
                 buf.clear()
-                last_drain_ms = time.monotonic() * 1000
                 async for pcm in _drain(text):
                     yield pcm
 
