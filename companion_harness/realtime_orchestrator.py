@@ -35,6 +35,8 @@ import hashlib
 import json
 import time
 import uuid
+
+import numpy as np
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
@@ -137,6 +139,7 @@ class _VadOnsetFrame:
 
 _AUDIO_TEE_DEPTH = 256  # raised from 64; 2.56 s headroom at 100 frames/s
 _AUDIO_QUEUE_BOUND = 64
+_MIN_HYBRID_CHAT_AUDIO_SAMPLES = 16000  # 1 s at 16 kHz
 _TURN_SIGNAL_QUEUE_BOUND = 32
 _POLICY_DECISIONS_QUEUE_BOUND = 8
 _AUDIO_TEE_DEPTH_MIN = 32
@@ -1467,6 +1470,86 @@ class StreamingRealtimeOrchestrator:
                     self.proposal_buffer.clear()
                     self._first_proposal_event.clear()
                 self._decision_in_flight = False
+                continue
+
+            if decision.primary_reason_code == ReasonCode.LONG_RESPONSE_GATED and self._use_hybrid:
+                self._transition_hybrid_state("EOU_PENDING_SWITCH")
+                try:
+                    await asyncio.wait_for(self._t3_batch_done_event.wait(), timeout=0.5)
+                    self._t3_batch_done_event.clear()
+                except asyncio.TimeoutError:
+                    self._logger.log(self._make_event(
+                        event_id=self._new_event_id(),
+                        event_type="hybrid_mode_switch_blocked",
+                        caused_by=[policy_evt_id],
+                        payload_kind="signal",
+                        extra_hash="duplex_drain_timeout",
+                    ))
+                    self._transition_hybrid_state("AMBIENT_DUPLEX")
+                    self._decision_in_flight = False
+                    continue
+
+                audio_bytes = self._latest_hybrid_audio_snapshot
+                self._latest_hybrid_audio_snapshot = None
+                if audio_bytes is None or len(audio_bytes) < _MIN_HYBRID_CHAT_AUDIO_SAMPLES * 2:
+                    self._logger.log(self._make_event(
+                        event_id=self._new_event_id(),
+                        event_type="hybrid_mode_switch_blocked",
+                        caused_by=[policy_evt_id],
+                        payload_kind="signal",
+                        extra_hash="insufficient_audio_buffer",
+                    ))
+                    self._transition_hybrid_state("AMBIENT_DUPLEX")
+                    self._decision_in_flight = False
+                    continue
+
+                audio_np = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+
+                self._foreground_model.reset_streaming_session(caused_by=[policy_evt_id])
+                self._transition_hybrid_state("CHAT_STREAMING")
+
+                gen_event_id = self._audio_output.start_generation(caused_by=[policy_evt_id])
+                _trigger = "natural_end"
+                chat_started_evt_id = ""
+                chars_count = 0
+                chat_start_t = time.monotonic()
+                try:
+                    chat_started_evt_id, chars_count, chat_start_t = (
+                        await self._run_hybrid_chat_stream(
+                            audio_np=audio_np,
+                            policy_evt_id=policy_evt_id,
+                            gen_event_id=gen_event_id,
+                            allowed_prosody_tags=decision.allowed_prosody_tags,
+                        )
+                    )
+                except asyncio.CancelledError:
+                    _trigger = "barge_in"
+                    # Don't re-raise — finally handles cleanup; T4 loop continues
+                except Exception:
+                    _trigger = "error"
+                    self._logger.log(self._make_event(
+                        event_id=self._new_event_id(),
+                        event_type="hybrid_chat_stream_error",
+                        caused_by=[policy_evt_id],
+                        payload_kind="signal",
+                    ))
+                finally:
+                    self._foreground_model.reset_streaming_session(caused_by=[policy_evt_id])
+                    self._transition_hybrid_state("RESETTING_TO_DUPLEX")
+                    self._logger.log(self._make_event(
+                        event_id=self._new_event_id(),
+                        event_type="hybrid_mode_returned_to_duplex",
+                        caused_by=[policy_evt_id, chat_started_evt_id] if chat_started_evt_id else [policy_evt_id],
+                        payload_kind="signal",
+                        payload_inline={
+                            "trigger": _trigger,
+                            "chat_chars_emitted": chars_count,
+                            "chat_duration_ms": int((time.monotonic() - chat_start_t) * 1000),
+                        },
+                    ))
+                    self._transition_hybrid_state("AMBIENT_DUPLEX")
+                    self._audio_output.set_generation_task(None)
+                    self._decision_in_flight = False
                 continue
 
             if self._use_streaming_speculative:
