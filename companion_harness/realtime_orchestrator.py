@@ -439,6 +439,7 @@ class StreamingRealtimeOrchestrator:
         self._tasks = [
             loop.create_task(self._audio_tee_task(), name="audio_tee"),
             loop.create_task(self._foreground_tee_drain_task(), name="foreground_tee_drain"),
+            loop.create_task(self._foreground_ring_idle_drain_task(), name="foreground_ring_idle_drain"),
             loop.create_task(self._detector_fanout_task(), name="T1_detector_fanout"),
             loop.create_task(self._policy_gate_task(), name="T2_policy_gate"),
             loop.create_task(self._foreground_stream_task(), name="T3_foreground_stream"),
@@ -551,6 +552,28 @@ class StreamingRealtimeOrchestrator:
                         )
                     except asyncio.QueueEmpty:
                         pass  # raced with consumer; retry put_nowait
+
+    async def _foreground_ring_idle_drain_task(self) -> None:
+        """Drain _foreground_ring to /dev/null when no consumer is active.
+
+        Between batches AND when not in chat-stream, T3's _bounded_frame_gen
+        isn't running and the chat-stream consumer hasn't taken over either.
+        The producer keeps pushing into the ring → fills → put_nowait raises
+        QueueFull → log_drop_or_degrade fires for every frame.
+
+        This task drains the ring to /dev/null during those idle windows.
+        When _batch_open_event fires (T3 takes over) OR _hybrid_state moves
+        out of AMBIENT_DUPLEX (chat-stream takes over), this task yields so
+        those consumers see frames.
+        """
+        while True:
+            if self._batch_open_event.is_set() or self._hybrid_state != "AMBIENT_DUPLEX":
+                await asyncio.sleep(0.05)
+                continue
+            try:
+                self._foreground_ring.get_nowait()
+            except asyncio.QueueEmpty:
+                await asyncio.sleep(0.02)
 
     def _emit_tee_summary(self, tee_name: str, drop_count_60s: int, current_queue_depth: int) -> Event:
         now_ms = int(time.monotonic() * 1000)
