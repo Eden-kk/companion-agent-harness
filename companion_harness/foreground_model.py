@@ -55,7 +55,7 @@ import hashlib
 import time
 from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import AsyncGenerator, AsyncIterator, Protocol, runtime_checkable
+from typing import Any, AsyncGenerator, AsyncIterator, Protocol, runtime_checkable
 
 from companion_harness.event_logger import EventLogger
 from companion_harness.schemas import Event, MemoryItem, ThinkerProposal
@@ -183,6 +183,7 @@ class ForegroundModel:
         caused_by: list[str],
         *,
         on_proposal: Callable[[ThinkerProposal], None],
+        on_response_complete: Callable[[str], None],
     ) -> None:
         """Path B: forward to the underlying model's infer_stream_continuous.
 
@@ -191,7 +192,8 @@ class ForegroundModel:
         """
         if hasattr(self._model, "infer_stream_continuous"):
             await self._model.infer_stream_continuous(  # type: ignore[attr-defined]
-                frame_iter, caused_by, on_proposal=on_proposal
+                frame_iter, caused_by, on_proposal=on_proposal,
+                on_response_complete=on_response_complete,
             )
         else:
             frame_evt = self._emit("foreground_frame", caused_by, "raw_audio")
@@ -230,6 +232,29 @@ class ForegroundModel:
     def request_chat_stop(self) -> None:
         if hasattr(self._model, "request_chat_stop"):
             self._model.request_chat_stop()  # type: ignore[union-attr]
+
+    def save_speculative_snapshot(self) -> Any:
+        if hasattr(self._model, "save_speculative_snapshot"):
+            return self._model.save_speculative_snapshot()  # type: ignore[union-attr]
+        return None
+
+    def restore_speculative_snapshot(self, *, caused_by: list[str]) -> bool:
+        if hasattr(self._model, "restore_speculative_snapshot"):
+            return self._model.restore_speculative_snapshot(caused_by=caused_by)  # type: ignore[union-attr]
+        return False
+
+    def has_speculative_snapshot(self) -> bool:
+        if hasattr(self._model, "has_speculative_snapshot"):
+            return self._model.has_speculative_snapshot()  # type: ignore[union-attr]
+        return False
+
+    def clear_speculative_snapshot(self) -> None:
+        if hasattr(self._model, "clear_speculative_snapshot"):
+            self._model.clear_speculative_snapshot()  # type: ignore[union-attr]
+
+    def streaming_prefill_text(self, text_list: list[str], *, caused_by: list[str]) -> None:
+        if hasattr(self._model, "streaming_prefill_text"):
+            self._model.streaming_prefill_text(text_list=text_list, caused_by=caused_by)  # type: ignore[union-attr]
 
     # ------------------------------------------------------------------
 

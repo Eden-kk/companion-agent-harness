@@ -37,7 +37,8 @@ import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, AsyncGenerator, AsyncIterator
+from typing import TYPE_CHECKING, Any, AsyncGenerator, AsyncIterator
+from uuid import uuid4
 
 import numpy as np
 import torch
@@ -193,6 +194,7 @@ class MiniCPMStreamingModel:
         # the event loop drains audio frames while inference runs.
         self._inference_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="minicpm-infer")
         self._chat_stop_flag = threading.Event()
+        self._on_listen_transition: Callable[[], None] | None = None
 
     def set_session(self, session_id: str, logger: "EventLogger") -> None:
         """Bind this singleton model to a new ingest session.
@@ -449,7 +451,10 @@ class MiniCPMStreamingModel:
                     )
 
                 result = await loop.run_in_executor(self._inference_executor, _gpu_work)
+                prev_is_listen = self._last_is_listen
                 self._last_is_listen = bool(result.get("is_listen", True))
+                if not prev_is_listen and self._last_is_listen and self._on_listen_transition is not None:
+                    self._on_listen_transition()
                 invocation_evt = self._emit_invocation(
                     self._last_is_listen, caused_by
                 )
@@ -507,6 +512,7 @@ class MiniCPMStreamingModel:
         caused_by: list[str],
         *,
         on_proposal: Callable[[ThinkerProposal], None],
+        on_response_complete: Callable[[str], None],
     ) -> None:
         """Path B: never-terminating consumption + callback per proposal.
 
@@ -514,10 +520,44 @@ class MiniCPMStreamingModel:
         this method runs until frame_iter is exhausted or cancelled, invoking
         on_proposal() for each yielded proposal. Used by Path B's continuous
         T3 lifetime so the KV cache is not reset per turn (§3.5 handles reset).
+
+        on_response_complete(response_id) is called when the model transitions
+        back to listen (False→True) after emitting ≥1 proposal for that response.
         """
-        gen = await self.infer_stream(frame_iter, caused_by)
-        async for proposal in gen:
-            on_proposal(proposal)
+        state: dict = {"response_id": None, "proposals": 0, "chars": 0}
+
+        def _on_listen_back() -> None:
+            rid = state["response_id"]
+            if rid is not None and state["proposals"] > 0:
+                self._emit_response_event(
+                    "assistant_response_complete",
+                    rid,
+                    caused_by,
+                    extra={"char_count": state["chars"]},
+                )
+                on_response_complete(rid)
+            state["response_id"] = None
+            state["proposals"] = 0
+            state["chars"] = 0
+
+        self._on_listen_transition = _on_listen_back
+        try:
+            gen = await self.infer_stream(frame_iter, caused_by)
+            async for proposal in gen:
+                if state["response_id"] is None:
+                    # True→False: start of new response
+                    rid = f"r-{uuid4().hex[:8]}"
+                    state["response_id"] = rid
+                    self._emit_response_event(
+                        "assistant_response_started", rid, caused_by
+                    )
+                state["proposals"] += 1
+                state["chars"] += len(proposal.content)
+                on_proposal(proposal)
+            # Frame iter exhausted — fire complete if a response was in flight
+            _on_listen_back()
+        finally:
+            self._on_listen_transition = None
 
     def reset_streaming_session(self, *, caused_by: list[str]) -> "Event":
         """Clear duplex KV cache (audio_past_key_values + llm_past_key_values).
@@ -541,6 +581,23 @@ class MiniCPMStreamingModel:
     def close(self) -> None:
         """Shut down the inference executor. Call on orchestrator teardown."""
         self._inference_executor.shutdown(wait=False)
+
+    def save_speculative_snapshot(self) -> Any:
+        return self._duplex.model.save_speculative_snapshot()
+
+    def restore_speculative_snapshot(self, *, caused_by: list[str]) -> bool:
+        result = self._duplex.model.restore_speculative_snapshot()
+        self._emit_response_event("speculative_snapshot_restored", "", caused_by)
+        return result
+
+    def has_speculative_snapshot(self) -> bool:
+        return self._duplex.model.has_speculative_snapshot()
+
+    def clear_speculative_snapshot(self) -> None:
+        self._duplex.model.clear_speculative_snapshot()
+
+    def streaming_prefill_text(self, text_list: list[str], *, caused_by: list[str]) -> None:
+        self._duplex.streaming_prefill(text_list=text_list)
 
     # ------------------------------------------------------------------
 
@@ -576,6 +633,44 @@ class MiniCPMStreamingModel:
                 "reset_token2wav_cache": False,
                 "trigger": "post_turn",
             },
+        )
+        if self._logger is not None:
+            self._logger.log(evt)
+        return evt
+
+    def _emit_response_event(
+        self,
+        event_type: str,
+        response_id: str,
+        caused_by: list[str],
+        extra: dict | None = None,
+    ) -> Event:
+        now_ms = int(time.monotonic() * 1000)
+        seq = self._next_seq()
+        event_id = f"{self._session_id}-resp-{seq}-{now_ms}"
+        payload = {"response_id": response_id, "ts_mono_ms": now_ms}
+        if extra:
+            payload.update(extra)
+        payload_hash = hashlib.sha256(
+            f"{event_type}:{event_id}:{response_id}:{now_ms}".encode()
+        ).hexdigest()[:16]
+        evt = Event(
+            event_id=event_id,
+            session_id=self._session_id,
+            schema_version=self.SCHEMA_VERSION,
+            seq_no=seq,
+            event_type=event_type,
+            timestamp_mono_ms=now_ms,
+            timestamp_wall=datetime.now(timezone.utc).isoformat(),
+            source=self.SOURCE,
+            caused_by=caused_by,
+            payload_hash=payload_hash,
+            payload_ref=None,
+            payload_kind="signal",
+            subject_class="self",
+            sensitivity="safe",
+            retention_policy_id="signal_default_30d",
+            payload_inline=payload,
         )
         if self._logger is not None:
             self._logger.log(evt)

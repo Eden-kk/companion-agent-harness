@@ -408,6 +408,9 @@ class StreamingRealtimeOrchestrator:
         # Each entry is {"role": "user"|"assistant", "content": str}.
         # Capped at _CONV_HISTORY_MAX_TURNS entries (FIFO eviction).
         self._conv_history: list[dict] = []
+        # Holds the current-turn user transcript until the assistant reply
+        # completes.  Both are appended together; on barge-in neither is.
+        self._pending_user_transcript: str | None = None
 
         # Path B (§3.3): proposal ring buffer shared by T3 (writer) and T4/barge-in (readers).
         # Only used when _use_streaming_speculative is True; inert otherwise.
@@ -839,10 +842,8 @@ class StreamingRealtimeOrchestrator:
                     payload_ref=f"orchestrator://{transcript_evt_id}",
                 )
                 self._logger.log(transcript_evt)
-                if self._use_hybrid and transcript:
-                    self._conv_history.append({"role": "user", "content": transcript})
-                    if len(self._conv_history) > _CONV_HISTORY_MAX_TURNS:
-                        self._conv_history.pop(0)
+                if self._use_hybrid and transcript and transcript.strip():
+                    self._pending_user_transcript = transcript
 
             # --- Retrieval: fires on every EOU before decide() (plan §4.2 v4) ---
             stores_queried: list[str] = []
@@ -1320,6 +1321,7 @@ class StreamingRealtimeOrchestrator:
             _continuous_gen(),
             caused_by=[self._started_event_id] if self._started_event_id else [],
             on_proposal=_on_proposal,
+            on_response_complete=lambda rid: None,
         )
 
     def _emit_proposer_token_buffered(self, ring_seq: int, proposal: ThinkerProposal, *, caused_by: list[str] | None = None) -> None:
@@ -1631,6 +1633,7 @@ class StreamingRealtimeOrchestrator:
                     )
                 except asyncio.CancelledError:
                     _trigger = "barge_in"
+                    self._pending_user_transcript = None
                     # Don't re-raise — finally handles cleanup; T4 loop continues
                 except Exception:
                     _trigger = "error"
@@ -1879,9 +1882,14 @@ class StreamingRealtimeOrchestrator:
 
         assistant_text = "".join(_assistant_text_parts)
         if assistant_text:
+            if self._pending_user_transcript:
+                self._conv_history.append({"role": "user", "content": self._pending_user_transcript})
+                if len(self._conv_history) > _CONV_HISTORY_MAX_TURNS:
+                    self._conv_history.pop(0)
             self._conv_history.append({"role": "assistant", "content": assistant_text})
             if len(self._conv_history) > _CONV_HISTORY_MAX_TURNS:
                 self._conv_history.pop(0)
+            self._pending_user_transcript = None
 
         return (chat_started_evt_id, chars_count, chat_start_t)
 

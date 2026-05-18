@@ -157,6 +157,7 @@ class _CountingStreamingModel:
         caused_by: list[str],
         *,
         on_proposal: Callable[[ThinkerProposal], None],
+        on_response_complete: Callable[[str], None],
     ) -> None:
         self.infer_stream_continuous_call_count += 1
         proposal_idx = 0
