@@ -64,6 +64,7 @@ structurally enforces the policy → synthesis edge.
 
 from __future__ import annotations
 
+import time
 from collections.abc import AsyncIterator
 
 import numpy as np
@@ -78,6 +79,11 @@ _SAMPLE_RATE = 24000
 
 # 200 ms of PCM16 at 24 kHz mono: 24000 samples/s * 0.2 s * 2 bytes/sample
 _MAX_CHUNK_BYTES = 9600
+
+# Wall-time cap to flush clause buffer when no boundary character appears.
+_CLAUSE_BUFFER_CAP_MS = 200
+
+_CLAUSE_BOUNDARY_CHARS = frozenset(".!?,;")
 
 
 class KokoroTtsAdapter:
@@ -143,6 +149,53 @@ class KokoroTtsAdapter:
             raw = pcm16.tobytes()
             for offset in range(0, len(raw), _MAX_CHUNK_BYTES):
                 yield raw[offset : offset + _MAX_CHUNK_BYTES]
+
+    async def synthesize_streaming(
+        self,
+        text_chunks: AsyncIterator[str],
+        prosody_tags: list[str],
+    ) -> AsyncIterator[bytes]:
+        """Stream PCM out as text chunks arrive. Hybrid clause-boundary + wall-cap policy.
+
+        Accumulates incoming text into a clause buffer and fires Kokoro's
+        create_stream when either (a) a clause-boundary character is seen or
+        (b) _CLAUSE_BUFFER_CAP_MS wall-time has elapsed since the last drain.
+        Remaining buffer is flushed when text_chunks is exhausted.
+        """
+        buf: list[str] = []
+        last_drain_ms: float = time.monotonic() * 1000
+
+        async def _drain(text: str) -> AsyncIterator[bytes]:
+            async for samples, _sr in self._kokoro.create_stream(
+                text,
+                voice=self._voice,
+                speed=self._speed,
+                lang=self._lang,
+            ):
+                clipped = np.clip(samples, -1.0, 1.0)
+                pcm16 = (clipped * 32767.0).astype("<i2")
+                raw = pcm16.tobytes()
+                for offset in range(0, len(raw), _MAX_CHUNK_BYTES):
+                    yield raw[offset : offset + _MAX_CHUNK_BYTES]
+
+        async for chunk in text_chunks:
+            if not chunk:
+                continue
+            buf.append(chunk)
+            now_ms = time.monotonic() * 1000
+            has_boundary = any(ch in _CLAUSE_BOUNDARY_CHARS for ch in chunk)
+            cap_elapsed = (now_ms - last_drain_ms) >= _CLAUSE_BUFFER_CAP_MS
+            if has_boundary or cap_elapsed:
+                text = "".join(buf)
+                buf.clear()
+                last_drain_ms = time.monotonic() * 1000
+                async for pcm in _drain(text):
+                    yield pcm
+
+        if buf:
+            text = "".join(buf)
+            async for pcm in _drain(text):
+                yield pcm
 
     @property
     def sample_rate(self) -> int:
