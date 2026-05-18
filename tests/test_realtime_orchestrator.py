@@ -429,3 +429,80 @@ async def test_gating_invariant_decide_before_synthesis(tmp_path):
         "synthesize() was never called — the policy approved speech but the "
         "orchestrator did not invoke the TtsAdapter"
     )
+
+
+# ---------------------------------------------------------------------------
+# Mutual-exclusion: use_hybrid + use_streaming_speculative must not coexist
+# ---------------------------------------------------------------------------
+
+
+def _build_orch_with_flags(
+    tmp_path,
+    logger: EventLogger,
+    *,
+    use_hybrid: bool,
+    use_streaming_speculative: bool,
+) -> StreamingRealtimeOrchestrator:
+    session_id = "test-mutex"
+    ingest = InputIngest(logger, tmp_path)
+    session = ingest.open_session("test-client")
+    audio_in: asyncio.Queue = asyncio.Queue(maxsize=64)
+    vad = VADDetector(
+        model=_FakeVADModel([]),
+        session_id=session_id,
+        logger=logger,
+        speech_threshold=0.5,
+        silence_onset_ms=64,
+        frame_duration_ms=32,
+    )
+    smart_turn = SmartTurnDetector(model=_FakeSmartTurnModel(), session_id=session_id, logger=logger)
+    bc = BackchannelClassifier(model=_FakeBackchannelModel(), session_id=session_id, logger=logger)
+    fg = ForegroundModel(model=_FakeStreamingModel(), session_id=session_id, logger=logger)
+    controller = AudioOutputController(session_id=session_id, logger=logger, sink=_noop_sink)
+    return StreamingRealtimeOrchestrator(
+        session_id=session_id,
+        logger=logger,
+        ingest_session=session,
+        audio_in=audio_in,
+        vad_detector=vad,
+        smart_turn_detector=smart_turn,
+        backchannel_classifier=bc,
+        policy_inputs_builder=_build_policy_inputs,
+        speak_policy=speak_policy_decide,
+        foreground_model=fg,
+        audio_output=controller,
+        tts_adapter=_InstrumentedTtsAdapter([]),
+        use_hybrid=use_hybrid,
+        use_streaming_speculative=use_streaming_speculative,
+    )
+
+
+@pytest.mark.parametrize("use_hybrid,use_streaming_speculative,should_raise", [
+    (True,  False, False),
+    (False, True,  False),
+    (True,  True,  True),
+], ids=["hybrid_only_ok", "speculative_only_ok", "both_raises"])
+def test_hybrid_streaming_speculative_mutex(
+    tmp_path,
+    use_hybrid: bool,
+    use_streaming_speculative: bool,
+    should_raise: bool,
+) -> None:
+    """use_hybrid=True + use_streaming_speculative=True must raise AssertionError."""
+    logger, _ = _make_logger()
+
+    if should_raise:
+        with pytest.raises(AssertionError):
+            _build_orch_with_flags(
+                tmp_path, logger,
+                use_hybrid=use_hybrid,
+                use_streaming_speculative=use_streaming_speculative,
+            )
+    else:
+        orch = _build_orch_with_flags(
+            tmp_path, logger,
+            use_hybrid=use_hybrid,
+            use_streaming_speculative=use_streaming_speculative,
+        )
+        assert orch._use_hybrid is use_hybrid
+        assert orch._use_streaming_speculative is use_streaming_speculative

@@ -227,6 +227,16 @@ class StreamingRealtimeOrchestrator:
     SOURCE = _SOURCE
     SCHEMA_VERSION = _SCHEMA_VERSION
 
+    _HYBRID_ALLOWED_TRANSITIONS = frozenset({
+        # No self-transitions here — _transition_hybrid_state returns early
+        # when old == new_state, before reaching the assert.
+        ("AMBIENT_DUPLEX",      "EOU_PENDING_SWITCH"),
+        ("EOU_PENDING_SWITCH",  "CHAT_STREAMING"),
+        ("EOU_PENDING_SWITCH",  "AMBIENT_DUPLEX"),       # fallback
+        ("CHAT_STREAMING",      "RESETTING_TO_DUPLEX"),
+        ("RESETTING_TO_DUPLEX", "AMBIENT_DUPLEX"),
+    })
+
     def __init__(
         self,
         *,
@@ -261,6 +271,7 @@ class StreamingRealtimeOrchestrator:
         background_reasoner: "Any | None" = None,
         audio_tee_depth: int = _AUDIO_TEE_DEPTH,
         use_streaming_speculative: bool = False,
+        use_hybrid: bool = False,
     ) -> None:
         self._session_id = session_id
         self._logger = logger
@@ -378,6 +389,20 @@ class StreamingRealtimeOrchestrator:
         self._memory_event_payloads: OrderedDict[str, dict] = OrderedDict()
 
         self._use_streaming_speculative: bool = use_streaming_speculative
+        self._use_hybrid: bool = use_hybrid
+        # Mutual exclusion: hybrid mode cannot coexist with streaming-speculative.
+        # (No `use_chat_stream` flag exists in this codebase — the standalone
+        # chat-stream variant was never built; see plan-chat-stream-migration.md
+        # which was subsumed by hybrid Option C.)
+        assert not (use_hybrid and use_streaming_speculative), \
+            "use_hybrid mutex with use_streaming_speculative"
+
+        self._hybrid_state: str = "AMBIENT_DUPLEX"
+        self._duplex_drained_event = asyncio.Event()
+        self._chat_completed_event = asyncio.Event()
+        self._ambient_ready_event  = asyncio.Event()
+        self._mode_switch_lock     = asyncio.Lock()
+        self._latest_hybrid_audio_snapshot: bytes | None = None
 
         # Path B (§3.3): proposal ring buffer shared by T3 (writer) and T4/barge-in (readers).
         # Only used when _use_streaming_speculative is True; inert otherwise.
@@ -389,6 +414,14 @@ class StreamingRealtimeOrchestrator:
         self._seq = 0
         self._tasks: list[asyncio.Task[None]] = []
         self._started_event_id: str = ""
+
+    def _transition_hybrid_state(self, new_state: str) -> None:
+        old = self._hybrid_state
+        if old == new_state:
+            return  # self-transition is a no-op; doesn't reach the assert
+        assert (old, new_state) in self._HYBRID_ALLOWED_TRANSITIONS, \
+            f"illegal hybrid transition: {old} -> {new_state}"
+        self._hybrid_state = new_state
 
     # ------------------------------------------------------------------
     # Public API

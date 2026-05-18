@@ -112,11 +112,13 @@ class ForegroundModel:
         model: DuplexModel,
         session_id: str,
         logger: EventLogger,
+        use_hybrid: bool = False,
     ) -> None:
         self._model = model
         self._session_id = session_id
         self._logger = logger
         self._seq = 0
+        self._use_hybrid = use_hybrid
         # If the injected model is a MiniCPMStreamingModel (singleton loaded at
         # server start with no logger/session_id), bind it to this session so
         # its _emit_invocation calls log under the correct session and EventLogger.
@@ -199,6 +201,34 @@ class ForegroundModel:
                 if not proposal.caused_by:
                     proposal.caused_by = [frame_evt.event_id]
                 on_proposal(proposal)
+
+    async def chat_stream_turn(
+        self, audio, *, context_items=(), caused_by,
+    ) -> AsyncGenerator[ThinkerProposal, None]:
+        """Coroutine that awaits the inner async generator and returns a wrapped one.
+        Callers: gen = await fm.chat_stream_turn(...); async for p in gen: ...
+        """
+        frame_evt = self._emit("foreground_frame", caused_by, "raw_audio")
+        inner = await self._model.chat_stream_turn(  # type: ignore[attr-defined]
+            audio, context_items=context_items, caused_by=[frame_evt.event_id]
+        )
+        return self._wrap_chat_stream(inner, frame_evt)
+
+    async def _wrap_chat_stream(
+        self,
+        inner: AsyncGenerator[ThinkerProposal, None],
+        frame_evt: Event,
+    ) -> AsyncGenerator[ThinkerProposal, None]:
+        """Inner async generator: iterates model proposals and emits foreground_proposal events."""
+        async for proposal in inner:
+            if not proposal.caused_by:
+                proposal.caused_by = [frame_evt.event_id]
+            self._emit("foreground_proposal", [frame_evt.event_id], "model_output")
+            yield proposal
+
+    def request_chat_stop(self) -> None:
+        if hasattr(self._model, "request_chat_stop"):
+            self._model.request_chat_stop()  # type: ignore[union-attr]
 
     # ------------------------------------------------------------------
 

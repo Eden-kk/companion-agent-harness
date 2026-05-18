@@ -29,6 +29,8 @@ _BACKCHANNEL_THRESHOLD = 0.7
 _AUDIO_VISUAL_CONFLICT_THRESHOLD = 0.7
 _GROUNDING_CONFIDENCE_THRESHOLD = 0.5
 
+LONG_RESPONSE_GATE_CHARS = 25
+
 
 def decide(
     inputs: PolicyInputs,
@@ -114,6 +116,28 @@ def decide(
             allowed_prosody_tags=[],
             max_duration_ms=None,
             response_content_source="filler_with_tool_evidence",
+        )
+
+    # 3c. Long-response gate — substantive turn warrants full chat-stream response.
+    # Outranks BACKCHANNEL_DETECTED: if the user produced >= 25 chars, treat as
+    # turn-yielding regardless of backchannel score. user_addressed_agent is True
+    # (not bare truthiness): None means unknown and must NOT trigger this gate.
+    _transcript = inputs.user_transcript or ""
+    if (
+        len(_transcript) >= LONG_RESPONSE_GATE_CHARS
+        and not inputs.quiet_mode_active
+        and inputs.user_addressed_agent is True
+    ):
+        return SpeakDecision(
+            action_type="full_response",
+            primary_reason_code=ReasonCode.LONG_RESPONSE_GATED,
+            supporting_reason_codes=[ReasonCode.EOU_CONFIRMED],
+            redacted_explanation=None,
+            caused_by=caused_by,
+            budget_bucket="full_response",
+            allowed_prosody_tags=[],
+            max_duration_ms=None,
+            response_content_source="foreground_response_proposal",
         )
 
     # 4. EOU confirmed + high backchannel probability — user is just acknowledging.
@@ -290,6 +314,14 @@ def _threshold_path_for(
             path.append("tool_status:budget_exhausted")
         else:
             path.append("tool_status:filler_permitted")
+        return path
+    _transcript2 = inputs.user_transcript or ""
+    if (
+        len(_transcript2) >= LONG_RESPONSE_GATE_CHARS
+        and not inputs.quiet_mode_active
+        and inputs.user_addressed_agent is True
+    ):
+        path.append(f"long_response_gate:>={LONG_RESPONSE_GATE_CHARS}")
         return path
     if p_backchannel >= backchannel_threshold:
         path.append("backchannel_threshold:exceeded")

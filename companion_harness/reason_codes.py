@@ -105,6 +105,7 @@ class ReasonCode(Enum):
     TOOL_PROGRESS_EVIDENCE_MISSING = "TOOL_PROGRESS_EVIDENCE_MISSING"
     MISSING_SIGNAL_PRODUCER        = "missing_signal_producer"
     EMPTY_TRANSCRIPT               = "EMPTY_TRANSCRIPT"
+    LONG_RESPONSE_GATED            = "LONG_RESPONSE_GATED"
 
 
 ReasonCode.RUBRIC_VIOLATION.__doc__               = (
@@ -207,4 +208,10 @@ ReasonCode.EMPTY_TRANSCRIPT.__doc__ = (
     "speak.  Policy gate short-circuits before the addressing classifier runs "
     "so the audit log accurately reflects 'no speech', not 'speech not directed "
     "at agent'.  See 2026-05-17 phantom-silence debugger finding."
+)
+ReasonCode.LONG_RESPONSE_GATED.__doc__ = (
+    "Policy approved a substantive turn-based response; mode switches from "
+    "ambient duplex to chat-stream. Fires when len(user_transcript) >= "
+    "LONG_RESPONSE_GATE_CHARS (25) AND not quiet_mode_active AND existing "
+    "speak-permission conditions hold. Outranks BACKCHANNEL_DETECTED."
 )
