@@ -131,6 +131,7 @@ KEY_ADAPTER_LABELS: web.AppKey[dict] = web.AppKey("adapter_labels", dict)
 # True when --minicpm-streaming-raw is set. Mutually exclusive with
 # --minicpm-only and --use-stubs. DEMO MODE: bypasses SpeakPolicy + audit gates.
 KEY_STREAMING_RAW_MODE: web.AppKey[bool] = web.AppKey("streaming_raw_mode", bool)
+KEY_USE_HYBRID: web.AppKey[bool] = web.AppKey("use_hybrid", bool)
 KEY_BACKGROUND_REASONER: web.AppKey[object] = web.AppKey("background_reasoner", object)
 KEY_EVENT_RATE_COUNTER: web.AppKey[object] = web.AppKey("event_rate_counter", object)
 KEY_START_TIME: web.AppKey[float] = web.AppKey("start_time", float)
@@ -731,6 +732,7 @@ async def _handle_ingest_ws(request: web.Request) -> web.WebSocketResponse:
             backchannel_model=request.app[KEY_BACKCHANNEL_MODEL],
             asr_model=request.app[KEY_ASR_MODEL],
             use_stubs=request.app[KEY_USE_STUBS],
+            use_hybrid=request.app[KEY_USE_HYBRID],
             audio_out_broker=request.app[KEY_AUDIO_OUT_BROKER],  # type: ignore[arg-type]
             tts_adapter=request.app[KEY_TTS_ADAPTER],
             vision_sidecar=sidecar,
@@ -1406,6 +1408,7 @@ def build_app(
     embedder: Any = None,
     diarization_adapter_factory: Any = None,
     streaming_raw_mode: bool = False,
+    use_hybrid: bool = False,
     seam_defaults: dict[str, bool] | None = _BASIC_STACK_SEAM_DEFAULTS,
     blob_retention_days: int = 30,
     event_log_maxsize: int = 16384,
@@ -1467,6 +1470,7 @@ def build_app(
     app[KEY_ACTIVE_PIPELINES] = {}
     app[KEY_USE_STUBS] = use_stubs
     app[KEY_STREAMING_RAW_MODE] = streaming_raw_mode
+    app[KEY_USE_HYBRID] = use_hybrid
     app[KEY_BACKGROUND_REASONER] = _construct_background_reasoner()
     app[KEY_VAD_MODEL] = None
     app[KEY_SMART_TURN_MODEL] = None
@@ -1922,6 +1926,9 @@ def _load_asr_lexicon_backchannel_model(language: str | None = None) -> Any:
 _KOKORO_DEFAULT_MODEL = "/raid/yid042/models/kokoro/kokoro-v0_19.onnx"
 _KOKORO_DEFAULT_VOICES = "/raid/yid042/models/kokoro/voices.json"
 
+# Default CosyVoice2 model directory on b200.
+_COSYVOICE_DEFAULT_MODEL_DIR = "/raid/yid042/models/cosyvoice2/CosyVoice2-0.5B"
+
 
 def _load_kokoro_tts_adapter() -> Any:
     """Lazy import + construct KokoroTtsAdapter singleton. b200 only.
@@ -1937,6 +1944,30 @@ def _load_kokoro_tts_adapter() -> Any:
     return KokoroTtsAdapter(
         model_path=model_path,
         voices_path=voices_path,
+        warmup=True,
+    )
+
+
+def _load_cosyvoice2_tts_adapter(
+    reference_wav: str | None = None,
+    reference_text: str | None = None,
+    language: str = "zh",
+    sft_speaker: str = "中文女",
+) -> Any:
+    """Lazy import + construct CosyVoice2TtsAdapter. b200 only.
+
+    Requires cosyvoice installed from the FunAudioLLM git clone (NOT the
+    stale PyPI cosyvoice==0.0.8 — that pulls torch 2.12 which conflicts).
+    See requirements-b200.txt for pinned install instructions.
+    """
+    import os  # noqa: WPS433
+    from companion_harness.tts_cosyvoice2 import CosyVoice2TtsAdapter  # noqa: WPS433
+    model_dir = os.environ.get("COSYVOICE_MODEL_DIR", _COSYVOICE_DEFAULT_MODEL_DIR)
+    return CosyVoice2TtsAdapter(
+        model_dir=model_dir,
+        reference_wav=reference_wav,
+        reference_text=reference_text,
+        language=language,
         warmup=True,
     )
 
@@ -2010,13 +2041,33 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--tts-adapter",
         dest="tts_adapter",
-        choices=["kokoro", "native_minicpm"],
+        choices=["kokoro", "native_minicpm", "cosyvoice2"],
         default="kokoro",
         help=(
             "TTS adapter to load at startup. "
             "'kokoro' (default): Kokoro-82M-ONNX via KokoroTtsAdapter. "
-            "'native_minicpm': MiniCPM-o native duplex TTS via MiniCPMNativeTtsAdapter."
+            "'native_minicpm': MiniCPM-o native duplex TTS via MiniCPMNativeTtsAdapter. "
+            "'cosyvoice2': CosyVoice2-0.5B bilingual TTS via CosyVoice2TtsAdapter."
         ),
+    )
+    parser.add_argument(
+        "--cosyvoice-reference-wav",
+        dest="cosyvoice_reference_wav",
+        default=None,
+        help="Path to reference WAV for CosyVoice2 zero-shot voice cloning (16 kHz mono, 3-10 s). "
+             "Requires --cosyvoice-reference-text. If unset, uses inference_sft with '中文女'.",
+    )
+    parser.add_argument(
+        "--cosyvoice-reference-text",
+        dest="cosyvoice_reference_text",
+        default=None,
+        help="Transcript of --cosyvoice-reference-wav (required for zero-shot mode).",
+    )
+    parser.add_argument(
+        "--cosyvoice-sft-speaker",
+        dest="cosyvoice_sft_speaker",
+        default="中文女",
+        help="Built-in CosyVoice2-0.5B speaker ID for SFT mode (default: '中文女').",
     )
     parser.add_argument(
         "--language",
@@ -2176,6 +2227,17 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--use-hybrid",
+        "--no-use-hybrid",
+        dest="use_hybrid",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Enable hybrid duplex+chat-stream mode (default ON). "
+            "Pass --no-use-hybrid to revert to duplex-only Path A."
+        ),
+    )
+    parser.add_argument(
         "--torch-compile",
         dest="torch_compile",
         action="store_true",
@@ -2284,11 +2346,17 @@ def main(argv: list[str] | None = None) -> int:
             vad_factory = _load_silero_vad_model
             smart_turn_factory = _load_pipecat_smart_turn_model
             backchannel_factory = lambda: _load_asr_lexicon_backchannel_model(_asr_lang)
-            tts_factory = (
-                _native_tts_placeholder
-                if args.tts_adapter == "native_minicpm"
-                else _load_kokoro_tts_adapter
-            )
+            _tts_factory_map = {
+                "native_minicpm": _native_tts_placeholder,
+                "kokoro": _load_kokoro_tts_adapter,
+                "cosyvoice2": lambda: _load_cosyvoice2_tts_adapter(  # noqa: E731
+                    reference_wav=args.cosyvoice_reference_wav,
+                    reference_text=args.cosyvoice_reference_text,
+                    language=args.language if args.language != "auto" else "zh",
+                    sft_speaker=args.cosyvoice_sft_speaker,
+                ),
+            }
+            tts_factory = _tts_factory_map.get(args.tts_adapter, _load_kokoro_tts_adapter)
             asr_factory = lambda: _load_asr_model(_asr_lang)
     else:
         vad_factory = smart_turn_factory = backchannel_factory = tts_factory = asr_factory = None
@@ -2356,7 +2424,11 @@ def main(argv: list[str] | None = None) -> int:
             if s in HOT_SEAMS:
                 seam_defaults[s] = False
 
-    tts_name = "MiniCPM-o native TTS" if args.tts_adapter == "native_minicpm" else "Kokoro-82M-ONNX"
+    tts_name = {
+        "native_minicpm": "MiniCPM-o native TTS",
+        "kokoro": "Kokoro-82M-ONNX",
+        "cosyvoice2": "CosyVoice2-0.5B",
+    }.get(args.tts_adapter, "Kokoro-82M-ONNX")
     app = build_app(
         blob_dir,
         live_pipeline_enabled=args.live_pipeline,
@@ -2377,6 +2449,7 @@ def main(argv: list[str] | None = None) -> int:
         embedder=real_embedder,
         diarization_adapter_factory=real_diarization_adapter_factory,
         streaming_raw_mode=args.minicpm_streaming_raw,
+        use_hybrid=args.use_hybrid,
         seam_defaults=seam_defaults,
         blob_retention_days=args.blob_retention_days,
         event_log_maxsize=args.event_log_maxsize,
