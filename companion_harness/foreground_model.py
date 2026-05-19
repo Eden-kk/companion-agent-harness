@@ -244,6 +244,8 @@ class ForegroundModel:
         return self._model.restore_speculative_snapshot(caused_by=caused_by)  # type: ignore[union-attr]
 
     def has_speculative_snapshot(self) -> bool:
+        # Returns False (not raises) so orchestrator can use it as a guard;
+        # restore_speculative_snapshot still raises if called without this guard.
         if not hasattr(self._model, "has_speculative_snapshot"):
             return False
         return self._model.has_speculative_snapshot()  # type: ignore[union-attr]

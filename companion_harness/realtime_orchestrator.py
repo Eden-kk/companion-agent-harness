@@ -1397,6 +1397,11 @@ class StreamingRealtimeOrchestrator:
                     return
                 # Wait for new ring entry or completion signal.
                 self._drain_new_entry_event.clear()
+                # Re-check: drain_complete_event may have fired between the
+                # check above and the clear.
+                if drain_complete_event.is_set():
+                    await text_queue.put(None)
+                    return
                 wait_new = asyncio.get_running_loop().create_task(
                     self._drain_new_entry_event.wait()
                 )
@@ -1455,8 +1460,8 @@ class StreamingRealtimeOrchestrator:
         finally:
             self._drain_complete_callbacks.pop(response_id, None)
             self._audio_output.set_generation_task(None)
+            self._active_drain_task = None
             if self._drain_state != _DrainState.BARGE_IN_PENDING:
-                self._active_drain_task = None
                 self._active_response_id = None
                 self._drain_state = _DrainState.IDLE
 
@@ -1591,9 +1596,7 @@ class StreamingRealtimeOrchestrator:
                         self._proposal_ring[:] = [
                             e for e in self._proposal_ring if e[1] != rid
                         ]
-                        self._drain_complete_callbacks.pop(rid, None)
-                    if hasattr(self._foreground_model, "has_speculative_snapshot") and \
-                            self._foreground_model.has_speculative_snapshot():
+                    if self._foreground_model.has_speculative_snapshot():
                         self._foreground_model.restore_speculative_snapshot(
                             caused_by=[policy_evt_id]
                         )
@@ -1606,6 +1609,7 @@ class StreamingRealtimeOrchestrator:
                         ),
                         payload_inline={"response_id": rid or ""},
                     ))
+                    # _active_drain_task may already be None if task completed naturally.
                     self._active_drain_task = None
                     self._active_response_id = None
                     self._drain_state = _DrainState.IDLE
@@ -1843,7 +1847,7 @@ class StreamingRealtimeOrchestrator:
                     ),
                     payload_inline={
                         "drain_active": self._active_drain_task is not None
-                            and not (self._active_drain_task.done() if self._active_drain_task else True),
+                            and not self._active_drain_task.done(),
                         "response_id": self._active_response_id or "",
                         "signal_evt_id": signal_evt_id,
                     },

@@ -417,3 +417,85 @@ async def test_policy_commit_dispatches_immediately_no_grace_window(tmp_path: Pa
     for evt in approved_events:
         assert "drain_active" in (evt.payload_inline or {})
         assert "response_id" in (evt.payload_inline or {})
+
+
+@pytest.mark.asyncio
+async def test_on_response_started_complete_race(tmp_path: Path) -> None:
+    """on_response_started then synchronous on_response_complete before any await.
+
+    Exercises the pre-created drain_complete_event: the liveness fix ensures
+    _feed_queue exits cleanly when drain_complete_event is already set by the
+    time the clear() runs.
+    """
+    logger, _ = _make_logger()
+    await logger.start()
+
+    ingest = InputIngest(logger=logger, blob_dir=tmp_path)
+    session = ingest.open_session("test-path-b-race")
+    audio_in: asyncio.Queue[tuple[bytes, str]] = asyncio.Queue(maxsize=256)
+
+    class _ImmediateCompleteModel:
+        """Fires on_response_started then on_response_complete synchronously."""
+
+        infer_stream_continuous_call_count = 0
+
+        def infer(self, audio_frame: bytes, video_frame: bytes | None = None) -> ThinkerProposal | None:
+            return None
+
+        def set_context(self, items: Any) -> None:
+            pass
+
+        async def infer_stream(
+            self,
+            frame_iter: AsyncIterator[tuple[bytes, bytes | None]],
+            caused_by: list[str],
+            context_items: tuple = (),
+        ) -> AsyncGenerator[ThinkerProposal, None]:
+            async def _gen() -> AsyncGenerator[ThinkerProposal, None]:
+                async for _ in frame_iter:
+                    pass
+                return
+                yield  # noqa: make generator
+
+            return _gen()
+
+        async def infer_stream_continuous(
+            self,
+            frame_iter: AsyncIterator[tuple[bytes, bytes | None]],
+            caused_by: list[str],
+            *,
+            on_proposal: Callable[[ThinkerProposal, str], None],
+            on_response_complete: Callable[[str], None],
+            on_response_started: Callable[[str], None] | None = None,
+        ) -> None:
+            _ImmediateCompleteModel.infer_stream_continuous_call_count += 1
+            async for _ in frame_iter:
+                pass
+            # Fire started then complete synchronously — no await in between.
+            if on_response_started is not None:
+                on_response_started("race-rid")
+            on_response_complete("race-rid")
+
+    model = _ImmediateCompleteModel()
+    orch = _build_orch(
+        session_id="sb-race",
+        logger=logger,
+        ingest_session=session,
+        audio_in=audio_in,
+        model=model,
+        speak_policy=_SilencePolicy(),
+    )
+
+    await orch.start()
+
+    frames = ([_pcm_speech()] * 5) + ([_pcm_silence()] * 12)
+    for i, frame in enumerate(frames):
+        evt = ingest.ingest_chunk(session, frame, _meta(i))
+        await audio_in.put((frame, evt.event_id))
+
+    # Allow drain task (if spawned) to complete without hanging.
+    await asyncio.sleep(0.3)
+    await orch.stop()
+
+    # After stop, _active_drain_task must be cleared (not stuck).
+    assert orch._active_drain_task is None
