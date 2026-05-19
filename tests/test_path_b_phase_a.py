@@ -715,3 +715,200 @@ async def test_drain_finally_preserves_state_on_barge_in_pending() -> None:
     )
 
     await orch.stop()
+
+
+# ---------------------------------------------------------------------------
+# Phase D: barge-in handler (snapshot-only per plan §3.5 + A.5 fallback)
+# ---------------------------------------------------------------------------
+
+
+def _build_orch_path_b(
+    *,
+    session_id: str,
+    logger: EventLogger,
+    ingest_session: Any,
+    audio_in: asyncio.Queue,
+    inner: Any,
+) -> StreamingRealtimeOrchestrator:
+    fg = ForegroundModel(model=inner, session_id=session_id, logger=logger)
+    vad = VADDetector(model=lambda _: 0.9, session_id=session_id, logger=logger,
+                      speech_threshold=0.5, silence_onset_ms=64, frame_duration_ms=32)
+    smart_turn = SmartTurnDetector(model=lambda _: (0.9, 0.1), session_id=session_id, logger=logger)
+    bc = BackchannelClassifier(model=lambda _: 0.0, session_id=session_id, logger=logger)
+    controller = AudioOutputController(session_id=session_id, logger=logger, sink=_noop_sink_c)
+    return StreamingRealtimeOrchestrator(
+        session_id=session_id,
+        logger=logger,
+        ingest_session=ingest_session,
+        audio_in=audio_in,
+        vad_detector=vad,
+        smart_turn_detector=smart_turn,
+        backchannel_classifier=bc,
+        policy_inputs_builder=lambda sig, hist: PolicyInputs(
+            user_speaking=True, eou_probability=sig.p_done, assistant_speaking=False,
+            scene_change_score=0.0, deictic_reference=False, user_addressed_agent=True,
+            urgency_score=0.0, proactivity_budget_remaining={}, privacy_mode="normal",
+            current_task_mode="normal", social_mode="user_addressing_agent",
+            risk_mode="normal", cooldown_state={}, attachment_risk_level=0.0,
+            audio_visual_conflict_score=0.0, grounding_confidence=1.0, deictic_ambiguous=False,
+        ),
+        speak_policy=_FullResponsePolicyC(),
+        foreground_model=fg,
+        audio_output=controller,
+        tts_adapter=_StreamingTtsStub(),
+        use_streaming_speculative=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_barge_in_during_active_drain_cancels_and_restores(tmp_path: Path) -> None:
+    """Barge-in fires during active drain → drain cancelled, ring discarded, snapshot restored."""
+    logger, received = _make_logger_c()
+    await logger.start()
+
+    ingest = InputIngest(logger=logger, blob_dir=tmp_path)
+    session = ingest.open_session("phase-d-barge-active")
+    audio_in: asyncio.Queue[tuple[bytes, str]] = asyncio.Queue(maxsize=256)
+
+    inner = MagicMock()
+    inner.save_speculative_snapshot.return_value = object()
+    inner.restore_speculative_snapshot.return_value = True
+    inner.has_speculative_snapshot.return_value = True
+    inner.infer.return_value = None
+    inner.set_context.return_value = None
+
+    async def _isc(frame_iter, caused_by, *, on_proposal, on_response_complete, on_response_started=None):  # type: ignore
+        async for _ in frame_iter:
+            pass
+
+    inner.infer_stream_continuous = _isc
+
+    orch = _build_orch_path_b(
+        session_id="pd-active",
+        logger=logger,
+        ingest_session=session,
+        audio_in=audio_in,
+        inner=inner,
+    )
+
+    rid = "r-phase-d-test"
+    orch._active_response_id = rid
+    orch._drain_state = _DrainState.DRAINING
+    orch._proposal_ring = [
+        (0, rid, _proposal("hello")),
+        (1, rid, _proposal("world")),
+        (2, "other-rid", _proposal("keep")),
+    ]
+
+    never_done = asyncio.Event()
+    drain_task = asyncio.get_running_loop().create_task(
+        asyncio.wait_for(never_done.wait(), timeout=60.0),
+        name="fake-drain",
+    )
+    orch._active_drain_task = drain_task
+    orch._barge_in_in_flight = True
+
+    await orch._fire_barge_in("onset-evt-1")
+
+    assert drain_task.done()
+    assert all(r != rid for (_, r, _) in orch._proposal_ring), "ring entries for active rid must be discarded"
+    assert len(orch._proposal_ring) == 1
+    inner.restore_speculative_snapshot.assert_called_once_with(caused_by=["onset-evt-1"])
+    assert orch._active_drain_task is None
+    assert orch._active_response_id is None
+    assert orch._drain_state == _DrainState.IDLE
+    assert not orch._barge_in_in_flight
+    await asyncio.sleep(0.05)
+    assert any(e.event_type == "path_b_barge_in" for e in received), \
+        f"expected path_b_barge_in event, got {[e.event_type for e in received]}"
+
+    await orch.stop()
+
+
+@pytest.mark.asyncio
+async def test_barge_in_no_active_drain_falls_through(tmp_path: Path) -> None:
+    """Path-B mode ON (use_streaming_speculative=True) + _active_drain_task=None → Path-B guard skipped, falls through to hybrid no-op path."""
+    logger, received = _make_logger_c()
+    await logger.start()
+
+    ingest = InputIngest(logger=logger, blob_dir=tmp_path)
+    session = ingest.open_session("phase-d-fallthrough")
+    audio_in: asyncio.Queue[tuple[bytes, str]] = asyncio.Queue(maxsize=256)
+
+    model = _RespondingModel(response_text="noop", trigger_after=99)
+    orch = _build_orch_c(
+        session_id="pd-fallthrough",
+        logger=logger,
+        ingest_session=session,
+        audio_in=audio_in,
+        model=model,
+        speak_policy=_FullResponsePolicyC(),
+    )
+
+    assert orch._active_drain_task is None
+    orch._barge_in_in_flight = True
+
+    await orch._fire_barge_in("onset-evt-2")
+
+    await asyncio.sleep(0.05)
+    assert not any(e.event_type == "path_b_barge_in" for e in received), \
+        "path_b_barge_in must not fire when no active drain task"
+    assert any(e.event_type == "barge_in_trigger_no_op" for e in received), \
+        f"expected barge_in_trigger_no_op, got {[e.event_type for e in received]}"
+    assert not orch._barge_in_in_flight
+
+    await orch.stop()
+
+
+@pytest.mark.asyncio
+async def test_barge_in_no_snapshot_skips_restore(tmp_path: Path) -> None:
+    """Barge-in during drain when has_speculative_snapshot() is False → no restore, state cleared."""
+    logger, received = _make_logger_c()
+    await logger.start()
+
+    ingest = InputIngest(logger=logger, blob_dir=tmp_path)
+    session = ingest.open_session("phase-d-no-snap")
+    audio_in: asyncio.Queue[tuple[bytes, str]] = asyncio.Queue(maxsize=256)
+
+    inner = MagicMock()
+    inner.has_speculative_snapshot.return_value = False
+    inner.restore_speculative_snapshot.return_value = True
+    inner.infer.return_value = None
+    inner.set_context.return_value = None
+
+    async def _isc(frame_iter, caused_by, *, on_proposal, on_response_complete, on_response_started=None):  # type: ignore
+        async for _ in frame_iter:
+            pass
+
+    inner.infer_stream_continuous = _isc
+
+    orch = _build_orch_path_b(
+        session_id="pd-nosnap",
+        logger=logger,
+        ingest_session=session,
+        audio_in=audio_in,
+        inner=inner,
+    )
+
+    rid = "r-nosnap"
+    orch._active_response_id = rid
+    orch._drain_state = _DrainState.DRAINING
+    orch._proposal_ring = [(0, rid, _proposal("snap me"))]
+
+    never_done = asyncio.Event()
+    drain_task = asyncio.get_running_loop().create_task(
+        asyncio.wait_for(never_done.wait(), timeout=60.0),
+        name="fake-drain-nosnap",
+    )
+    orch._active_drain_task = drain_task
+    orch._barge_in_in_flight = True
+
+    await orch._fire_barge_in("onset-evt-3")
+
+    inner.restore_speculative_snapshot.assert_not_called()
+    assert orch._active_drain_task is None
+    assert orch._active_response_id is None
+    assert orch._drain_state == _DrainState.IDLE
+    assert not orch._barge_in_in_flight
+
+    await orch.stop()

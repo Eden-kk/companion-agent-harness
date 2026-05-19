@@ -2203,6 +2203,45 @@ class StreamingRealtimeOrchestrator:
         in the same event loop. Safe by virtue of single-threaded asyncio; do NOT
         call generation_task from a different OS thread.
         """
+        # Path-B branch — prepended; falls through to hybrid handler if not applicable.
+        # Scope-reduced per plan §3.5 + A.5 verdict: snapshot-only (no uttered-text re-injection).
+        if (
+            self._use_streaming_speculative
+            and self._active_drain_task is not None
+            and not self._active_drain_task.done()
+        ):
+            self._drain_state = _DrainState.BARGE_IN_PENDING
+            self._active_drain_task.cancel()
+            # Task.done() True → drain already cleaned up in its own finally; fall through to hybrid path.
+            try:
+                await self._active_drain_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            # _generation_task is None here (drain finally cleared it); emits cancel events for audit trail only.
+            try:
+                self._audio_output.cancel_generation(caused_by=[onset_evt_id])
+            except Exception:
+                pass
+            active_rid = self._active_response_id
+            if active_rid is not None:
+                self._proposal_ring = [
+                    (seq, rid, prop) for (seq, rid, prop) in self._proposal_ring
+                    if rid != active_rid
+                ]
+            if self._foreground_model.has_speculative_snapshot():
+                self._foreground_model.restore_speculative_snapshot(caused_by=[onset_evt_id])
+            self._logger.log(self._make_event(
+                event_id=self._new_event_id(),
+                event_type="path_b_barge_in",
+                caused_by=[onset_evt_id],
+                payload_kind="signal",
+            ))
+            self._active_drain_task = None
+            self._active_response_id = None
+            self._drain_state = _DrainState.IDLE
+            self._barge_in_in_flight = False
+            return
+
         play_task = self._audio_output.generation_task
         if play_task is None or play_task.done():
             if self._use_hybrid and self._hybrid_state in ("EOU_PENDING_SWITCH", "CHAT_STREAMING"):
