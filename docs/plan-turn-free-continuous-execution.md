@@ -111,6 +111,18 @@ Bit-identical Tier-B replay requires a canonical, scalar, ordered serialization 
 
 **Scope.** Tune `chunk_ms` → ~200 ms and `listen_prob_scale` (production value biases toward listening — invariant #8).
 
+**`chunk_ms` validated by sweep probe** (`scripts/probe_chunk_ms_sweep.py`, 2026-05-19, b200/MiniCPM-o 4.5). Sweep {1000, 500, 250, 200, 100} ms, fresh `as_duplex(chunk_ms=…)` per size:
+
+| chunk_ms | coherent | on-topic | mean cost_llm | note |
+|---|---|---|---|---|
+| 1000 | ✓ | ✓ | 1202 ms | baseline |
+| 500 | ✓ | ✓ | 1006 ms | |
+| 250 | ✓ | ✓ | 365 ms | |
+| **200** | ✓ | ✓ ("The moon is Earth's only natural satellite, orbiting us…") | **209 ms** | **target — viable** |
+| 100 | ✓ (fluent) | ✗ (drifted to "what would you like to know?") | 149 ms | comprehension degrades; compute 149 ms > 100 ms chunk = sub-real-time |
+
+**Conclusion: ~200 ms is the validated target and the practical floor.** At 200 ms the model stays coherent *and on-topic*, with per-chunk latency (~209 ms) ≈ the chunk duration (borderline real-time on b200 without `torch.compile` — confirm headroom). At 100 ms the output stays fluent but the model mis-comprehends the input (response drifts off-topic) and compute exceeds the chunk budget. **Do not go below ~200 ms.** Smaller `chunk_ms` also lowers the per-chunk barge-in latency floor (1202 ms → 209 ms), which is the point.
+
 **Precedence rule (design §9).** Policy gate is authoritative; `listen_prob_scale` only biases the model's upstream `is_listen` sampling; gate-closed ⇒ silence regardless of model preference. Encode this ordering in the gate.
 
 **Success criterion.** `test_continuous_latency_and_proactivity`: with `chunk_ms≈200`, barge-in p95 within the Stage-1 budget and Stage-6 `false_proactive_utterances_per_hour` within target on the fixture set. This is the programmatic merge gate.

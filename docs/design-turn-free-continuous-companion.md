@@ -212,7 +212,7 @@ Tier-B logs and replays this tuple through the gate rules → bit-identical `Spe
 
 ## 8. The honest limit on "simultaneous" (the 2605.12460 caveat)
 
-- **Fine-grained interleaving** (chunk-level, prefill-then-generate, ~200 ms–1 s): ✅ achievable by relaxing the gate + shrinking `chunk_ms` to ~200 ms. At that granularity it *feels* simultaneous to a human; sufficient for free-talk barge-in.
+- **Fine-grained interleaving** (chunk-level, prefill-then-generate, ~200 ms–1 s): ✅ achievable by relaxing the gate + shrinking `chunk_ms` to ~200 ms. At that granularity it *feels* simultaneous to a human; sufficient for free-talk barge-in. **Sweep-validated** (`scripts/probe_chunk_ms_sweep.py`, exec-plan PR5a): the model stays coherent and on-topic down to 200 ms; 100 ms degrades comprehension and goes sub-real-time, so ~200 ms is the floor.
 - **True simultaneity** (emit speech tokens *while* consuming audio tokens in the **same forward pass**): ❌ not achievable with MiniCPM-o. Its chunk is serial: prefill, then generate. No parallel-head decoding.
 
 The 2605.12460 / Moshi approach (parallel heads sharing a backbone, depth transformer) is the path to true simultaneity but requires that architecture, which MiniCPM-o doesn't have and can't gain without retraining. **Realistic target: fine-grained chunk interleaving at ~200 ms, not literal same-pass simultaneity.** Good enough for free-talk barge-in; not good enough for simultaneous translation (CueSpeak). If CueSpeak-class simultaneity becomes a requirement, that's an explicit model swap, not a harness change — decide it deliberately, not by surprise.
