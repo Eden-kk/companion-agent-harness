@@ -164,6 +164,16 @@ class MiniCPMStreamingModel:
         self._seq = 0
         self._inference_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="minicpm-infer")
 
+    def __del__(self) -> None:
+        # Singleton lives for the process, but release the executor thread on GC
+        # to avoid a dangling worker thread (ResourceWarning) in tests/teardown.
+        executor = getattr(self, "_inference_executor", None)
+        if executor is not None:
+            try:
+                executor.shutdown(wait=False)
+            except Exception:
+                pass
+
     def set_session(self, session_id: str, logger: "EventLogger") -> None:
         """Bind this singleton model to a new ingest session.
 
@@ -402,7 +412,7 @@ class MiniCPMStreamingModel:
                         return int(c.key_cache[0].shape[2])
                     if isinstance(c, tuple) and len(c) > 0:
                         return int(c[0][0].shape[2])
-                except Exception:
+                except (AttributeError, IndexError, TypeError):
                     return None
                 return None
 
