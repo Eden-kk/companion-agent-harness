@@ -133,6 +133,7 @@ class MiniCPMStreamingModel:
         enable_torch_compile: bool = False,
         sliding_window_mode: str = "off",
         chunk_ms: int = 1000,
+        listen_prob_scale: float | None = None,
         logger: "EventLogger | None" = None,
         session_id: str = "",
     ) -> None:
@@ -147,6 +148,7 @@ class MiniCPMStreamingModel:
         ).eval().cuda()
         self._base = base
         self._chunk_samples = _SAMPLE_RATE * chunk_ms // 1000
+        self._listen_prob_scale = listen_prob_scale  # None → duplex default; gate enforces silence-wins-ties (#8), so production stays neutral
         if enable_torch_compile:
             try:
                 self._base.llm = torch.compile(
@@ -405,6 +407,10 @@ class MiniCPMStreamingModel:
         while self._scratchpad_queue:                  # executor thread; each popleft GIL-atomic (late appends drain on next _gpu_work)
             duplex.streaming_prefill(text_list=[self._scratchpad_queue.popleft()])
 
+    def _effective_listen_prob_scale(self, duplex) -> float:
+        # Continuous-path override; None falls back to the duplex's own value (current behavior).
+        return self._listen_prob_scale if self._listen_prob_scale is not None else duplex.listen_prob_scale
+
     async def stream_chunks(
         self,
         audio_in: "asyncio.Queue[tuple[bytes, str]]",
@@ -459,7 +465,7 @@ class MiniCPMStreamingModel:
                         temperature=duplex.temperature,
                         top_k=duplex.top_k,
                         top_p=duplex.top_p,
-                        listen_prob_scale=duplex.listen_prob_scale,
+                        listen_prob_scale=self._effective_listen_prob_scale(duplex),
                         text_repetition_penalty=duplex.text_repetition_penalty,
                         text_repetition_window_size=duplex.text_repetition_window_size,
                     )
