@@ -375,6 +375,27 @@ class AudioOutBroker:
             self._queues.remove(q)
         self._drops_by_queue.pop(id(q), None)
 
+    async def publish_flush(self, session_id: str) -> None:
+        """Broadcast an audio_flush control message to all session subscribers.
+
+        Tells the browser to stop and discard all scheduled audio — used on
+        barge-in so the browser drops queued chunks immediately.
+        Mirrors publish()'s broadcast/drop-oldest logic (same queue handling).
+        """
+        msg = {"type": "audio_flush", "session_id": session_id}
+        for q in list(self._queues):
+            try:
+                q.put_nowait(msg)
+            except asyncio.QueueFull:
+                try:
+                    q.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+                try:
+                    q.put_nowait(msg)
+                except asyncio.QueueFull:
+                    pass
+
     def publish(self, session_id: str, seq: int, chunk: bytes) -> None:
         self._counter["chunks_sent"] = self._counter.get("chunks_sent", 0) + 1
         msg = {

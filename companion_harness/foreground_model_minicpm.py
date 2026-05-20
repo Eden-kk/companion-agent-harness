@@ -178,8 +178,11 @@ class MiniCPMStreamingModel:
         # first chunk needs extra headroom at chunk_ms=200).
         if native_audio:
             _patch_torchaudio()
+            # Native audio REQUIRES chunk_ms=1000 — the model is trained at 1000 and
+            # produces NO speech at chunk_ms=200 (verified: 0 speak chunks). The ~1s
+            # latency is inherent to native audio; low-latency needs external TTS on text.
             self._duplex = base.as_duplex(generate_audio=True, sliding_window_mode=sliding_window_mode, chunk_ms=1000)
-            self._chunk_samples = 16000  # native_audio forces chunk_ms=1000 (probe-proven audio config)
+            self._chunk_samples = 16000
             import tempfile, os as _os, soundfile as _sf  # noqa: WPS433
             _silence = np.zeros(16000, dtype=np.float32)
             _fd, _ref_path = tempfile.mkstemp(suffix=".wav", prefix="minicpm_native_ref_")

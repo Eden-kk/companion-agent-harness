@@ -118,6 +118,12 @@ class AudioOutputController:
         # forever after a barge-in → every subsequent listen chunk re-fires barge-in.
         # Idempotent for the turn-based path (play() also clears it on _stop_event).
         self._playing = False
+        _flush = getattr(self._sink, "flush", None)
+        if _flush is not None:
+            try:
+                asyncio.get_running_loop().create_task(_flush())
+            except RuntimeError:
+                pass  # no running loop (e.g. sync test context) — skip
         return evt.event_id
 
     def set_generation_task(self, task: asyncio.Task[None] | None) -> None:

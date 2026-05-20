@@ -236,6 +236,7 @@ class AudioOutSinkTarget(Protocol):
     """
 
     def publish(self, session_id: str, seq: int, chunk: bytes) -> None: ...
+    async def publish_flush(self, session_id: str) -> None: ...
 
 
 class WebSocketAudioSink:
@@ -257,6 +258,9 @@ class WebSocketAudioSink:
     async def __call__(self, chunk: bytes) -> None:
         self._seq += 1
         self._broker.publish(self._session_id, self._seq, chunk)
+
+    async def flush(self) -> None:
+        await self._broker.publish_flush(self._session_id)
 
 
 # ---------------------------------------------------------------------------
