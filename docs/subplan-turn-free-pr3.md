@@ -70,7 +70,7 @@ This is the subset of the real `AudioOutputController` interface PR3a needs (the
 | File | Change |
 |---|---|
 | `companion_harness/continuous_orchestrator.py` | Replace `_policy_hook` placeholder with `_act` (§2); build `PerChunkPolicyInputs` + call `decide_chunk` + emit `policy_decision` in `run()`; ctor gains injected `audio_output` + `privacy_mode`/`social_mode`/`budget_full_response_remaining` params + `_AudioOutputProtocol`. Imports `decide_chunk`, `PerChunkPolicyInputs`. |
-| `companion_harness/v0_1g_event_schema.py` | Register `policy_decision` if not already present (it exists for the turn-based path — confirm; add only if missing). |
+| `companion_harness/v0_1g_event_schema.py` | **Add `policy_decision`** — it is ABSENT today (critic-confirmed; only referenced in a prose note). Register in `EVENT_TYPE_SCHEMAS` + `EXPECTED_EVENT_TYPES` with `payload_kind="signal"`, `subject_class="self"`, `sensitivity="safe"`, `retention_policy_id="signal_default_30d"`. |
 | `tests/test_continuous_pr3a_act.py` (new — distinct file) | CPU success test (§5). |
 
 ## 5. Success criterion (sole programmatic gate)
@@ -93,7 +93,7 @@ This is the subset of the real `AudioOutputController` interface PR3a needs (the
 
 | Item | Handling |
 |---|---|
-| `policy_decision` schema already registered? | Confirm in `v0_1g_event_schema.py`; register only if missing (avoid duplicate). |
+| `start_generation` returns a `gen_event_id` (`realtime_orchestrator.py:1486`) used as `caused_by` for downstream stop/TTS events | PR3a has no stop path so it ignores the return value — but **PR3b must capture `gen_event_id`** and thread it as `caused_by` for the barge-in stop. Noted so the PR3a call site is written knowing PR3b extends it. |
 | `is_playing` never clears in PR3a (no completion signal) | The injected adapter owns playback lifecycle + `is_playing`; PR3a doesn't manage it. The stub controls it in the test. Real completion/stop is PR3b (barge-in) + live-wiring. |
 | `_AudioOutputProtocol` vs real `AudioOutputController` | Use the real interface's method names (`is_playing`, `start_generation`) so the live adapter drops in unchanged. |
 | Future-proof SPEAK_ACTIONS set | A single membership test, not per-action code — not speculative. |
