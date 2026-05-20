@@ -46,6 +46,7 @@ from companion_harness.event_logger import EventLogger
 from companion_harness.foreground_model import ForegroundModel
 from companion_harness.input_ingest import IngestSession
 from companion_harness.native_duplex_eou import MiniCPMNativeDuplexEouSource, _NullNativeDuplexEouSource
+from companion_harness.continuous_orchestrator import ContinuousOrchestrator
 from companion_harness.realtime_orchestrator import StreamingRealtimeOrchestrator
 from companion_harness.schemas import MemoryItem, PolicyInputs, ThinkerProposal, TurnSignal
 from companion_harness.turn_detector_smart import SmartTurnDetector
@@ -62,6 +63,8 @@ __all__ = [
     "build_live_pipeline",
     "build_streaming_raw_pipeline",
     "StreamingRawPipeline",
+    "ContinuousLivePipeline",
+    "build_continuous_pipeline",
     "build_config_store",
     "EnergyVADModel",
     "SilenceSmartTurnModel",
@@ -838,3 +841,105 @@ def build_streaming_raw_pipeline(
         logger=shielded_logger,
     )
     return StreamingRawPipeline(session_id=session_id, driver=driver)
+
+
+# ---------------------------------------------------------------------------
+# Continuous pipeline (ContinuousOrchestrator wiring)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ContinuousLivePipeline:
+    """Per-session continuous-loop state. Runs ContinuousOrchestrator as one task.
+
+    Exposes the same push_audio / start / stop interface as LivePipeline so the
+    /ws/ingest handler branch is interface-identical.
+    """
+
+    session_id: str
+    audio_in: asyncio.Queue[tuple[bytes, str]]
+    orchestrator: ContinuousOrchestrator
+    # continuous mode wires no vision; present so the /ws/ingest + /status pipeline
+    # interface (which reads pipeline.vision_sidecar) holds without a None-attr crash.
+    vision_sidecar: Any = None
+    _task: asyncio.Task[None] | None = field(default=None, repr=False)
+
+    async def start(self) -> None:
+        self._task = asyncio.create_task(self.orchestrator.run())
+
+    async def stop(self) -> None:
+        try:
+            self.audio_in.put_nowait((b"", ""))
+        except asyncio.QueueFull:
+            try:
+                self.audio_in.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+            try:
+                self.audio_in.put_nowait((b"", ""))
+            except asyncio.QueueFull:
+                pass
+        if self._task is not None:
+            try:
+                await asyncio.wait_for(asyncio.shield(self._task), timeout=5.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                self._task.cancel()
+                try:
+                    await self._task
+                except asyncio.CancelledError:
+                    pass
+
+    def push_audio(
+        self, frame_bytes: bytes, raw_audio_event_id: str, ts_mono_ms: int = 0
+    ) -> None:
+        """Enqueue an audio frame. Drop-oldest on overflow (invariant #10)."""
+        try:
+            self.audio_in.put_nowait((frame_bytes, raw_audio_event_id))
+        except asyncio.QueueFull:
+            try:
+                self.audio_in.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+            try:
+                self.audio_in.put_nowait((frame_bytes, raw_audio_event_id))
+            except asyncio.QueueFull:
+                pass
+
+
+def build_continuous_pipeline(
+    *,
+    session_id: str,
+    logger: EventLogger,
+    foreground_duplex_model: Any,
+    audio_out_broker: AudioOutSinkTarget | None = None,
+) -> ContinuousLivePipeline:
+    """Construct a ContinuousLivePipeline for one ingest session.
+
+    `foreground_duplex_model` must expose stream_chunks() directly (the raw
+    MiniCPMStreamingModel — do NOT wrap in ForegroundModel).  Null
+    backchannel/thought sources are used (the live adapters are a follow-up).
+    VAD / SmartTurn / ASR / TTS / vision / addressing are intentionally skipped.
+    """
+    audio_in: asyncio.Queue[tuple[bytes, str]] = asyncio.Queue(maxsize=64)
+    shielded_logger = SharedLoggerProxy(logger)
+    if audio_out_broker is not None:
+        sink: Any = WebSocketAudioSink(session_id=session_id, broker=audio_out_broker)
+    else:
+        sink = _noop_audio_sink
+    audio_output = AudioOutputController(
+        session_id=session_id,
+        logger=shielded_logger,  # type: ignore[arg-type]
+        sink=sink,
+    )
+    orch = ContinuousOrchestrator(
+        session_id=session_id,
+        logger=shielded_logger,  # type: ignore[arg-type]
+        audio_in=audio_in,
+        foreground_model=foreground_duplex_model,
+        audio_output=audio_output,
+    )
+    return ContinuousLivePipeline(
+        session_id=session_id,
+        audio_in=audio_in,
+        orchestrator=orch,
+    )

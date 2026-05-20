@@ -65,8 +65,10 @@ from manual_test_console.config_schema import (
 )
 from manual_test_console.config_store import ConfigChange, ConfigStore, SeamStateChange
 from manual_test_console.live_pipeline import (
+    ContinuousLivePipeline,
     LivePipeline,
     StreamingRawPipeline,
+    build_continuous_pipeline,
     build_live_pipeline,
     build_streaming_raw_pipeline,
 )
@@ -131,6 +133,7 @@ KEY_ADAPTER_LABELS: web.AppKey[dict] = web.AppKey("adapter_labels", dict)
 # True when --minicpm-streaming-raw is set. Mutually exclusive with
 # --minicpm-only and --use-stubs. DEMO MODE: bypasses SpeakPolicy + audit gates.
 KEY_STREAMING_RAW_MODE: web.AppKey[bool] = web.AppKey("streaming_raw_mode", bool)
+KEY_CONTINUOUS: web.AppKey[bool] = web.AppKey("continuous", bool)
 KEY_BACKGROUND_REASONER: web.AppKey[object] = web.AppKey("background_reasoner", object)
 KEY_EVENT_RATE_COUNTER: web.AppKey[object] = web.AppKey("event_rate_counter", object)
 KEY_START_TIME: web.AppKey[float] = web.AppKey("start_time", float)
@@ -675,13 +678,14 @@ async def _handle_ingest_ws(request: web.Request) -> web.WebSocketResponse:
     foreground_model = request.app[KEY_FOREGROUND_MODEL]
     active_pipelines: dict[str, Any] = request.app[KEY_ACTIVE_PIPELINES]
     streaming_raw_mode: bool = request.app[KEY_STREAMING_RAW_MODE]
+    continuous_mode: bool = request.app[KEY_CONTINUOUS]
 
     client_id = f"ws-{uuid.uuid4().hex[:8]}"
     session = ingest.open_session(client_id)
     chunk_counter["sessions_opened"] = chunk_counter.get("sessions_opened", 0) + 1
 
     # Per-connection live pipeline (if enabled and a foreground model is available).
-    pipeline: LivePipeline | StreamingRawPipeline | None = None
+    pipeline: LivePipeline | StreamingRawPipeline | ContinuousLivePipeline | None = None
     if streaming_raw_mode and foreground_model is not None:
         # DEMO MODE: bypasses SpeakPolicy + audit gates per spec invariants #2/#4.
         pipeline = build_streaming_raw_pipeline(
@@ -689,6 +693,15 @@ async def _handle_ingest_ws(request: web.Request) -> web.WebSocketResponse:
             logger=logger,
             foreground_duplex_model=foreground_model,
             tts_adapter=request.app[KEY_TTS_ADAPTER],
+            audio_out_broker=request.app[KEY_AUDIO_OUT_BROKER],  # type: ignore[arg-type]
+        )
+        active_pipelines[session.session_id] = pipeline
+        await pipeline.start()
+    elif continuous_mode and foreground_model is not None:
+        pipeline = build_continuous_pipeline(
+            session_id=session.session_id,
+            logger=logger,
+            foreground_duplex_model=foreground_model,
             audio_out_broker=request.app[KEY_AUDIO_OUT_BROKER],  # type: ignore[arg-type]
         )
         active_pipelines[session.session_id] = pipeline
@@ -1406,6 +1419,7 @@ def build_app(
     embedder: Any = None,
     diarization_adapter_factory: Any = None,
     streaming_raw_mode: bool = False,
+    continuous: bool = False,
     seam_defaults: dict[str, bool] | None = _BASIC_STACK_SEAM_DEFAULTS,
     blob_retention_days: int = 30,
     event_log_maxsize: int = 16384,
@@ -1467,6 +1481,7 @@ def build_app(
     app[KEY_ACTIVE_PIPELINES] = {}
     app[KEY_USE_STUBS] = use_stubs
     app[KEY_STREAMING_RAW_MODE] = streaming_raw_mode
+    app[KEY_CONTINUOUS] = continuous
     app[KEY_BACKGROUND_REASONER] = _construct_background_reasoner()
     app[KEY_VAD_MODEL] = None
     app[KEY_SMART_TURN_MODEL] = None
@@ -1549,7 +1564,7 @@ def build_app(
 
     async def _on_startup(_app: web.Application) -> None:
         await logger.start()
-        needs_foreground = live_pipeline_enabled or streaming_raw_mode
+        needs_foreground = live_pipeline_enabled or streaming_raw_mode or continuous
         if needs_foreground and foreground_model is None and foreground_model_factory is not None:
             print("Loading MiniCPM-o foreground model (this may take minutes)...", flush=True)
             t0 = time.monotonic()
@@ -1886,7 +1901,8 @@ def build_app(
 
 
 def _load_minicpm_streaming_model(
-    *, init_vision: bool = False, enable_torch_compile: bool = False, chunk_ms: int = 1000
+    *, init_vision: bool = False, enable_torch_compile: bool = False, chunk_ms: int = 1000,
+    listen_prob_scale: float | None = None,
 ) -> Any:
     """Lazy import + construct MiniCPMStreamingModel. b200 only.
 
@@ -1898,7 +1914,12 @@ def _load_minicpm_streaming_model(
     turn-based path (no behavior change for existing callers).
     """
     from companion_harness.foreground_model_minicpm import MiniCPMStreamingModel  # noqa: WPS433
-    return MiniCPMStreamingModel(init_vision=init_vision, enable_torch_compile=enable_torch_compile, chunk_ms=chunk_ms)
+    kwargs: dict[str, Any] = dict(
+        init_vision=init_vision, enable_torch_compile=enable_torch_compile, chunk_ms=chunk_ms
+    )
+    if listen_prob_scale is not None:
+        kwargs["listen_prob_scale"] = listen_prob_scale
+    return MiniCPMStreamingModel(**kwargs)
 
 
 def _load_silero_vad_model() -> Any:
@@ -2031,6 +2052,16 @@ def main(argv: list[str] | None = None) -> int:
             "Load MiniCPM-o with init_vision=True (+~18 GB VRAM) and construct "
             "a per-session VisionSidecar so video frames reach the foreground "
             "model alongside audio. Default OFF — audio-only path unchanged."
+        ),
+    )
+    parser.add_argument(
+        "--continuous",
+        dest="continuous",
+        action="store_true",
+        default=False,
+        help=(
+            "Run the ContinuousOrchestrator instead of StreamingRealtimeOrchestrator. "
+            "Loads MiniCPM with chunk_ms=200, listen_prob_scale=1.0. Default OFF."
         ),
     )
     parser.add_argument(
@@ -2286,8 +2317,13 @@ def main(argv: list[str] | None = None) -> int:
     blob_dir: Path = args.blob_dir
     blob_dir.mkdir(parents=True, exist_ok=True)
 
-    if args.live_pipeline or args.minicpm_streaming_raw:
-        if args.enable_vision and not args.minicpm_streaming_raw:
+    if args.live_pipeline or args.minicpm_streaming_raw or args.continuous:
+        if args.continuous:
+            def factory() -> Any:  # noqa: WPS430
+                return _load_minicpm_streaming_model(
+                    chunk_ms=200, listen_prob_scale=1.0, enable_torch_compile=args.torch_compile
+                )
+        elif args.enable_vision and not args.minicpm_streaming_raw:
             def factory() -> Any:  # noqa: WPS430
                 return _load_minicpm_streaming_model(
                     init_vision=True, enable_torch_compile=args.torch_compile
@@ -2425,6 +2461,7 @@ def main(argv: list[str] | None = None) -> int:
         embedder=real_embedder,
         diarization_adapter_factory=real_diarization_adapter_factory,
         streaming_raw_mode=args.minicpm_streaming_raw,
+        continuous=args.continuous,
         seam_defaults=seam_defaults,
         blob_retention_days=args.blob_retention_days,
         event_log_maxsize=args.event_log_maxsize,
