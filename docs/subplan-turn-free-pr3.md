@@ -1,98 +1,103 @@
-# Sub-plan: PR3 — Model-native barge-in + BackchannelClassifier veto
+# Sub-plan: PR3a — Wire decide_chunk into the orchestrator (act on per-chunk decisions)
 
-**Status:** DRAFT (round 0) — for plan-critic review.
+**Status:** DRAFT (round 1, re-scoped) — for plan-critic review.
 **Parent:** [`plan-turn-free-continuous-execution.md`](plan-turn-free-continuous-execution.md) PR3.
-**Stacks on:** `feat/turn-free-pr2` (uses PR2's `decide_chunk` + `PerChunkPolicyInputs`, and PR1's `ContinuousOrchestrator` + `stream_chunks`).
-**One outcome:** the continuous orchestrator acts on the model's own per-chunk `is_listen` as the **primary** barge-in signal — relaxing the mid-turn gate so the model *can* yield — with VAD/SmartTurn demoted to safety-net and the BackchannelClassifier as a confirmatory veto. Ships in **state (a)** (veto active); demotion to state (b) is gated by the N≥20 real-audio re-probe (not this PR's merge).
+**Stacks on:** `feat/turn-free-pr2`.
+**One outcome:** the continuous orchestrator builds a `PerChunkPolicyInputs` per chunk, calls PR2's `decide_chunk`, emits a `policy_decision` event, and starts speech (via an injected `audio_output` adapter) on a speak decision — replacing PR1's `pass` placeholder.
+
+### Why PR3 is split (plan-critic round 0 found PR3 too big, with model-coupled + undefined seams)
+
+The original PR3 bundled five things; three had blockers. It is split:
+- **PR3a (this sub-plan):** wire `decide_chunk` + act on decisions (start speech). No gate-relax, no barge-in stop, no BC veto, no VAD. CPU-testable with stubs.
+- **PR3b (next sub-plan):** model-native barge-in — relax the mid-turn gate **instance-safely** (a class-level descriptor breaks the native-TTS path, which sets `current_turn_ended=False` on a sibling duplex — `tts_minicpm_native.py:163`; PR3b will subclass *only* `self._duplex`'s type and restore on teardown) + stop speech on a model `is_listen` yield.
+- **PR3c (later sub-plan):** BackchannelClassifier confirmatory veto (needs a per-chunk pull interface — the classifier is per-frame push today) + VAD safety-net (needs a vad-signal producer into the orchestrator ctor). The N≥20 real-audio re-probe gates the state-(b) demotion.
+
+PR3a is the foundation the other two build on: you cannot barge into speech that is never dispatched.
 
 ---
 
-## 1. The gate-relax problem (read first)
+## 1. The decision-wiring (replace the placeholder)
 
-The mid-turn yield gate is in the **HF model file** `modeling_minicpmo.py:3215` (`if last_id == listen_token_id and not current_turn_ended: → keep speaking`). That file is downloaded via `trust_remote_code` — **the harness cannot edit it.** The probe (`scripts/probe_turn_gate_barge_in.py`) relaxed it at runtime with an `_AlwaysEnded` data-descriptor on `current_turn_ended`. PR3 does the same, but:
-- applied by the **adapter** (`MiniCPMStreamingModel`), **only in the continuous path** (a `continuous=True` / `relax_turn_gate=True` flag), so the turn-based path keeps the gate;
-- installed in `stream_chunks()` setup, removed on teardown (try/finally), so it never leaks into a turn-based session sharing the process.
-
-This is the one genuinely model-coupled piece; it stays inside the adapter (adapter-first).
-
-## 2. Wire `decide_chunk` into the orchestrator (replace the PR1 placeholder)
-
-PR1's `_policy_hook` is `pass`. PR3 replaces it: build a `PerChunkPolicyInputs` from the chunk + available signals, call `decide_chunk`, act on the `SpeakDecision`.
+PR1's `_policy_hook` is `pass`. PR3a replaces the per-chunk tail of `run()`:
 
 ```
-run() loop (per chunk, extending PR1):
+per chunk (extending PR1's loop):
     is_listen, text, audio_kv_len, caused_by_evt_id = <from stream_chunks>
     emit continuous_chunk_processed (PR1)                       # unchanged
-    inputs = PerChunkPolicyInputs(chunk_index, model_is_listen=is_listen,
-                                  backchannel_score=<bc>, user_addressed_agent=<addr>,
-                                  privacy_mode, social_mode, budget_full_response_remaining)
+    inputs = PerChunkPolicyInputs(
+        chunk_index=<seq>, model_is_listen=is_listen,
+        backchannel_score=0.0,            # BC source wired in PR3c; 0.0 until then
+        user_addressed_agent=True,        # continuous companion is addressed by construction; refined later
+        privacy_mode=self._privacy_mode, social_mode=self._social_mode,
+        budget_full_response_remaining=self._budget_full_response_remaining)
     decision = decide_chunk(inputs, caused_by_evt_id=caused_by_evt_id)
-    emit policy_decision (action_type + primary_reason_code, caused_by)   # NEW
-    route(decision, is_listen, text, caused_by_evt_id)
+    emit policy_decision (payload_inline {action_type, primary_reason_code}, caused_by=[caused_by_evt_id])  # NEW
+    self._act(decision, caused_by_evt_id)
 ```
 
-`backchannel_score` and `user_addressed_agent`: PR3 sources these from the **BackchannelClassifier** (veto, §4) and an addressing signal. To stay CPU-testable and minimal, PR3 wires `backchannel_score` from the classifier and defaults `user_addressed_agent=True` in continuous mode (a continuous companion is being addressed by construction; refined later). Other `PerChunkPolicyInputs` fields stay at PR2 defaults until their producers are wired.
+`privacy_mode`/`social_mode`/`budget_full_response_remaining` are ctor params (defaults: `"normal"`, `"user_addressing_agent"`, `1`) — they're the modes the continuous session runs under; not signal producers, just config. No new producers are needed for PR3a.
 
-## 3. Barge-in routing (model-native primary)
-
-The model's per-chunk `is_listen` is the primary turn-taking signal (gate relaxed, so it can yield mid-utterance):
+## 2. Acting on the decision (start speech only — no stop in PR3a)
 
 ```
-route(decision, is_listen, text, evt):
-    if assistant_is_speaking:
-        if is_listen and not _bc_veto(): # model yielded mid-speech → barge-in
-            audio_output.stop(caused_by=[evt]); emit model_native_barge_in(evt)
-        # else: keep speaking (model still wants the floor, or BC veto held it)
-    else:
-        if decision.action_type in SPEAK_ACTIONS:
-            audio_output.start(decision, text, caused_by=[evt])   # begin speaking
+_act(decision, evt):
+    SPEAK_ACTIONS = {"full_response", "backchannel", "short_reaction",
+                     "clarification", "alert", "tool_status", "aesthetic_reaction"}
+    if decision.action_type in SPEAK_ACTIONS and not self._audio_output.is_playing:
+        self._audio_output.start_generation(caused_by=[evt])    # begin speaking
+    # action_type == "silence": nothing.
+    # already speaking (is_playing): nothing — PR3b adds the barge-in stop path.
 ```
 
-- **Primary stop signal = the model's `is_listen` yield**, not VAD. VAD/SmartTurn remain running (PR1 feed) as a **safety net**: a `safety_net_barge_in` path fires `audio_output.stop()` only if the model has NOT yielded within a bounded number of chunks after detector-confirmed user speech. (Keeps the spec's <200 ms guarantee if the model is slow.)
-- `audio_output` is an **injected `AudioOutputController`-shaped adapter** (start/stop), stubbed in the CPU test. PR3 does not require real TTS to validate the routing.
+- **`assistant_is_speaking` is read from the adapter** (`self._audio_output.is_playing`), not a state machine the orchestrator owns — mirroring `realtime_orchestrator.py`'s use of `self._audio_output.is_playing`. The adapter owns playback lifecycle; PR3a only *starts*.
+- **All `decide_chunk` action types are handled:** every speak action → start; `silence` → nothing. (PR2's `decide_chunk` currently returns only `silence`/`full_response`/`backchannel`; the set is future-proof but the branch is a single membership test, not per-action code — no speculative per-action logic.)
 
-## 4. BackchannelClassifier as confirmatory veto (state a)
+## 3. The `audio_output` adapter (injected, stubbed in test)
 
-`_bc_veto()` returns True when the latest `backchannel_score >= threshold` — i.e., the overlapping user audio is a backchannel ("mm-hmm"), so a model yield should be **suppressed** (keep speaking). Wiring: the BackchannelClassifier (already in the harness) scores recent audio; the orchestrator reads its score per chunk and feeds it into both `PerChunkPolicyInputs.backchannel_score` and `_bc_veto()`.
+`ContinuousOrchestrator.__init__` gains an injected `audio_output` typed to a minimal Protocol:
 
-**State (a) — what PR3 ships:** gate relaxed, model-`is_listen` primary, VAD safety-net active, BC veto active.
-**State (b) — deferred:** after the **N≥20 real-human-audio re-probe** (GO criterion: interruption yield-rate ≥80% AND backchannel false-yield ≤10%, per the parent plan), the BC veto demotes to logging-only and VAD to safety-net-only. This is a follow-on sub-change gated by the probe — **not part of PR3's merge.**
+```python
+class _AudioOutputProtocol(Protocol):
+    @property
+    def is_playing(self) -> bool: ...
+    def start_generation(self, *, caused_by: list[str]) -> str: ...
+```
 
-## 5. File-by-file
+This is the subset of the real `AudioOutputController` interface PR3a needs (the real one has these). PR3b adds `stop`/`cancel` to the Protocol when it needs them. The CPU test injects a stub exposing `is_playing` (test-controlled) + a recording `start_generation`.
+
+## 4. File-by-file
 
 | File | Change |
 |---|---|
-| `companion_harness/foreground_model_minicpm.py` | Add the `current_turn_ended` runtime relax (the `_AlwaysEnded` descriptor) inside `stream_chunks()` setup when `relax_turn_gate=True`; remove in `finally`. Confined to continuous path; turn-based untouched. |
-| `companion_harness/continuous_orchestrator.py` | Replace `_policy_hook` placeholder: build `PerChunkPolicyInputs`, call `decide_chunk`, emit `policy_decision`, route to `audio_output` start/stop. Add model-native barge-in + VAD safety-net + `_bc_veto`. Ctor gains injected `audio_output` + `backchannel_source`. |
-| `companion_harness/v0_1g_event_schema.py` | Register `policy_decision` (if not already), `model_native_barge_in`, `safety_net_barge_in`. |
-| `tests/test_continuous_barge_in.py` (new) | CPU success test (§6). |
+| `companion_harness/continuous_orchestrator.py` | Replace `_policy_hook` placeholder with `_act` (§2); build `PerChunkPolicyInputs` + call `decide_chunk` + emit `policy_decision` in `run()`; ctor gains injected `audio_output` + `privacy_mode`/`social_mode`/`budget_full_response_remaining` params + `_AudioOutputProtocol`. Imports `decide_chunk`, `PerChunkPolicyInputs`. |
+| `companion_harness/v0_1g_event_schema.py` | Register `policy_decision` if not already present (it exists for the turn-based path — confirm; add only if missing). |
+| `tests/test_continuous_pr3a_act.py` (new — distinct file) | CPU success test (§5). |
 
-## 6. Success criterion (sole programmatic gate)
+## 5. Success criterion (sole programmatic gate)
 
-`tests/test_continuous_barge_in.py::test_continuous_barge_in_and_backchannel` — CPU-runnable with stubs (`FakeForegroundModel` from PR1 extended to script an is_listen sequence; stub `audio_output` recording start/stop; stub backchannel source). Asserts:
-- model speaks (`audio_output.start`) when `decide_chunk → full_response`;
-- a mid-speech model yield (`is_listen` True after speaking) with low backchannel score → `audio_output.stop` + a `model_native_barge_in` event (caused_by closed);
-- a mid-speech model yield with **high** backchannel score → **no stop** (BC veto held the floor);
-- all emitted events have closed `caused_by[]`; turn-based suite regression-green.
+`tests/test_continuous_pr3a_act.py::test_decide_chunk_wired_and_starts_speech` — CPU-runnable, no GPU/weights. Define a local `FakeForegroundModel` (inline in this test file; do NOT import or modify PR1's test fixture) whose `stream_chunks` yields a scripted sequence of `(is_listen, text, audio_kv_len, evt_id)`, and a stub `audio_output` with a test-settable `is_playing` + a recording `start_generation`. Assert:
+- a chunk with `is_listen=False` (model wants to speak) + `is_playing=False` → exactly one `start_generation` call + a `policy_decision` event with `action_type="full_response"`;
+- a chunk with `is_listen=True` → no `start_generation`, `policy_decision` `action_type="silence"`;
+- a speak chunk while `is_playing=True` → no second `start_generation` (no double-start);
+- every emitted event (`continuous_chunk_processed`, `policy_decision`) has closed `caused_by[]`;
+- turn-based suite regression-green.
 
-Real-model gate-relax behavior + the N≥20 real-audio re-probe are manual/b200, recorded in the PR, **not** the CPU gate.
+## 6. Invariants
 
-## 7. Invariants
+- **#2/#4:** speech starts only via a `decide_chunk` `SpeakDecision` speak action; `silence` never starts speech.
+- **#5:** `decide_chunk` is pure (PR2); the `_act` routing is a deterministic function of `(decision, is_playing)`.
+- **#8:** silence wins ties — PR3a only *starts* on an explicit speak decision; ambiguity → silence → nothing.
+- **#1/#10:** `policy_decision` logged per chunk with `caused_by`; non-blocking.
 
-- **#2/#4:** every speak action still goes through `decide_chunk` → `SpeakDecision`; `audio_output.start` only on a speak decision.
-- **#5:** `decide_chunk` stays pure/deterministic (PR2); the orchestrator's routing is deterministic given the recorded `(PerChunkPolicyInputs, is_listen, backchannel_score)` sequence.
-- **#8:** silence wins ties — barge-in *stops* speech (favoring silence); BC veto only *prevents* a stop, never *forces* speech.
-- **#1/#10:** `policy_decision` + barge-in events logged with `caused_by`; non-blocking.
-
-## 8. Risks / open questions
+## 7. Risks / open questions
 
 | Item | Handling |
 |---|---|
-| Descriptor relax leaking into a turn-based session in the same process | Install/remove in `stream_chunks()` try/finally; never global. Test asserts the turn-based gate path is unchanged. |
-| `audio_output` adapter shape | Reuse the existing `AudioOutputController` interface (start_generation/stop) so PR-later live wiring drops in; stub it in the test. |
-| `user_addressed_agent=True` default is a simplification | Acceptable for PR3 (continuous companion is addressed by construction); a real addressing signal wires in a later PR. Note in code. |
-| VAD safety-net timing | Bounded "model hasn't yielded within K chunks of detector-confirmed speech" → safety stop. K is a constant in PR3; tuned in PR5a. |
+| `policy_decision` schema already registered? | Confirm in `v0_1g_event_schema.py`; register only if missing (avoid duplicate). |
+| `is_playing` never clears in PR3a (no completion signal) | The injected adapter owns playback lifecycle + `is_playing`; PR3a doesn't manage it. The stub controls it in the test. Real completion/stop is PR3b (barge-in) + live-wiring. |
+| `_AudioOutputProtocol` vs real `AudioOutputController` | Use the real interface's method names (`is_playing`, `start_generation`) so the live adapter drops in unchanged. |
+| Future-proof SPEAK_ACTIONS set | A single membership test, not per-action code — not speculative. |
 
-## 9. Out of scope (later PRs)
+## 8. Out of scope (PR3b / PR3c / later)
 
-Real TTS dispatch wiring to the live server (PR-later), the N≥20 real-audio re-probe + state-(b) demotion (gated follow-on), background-think injection (PR4), chunk_ms/listen_prob tuning (PR5a).
+Gate-relax + model-native barge-in stop (PR3b); BackchannelClassifier veto + VAD safety-net + the N≥20 re-probe + state-(b) demotion (PR3c); real TTS/live-server wiring (later). PR3a is decision-wiring + start-on-speak, nothing more.
