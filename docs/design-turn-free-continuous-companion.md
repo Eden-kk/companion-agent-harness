@@ -199,6 +199,26 @@ Everything needed exists:
 5. **Background-thought injection + role-typed KV management** (§4.1) — inject thoughts as role-tagged `background-think` units via `streaming_prefill(text_list=...)`; enable role-aware eviction (Strategy 2) and the fuller role snapshot (Strategy 3). Think-source (in-context protocol vs `enable_thinking`) decided by probes 1c/1d; finetune only if 1c fails.
 6. **Tune `chunk_ms` → ~200 ms and `listen_prob_scale`** empirically against Stage 6 `false_proactive_utterances_per_hour` and barge-in latency gates.
 
+## 10.5 Build strategy: same repo, new continuous core (not a new repo)
+
+The turn concept is woven through *one* layer — the orchestrator. Everything below it is turn-agnostic and is the expensive-to-rebuild part. So: **stay in the repo, write a new continuous orchestration core, reuse everything below it.** A new repo re-pays the cost of EventLogger/replay, adapters, schemas, memory, eval, and the server/UI — all turn-agnostic — for no architectural gain, and forfeits the invariant/contract-test discipline and git/audit history that are the project's reason for being. ("Same UI" is itself coupled to the event schema + WS endpoints, which live in the reusable layer, so a "clean" fork isn't clean.)
+
+| Layer | Verdict | Why |
+|---|---|---|
+| EventLogger / causal graph / replay | **reuse** | per-chunk events fit the schema; "turns" become audit segments |
+| Adapter Protocols (VAD/SmartTurn/ASR/addressing/memory/vision/TTS) | **reuse** | all still needed; VAD demotes to safety net |
+| MiniCPM foreground adapter | **reuse + extend** | gate-relax + `streaming_prefill(text_list)` + role tags land here |
+| SpeakPolicy rules / ReasonCode / DecisionTrace | **reuse logic, change cadence** | per-turn → per-chunk gate |
+| Memory 4-store + SleepTimeAgent | **reuse** | architecture-agnostic |
+| Server / WebSocket / dashboard UI | **reuse** | this is the "same UI" |
+| Eval subsystem (FDB, harness_native) | **reuse** | |
+| Orchestrator turn machinery (`realtime_orchestrator.py`, 2610 lines: T2/T3/T4, batch windows, drain, hybrid) | **rewrite** | the only part that fights the design |
+| `realtime_loop.py` (leaner, but still turn-batch: "decide() once per candidate batch") | **rewrite/supersede** | |
+| Path A/B streaming-TTS variants | **retire** | superseded by the clean continuous core |
+| VAD-onset barge-in path | **invert** | model-native primary, VAD safety net (§6) |
+
+**Strangler-fig migration:** write a new `continuous_orchestrator.py` alongside the existing one, behind a flag, consuming the same adapters + EventLogger below it. This gives a clean continuous loop, A/B against the turn-based orchestrator on the same fixtures, incremental contract-test migration, and retirement of the turn machinery + Path A/B once the new core passes. Do **not** retrofit the 2610-line orchestrator — it carries the turn machinery plus half-built streaming variants (the open bugs in the status snapshot). The deepest genuinely-new work is SpeakPolicy per-turn → continuous per-chunk gate (touches invariant #5); build it fresh in the new core rather than bending the old one.
+
 ## 11. Risks
 
 | Risk | Mitigation |
