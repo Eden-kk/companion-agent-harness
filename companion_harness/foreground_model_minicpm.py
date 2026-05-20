@@ -29,6 +29,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import collections
 import hashlib
 import time
 from collections.abc import Callable
@@ -181,6 +182,7 @@ class MiniCPMStreamingModel:
         self._seq = 0
         self._inference_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="minicpm-infer")
         self._stream_chunks_active: bool = False
+        self._scratchpad_queue: collections.deque[str] = collections.deque()
 
     def __del__(self) -> None:
         # Singleton lives for the process, but release the executor thread on GC
@@ -396,6 +398,13 @@ class MiniCPMStreamingModel:
         async for proposal in gen:
             on_proposal(proposal)
 
+    def inject_scratchpad(self, text: str) -> None:
+        self._scratchpad_queue.append(text)            # event-loop thread; deque.append is GIL-atomic
+
+    def _drain_scratchpad(self, duplex) -> None:
+        while self._scratchpad_queue:                  # executor thread; each popleft GIL-atomic (late appends drain on next _gpu_work)
+            duplex.streaming_prefill(text_list=[self._scratchpad_queue.popleft()])
+
     async def stream_chunks(
         self,
         audio_in: "asyncio.Queue[tuple[bytes, str]]",
@@ -443,6 +452,7 @@ class MiniCPMStreamingModel:
                     return None
 
                 def _gpu_work(pcm_float: np.ndarray) -> dict:
+                    self._drain_scratchpad(duplex)
                     duplex.streaming_prefill(audio_waveform=pcm_float)
                     return duplex.streaming_generate(
                         max_new_speak_tokens_per_chunk=duplex.max_new_speak_tokens_per_chunk,
