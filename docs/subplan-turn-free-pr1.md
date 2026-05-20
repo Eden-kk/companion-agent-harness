@@ -53,9 +53,11 @@ Set `sliding_window_mode="context"` on the duplex (via `as_duplex(..., sliding_w
 ## 5. Audio-KV-reset handling
 
 <!-- PROBE-RESULTS-START -->
-_Pending `scripts/probe_audio_kv_reset.py`. Fill from `/tmp/probe-audio-kv-reset-summary.txt`._
-- If **GO** (coherent across reset): no special handling; emit an `audio_kv_reset` audit event when detected (for observability) and move on.
-- If **NO-GO** (degrades): add the mitigation named in the parent plan (pre-reset boundary event / summary re-injection) as a PR1 sub-task before merge.
+**Result: GO** (`scripts/probe_audio_kv_reset.py`, 2026-05-19, b200/MiniCPM-o 4.5). With the model monologuing (speak-biased so it's actively generating), the audio-KV reset fired at chunk 30 (1450→50 tokens, the ~1500 cap) and the model **continued coherently across the boundary**: before — "…the bustling streets of Tokyo"; after — "…geishas moved gracefully through hidden alleyways" (same scene, narrative continuity held; both coherent, unique-ratio 0.9–1.0). The story lives in the LLM backbone (`llm_past_key_values`, not reset); only the audio-encoder cache reset, which does not break generation.
+
+**PR1 handling:** no special mitigation. Emit an `audio_kv_reset` audit event when detected (observability, invariant #1) and continue.
+
+**Caveat / follow-up (not a PR1 blocker):** this tests coherence of the model's *own ongoing generation* across the reset. It does not test whether the model retains memory of *user audio* spoken before the reset (that context lives partly in the audio cache that gets wiped). A fact-retention-across-reset probe (user states a fact pre-reset; ask post-reset) is a reasonable follow-up if long-session user-audio recall matters — defer to PR5/PR6 long-session validation.
 <!-- PROBE-RESULTS-END -->
 
 ## 6. File-by-file
