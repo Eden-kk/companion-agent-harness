@@ -113,6 +113,11 @@ class AudioOutputController:
         """
         evt = self._emit("assistant_audio_stop_requested", caused_by, payload_kind="signal")
         self._stop_event.set()
+        # Clear _playing here, not only in the play() drain loop: the continuous path
+        # (native push_chunk) never runs play(), so without this _playing stays True
+        # forever after a barge-in → every subsequent listen chunk re-fires barge-in.
+        # Idempotent for the turn-based path (play() also clears it on _stop_event).
+        self._playing = False
         return evt.event_id
 
     def set_generation_task(self, task: asyncio.Task[None] | None) -> None:
