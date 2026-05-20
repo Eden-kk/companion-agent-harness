@@ -1922,6 +1922,9 @@ def _load_asr_lexicon_backchannel_model(language: str | None = None) -> Any:
 _KOKORO_DEFAULT_MODEL = "/raid/yid042/models/kokoro/kokoro-v0_19.onnx"
 _KOKORO_DEFAULT_VOICES = "/raid/yid042/models/kokoro/voices.json"
 
+# Default CosyVoice2 model directory on b200.
+_COSYVOICE_DEFAULT_MODEL_DIR = "/raid/yid042/models/cosyvoice2/CosyVoice2-0.5B"
+
 
 def _load_kokoro_tts_adapter() -> Any:
     """Lazy import + construct KokoroTtsAdapter singleton. b200 only.
@@ -1937,6 +1940,27 @@ def _load_kokoro_tts_adapter() -> Any:
     return KokoroTtsAdapter(
         model_path=model_path,
         voices_path=voices_path,
+        warmup=True,
+    )
+
+
+def _load_cosyvoice2_tts_adapter(
+    reference_wav: str | None = None,
+    reference_text: str | None = None,
+) -> Any:
+    """Lazy import + construct CosyVoice2TtsAdapter. b200 only.
+
+    Requires cosyvoice installed from the FunAudioLLM git clone (NOT the
+    stale PyPI cosyvoice==0.0.8 — that pulls torch 2.12 which conflicts).
+    See requirements-b200.txt for pinned install instructions.
+    """
+    import os  # noqa: WPS433
+    from companion_harness.tts_cosyvoice2 import CosyVoice2TtsAdapter  # noqa: WPS433
+    model_dir = os.environ.get("COSYVOICE_MODEL_DIR", _COSYVOICE_DEFAULT_MODEL_DIR)
+    return CosyVoice2TtsAdapter(
+        model_dir=model_dir,
+        reference_wav=reference_wav,
+        reference_text=reference_text,
         warmup=True,
     )
 
@@ -2010,13 +2034,27 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--tts-adapter",
         dest="tts_adapter",
-        choices=["kokoro", "native_minicpm"],
+        choices=["kokoro", "native_minicpm", "cosyvoice2"],
         default="kokoro",
         help=(
             "TTS adapter to load at startup. "
             "'kokoro' (default): Kokoro-82M-ONNX via KokoroTtsAdapter. "
-            "'native_minicpm': MiniCPM-o native duplex TTS via MiniCPMNativeTtsAdapter."
+            "'native_minicpm': MiniCPM-o native duplex TTS via MiniCPMNativeTtsAdapter. "
+            "'cosyvoice2': CosyVoice2-0.5B bilingual TTS via CosyVoice2TtsAdapter."
         ),
+    )
+    parser.add_argument(
+        "--cosyvoice-reference-wav",
+        dest="cosyvoice_reference_wav",
+        default=None,
+        help="Path to reference WAV for CosyVoice2 zero-shot voice cloning (16 kHz mono, 3-10 s). "
+             "Requires --cosyvoice-reference-text. If unset, uses inference_sft with '中文女'.",
+    )
+    parser.add_argument(
+        "--cosyvoice-reference-text",
+        dest="cosyvoice_reference_text",
+        default=None,
+        help="Transcript of --cosyvoice-reference-wav (required for zero-shot mode).",
     )
     parser.add_argument(
         "--language",
@@ -2284,11 +2322,15 @@ def main(argv: list[str] | None = None) -> int:
             vad_factory = _load_silero_vad_model
             smart_turn_factory = _load_pipecat_smart_turn_model
             backchannel_factory = lambda: _load_asr_lexicon_backchannel_model(_asr_lang)
-            tts_factory = (
-                _native_tts_placeholder
-                if args.tts_adapter == "native_minicpm"
-                else _load_kokoro_tts_adapter
-            )
+            _tts_factory_map = {
+                "native_minicpm": _native_tts_placeholder,
+                "kokoro": _load_kokoro_tts_adapter,
+                "cosyvoice2": lambda: _load_cosyvoice2_tts_adapter(  # noqa: E731
+                    reference_wav=args.cosyvoice_reference_wav,
+                    reference_text=args.cosyvoice_reference_text,
+                ),
+            }
+            tts_factory = _tts_factory_map[args.tts_adapter]
             asr_factory = lambda: _load_asr_model(_asr_lang)
     else:
         vad_factory = smart_turn_factory = backchannel_factory = tts_factory = asr_factory = None
@@ -2356,7 +2398,11 @@ def main(argv: list[str] | None = None) -> int:
             if s in HOT_SEAMS:
                 seam_defaults[s] = False
 
-    tts_name = "MiniCPM-o native TTS" if args.tts_adapter == "native_minicpm" else "Kokoro-82M-ONNX"
+    tts_name = {
+        "native_minicpm": "MiniCPM-o native TTS",
+        "kokoro": "Kokoro-82M-ONNX",
+        "cosyvoice2": "CosyVoice2-0.5B",
+    }.get(args.tts_adapter, "Kokoro-82M-ONNX")
     app = build_app(
         blob_dir,
         live_pipeline_enabled=args.live_pipeline,

@@ -56,3 +56,18 @@ phonemizer-fork==3.3.1
 # pin back immediately: pip install "numpy<2"
 # Verify post-install: python -c "import librosa; import numpy; assert numpy.__version__ < '2'"
 pyannote.audio>=3.0
+
+# CosyVoice2 TTS backend (CosyVoice2TtsAdapter — tts_cosyvoice2.py).
+# DO NOT install the PyPI cosyvoice==0.0.8 — it pulls torch==2.12.0+cu130
+# and numpy==2.4.5, both incompatible with this venv's pins.
+# Install from the FunAudioLLM git clone at a known-good commit, then re-pin numpy:
+#   git clone https://github.com/FunAudioLLM/CosyVoice /tmp/cosyvoice
+#   pip install /tmp/cosyvoice --no-deps
+#   pip install hyperpyyaml conformer omegaconf
+#   pip install "numpy<2"  # re-pin after install
+# pynini (text normalisation): conda-only on Linux — install separately:
+#   conda install -c conda-forge pynini=2.1.6
+# If pynini unavailable, CosyVoice2 falls back to WeText TN (zh punctuation quality reduced).
+# Model weights: huggingface-cli download iic/CosyVoice2-0.5B --local-dir /raid/yid042/models/cosyvoice2/CosyVoice2-0.5B
+hyperpyyaml>=1.2.3
+conformer>=0.3.2
