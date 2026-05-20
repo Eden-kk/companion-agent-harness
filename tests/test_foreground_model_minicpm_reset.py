@@ -1,6 +1,8 @@
 """Unit tests for MiniCPMStreamingModel.reset_streaming_session()."""
 import pytest
+
 pytest.importorskip("torch")
+
 from companion_harness.foreground_model_minicpm import MiniCPMStreamingModel
 
 
