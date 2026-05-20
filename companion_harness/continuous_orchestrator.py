@@ -1,8 +1,10 @@
-"""ContinuousOrchestrator — turn-free continuous companion loop (PR1).
+"""ContinuousOrchestrator — turn-free continuous companion loop.
 
 Consumes audio_in continuously via the foreground model's stream_chunks()
-adapter, emits per-chunk audit events, and applies a placeholder always-silence
-policy hook. No TTS is dispatched in PR1.
+adapter; per chunk it emits a continuous_chunk_processed audit event, calls the
+per-chunk gate decide_chunk (PR2), emits a policy_decision, and starts speech via
+the injected audio_output adapter on a speak decision (PR3a — start-only; PR3b
+adds the model-native barge-in stop path).
 
 Adapter-first (CLAUDE.md): this module imports no model SDK and never touches
 _duplex / streaming_prefill / streaming_generate. All per-chunk mechanics live
@@ -19,7 +21,8 @@ from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Protocol
 
-from companion_harness.schemas import Event
+from companion_harness.continuous_speak_policy import decide_chunk
+from companion_harness.schemas import Event, PerChunkPolicyInputs, SpeakDecision
 
 if TYPE_CHECKING:
     from companion_harness.event_logger import EventLogger
@@ -29,6 +32,14 @@ __all__ = ["ContinuousOrchestrator"]
 _SOURCE = "continuous_orchestrator"
 _SCHEMA_VERSION = "0.1"
 
+# Action types that start audio synthesis. NOTE: "tool_call" is intentionally
+# excluded — it dispatches via tool routing, not TTS, and is handled in a later
+# PR (cf. realtime_orchestrator.py's tool_call path), not by _act's start path.
+_SPEAK_ACTIONS = frozenset({
+    "full_response", "backchannel", "short_reaction", "clarification",
+    "alert", "tool_status", "aesthetic_reaction",
+})
+
 
 class _ForegroundModelProtocol(Protocol):
     async def stream_chunks(
@@ -36,6 +47,12 @@ class _ForegroundModelProtocol(Protocol):
         audio_in: "asyncio.Queue[tuple[bytes, str]]",
     ) -> AsyncGenerator[tuple[bool, str, int | None, str], None]:
         ...
+
+
+class _AudioOutputProtocol(Protocol):
+    @property
+    def is_playing(self) -> bool: ...
+    def start_generation(self, *, caused_by: list[str]) -> str: ...
 
 
 class ContinuousOrchestrator:
@@ -53,11 +70,19 @@ class ContinuousOrchestrator:
         logger: "EventLogger",
         audio_in: "asyncio.Queue[tuple[bytes, str]]",
         foreground_model: _ForegroundModelProtocol,
+        audio_output: _AudioOutputProtocol,
+        privacy_mode: str = "normal",
+        social_mode: str = "user_addressing_agent",
+        budget_full_response_remaining: int = 1,
     ) -> None:
         self._session_id = session_id
         self._logger = logger
         self._audio_in = audio_in
         self._foreground = foreground_model
+        self._audio_output = audio_output
+        self._privacy_mode = privacy_mode
+        self._social_mode = social_mode
+        self._budget_full_response_remaining = budget_full_response_remaining
         self._seq = 0
 
     # ------------------------------------------------------------------
@@ -67,6 +92,7 @@ class ContinuousOrchestrator:
     async def run(self) -> None:
         """Consume stream_chunks until the feeder pushes the sentinel (b"", "")."""
         prior_kv_len: int | None = None
+        chunk_idx = 0
 
         async for is_listen, text, audio_kv_len, caused_by_evt_id in self._foreground.stream_chunks(self._audio_in):
             self._emit_chunk_processed(
@@ -90,14 +116,34 @@ class ContinuousOrchestrator:
             if audio_kv_len is not None:
                 prior_kv_len = audio_kv_len
 
-            self._policy_hook(is_listen=is_listen, caused_by_evt_id=caused_by_evt_id)
+            inputs = PerChunkPolicyInputs(
+                chunk_index=chunk_idx,
+                model_is_listen=is_listen,
+                backchannel_score=0.0,        # BC source wired in PR3c
+                user_addressed_agent=True,    # addressing wired in PR3c
+                privacy_mode=self._privacy_mode,
+                social_mode=self._social_mode,
+                # budget decrement is wired in PR3b/PR3c; constant here is intentional
+                # for PR3a (full_response re-entry is guarded by audio is_playing).
+                budget_full_response_remaining=self._budget_full_response_remaining,
+            )
+            decision = decide_chunk(inputs, caused_by_evt_id=caused_by_evt_id)
+            self._emit_policy_decision(decision, caused_by_evt_id)
+            self._act(decision, caused_by_evt_id)
+            chunk_idx += 1
 
     # ------------------------------------------------------------------
-    # Placeholder policy hook (PR2 replaces this with decide_chunk)
+    # Act on the per-chunk decision (PR3a — start speech only; PR3b adds stop)
     # ------------------------------------------------------------------
 
-    def _policy_hook(self, *, is_listen: bool, caused_by_evt_id: str) -> None:
-        pass  # PR2 replaces with decide_chunk
+    def _act(self, decision: SpeakDecision, caused_by_evt_id: str) -> None:
+        # Start speech on a speak decision only when not already speaking.
+        # is_playing is owned by the audio_output adapter (mirrors the
+        # turn-based path). PR3b adds the model-native barge-in stop path;
+        # PR3a only starts. (start_generation returns a gen_event_id that
+        # PR3b will capture as caused_by for the stop; PR3a has no stop yet.)
+        if decision.action_type in _SPEAK_ACTIONS and not self._audio_output.is_playing:
+            self._audio_output.start_generation(caused_by=[caused_by_evt_id])
 
     # ------------------------------------------------------------------
     # Event emission helpers
@@ -177,5 +223,37 @@ class ContinuousOrchestrator:
             sensitivity="safe",
             retention_policy_id="signal_default_30d",
             payload_inline=kv_payload,
+        )
+        self._logger.log(evt)
+
+    def _emit_policy_decision(self, decision: SpeakDecision, caused_by_evt_id: str) -> None:
+        now_ms = int(time.monotonic() * 1000)
+        seq = self._next_seq()
+        event_id = f"{self._session_id}-pd-{seq}-{now_ms}"
+        payload_inline = {
+            "action_type": decision.action_type,
+            "primary_reason_code": decision.primary_reason_code.value,
+        }
+        payload_hash = hashlib.sha256(
+            json.dumps(payload_inline, sort_keys=True).encode()
+        ).hexdigest()[:16]
+        evt = Event(
+            event_id=event_id,
+            session_id=self._session_id,
+            schema_version=_SCHEMA_VERSION,
+            seq_no=seq,
+            event_type="policy_decision",
+            timestamp_mono_ms=now_ms,
+            timestamp_wall=datetime.now(timezone.utc).isoformat(),
+            source=_SOURCE,
+            caused_by=[caused_by_evt_id],
+            payload_hash=payload_hash,
+            payload_ref=None,
+            payload_kind="signal",
+            subject_class="self",
+            sensitivity="safe",
+            # matches RealtimeOrchestrator's policy_decision retention (shared event type)
+            retention_policy_id="decision_trace_30d",
+            payload_inline=payload_inline,
         )
         self._logger.log(evt)

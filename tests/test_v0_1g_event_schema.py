@@ -70,6 +70,8 @@ EXPECTED_EVENT_TYPES = {
     # ContinuousOrchestrator PR1: per-chunk + KV-reset audit
     "continuous_chunk_processed",
     "audio_kv_reset",
+    # ContinuousOrchestrator PR3a: per-chunk policy decision
+    "policy_decision",
 }
 
 

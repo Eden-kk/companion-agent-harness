@@ -75,6 +75,18 @@ class FakeForegroundModel:
                 yield (True, "", None, latest_evt_id)
 
 
+class _NullAudioOutput:
+    """Minimal audio_output stub (PR3a required arg). This model always listens
+    (silence), so the orchestrator never starts speech — never dereferenced."""
+
+    @property
+    def is_playing(self) -> bool:
+        return False
+
+    def start_generation(self, *, caused_by: list[str]) -> str:
+        return "noop"
+
+
 # ---------------------------------------------------------------------------
 # Test
 # ---------------------------------------------------------------------------
@@ -93,6 +105,7 @@ async def test_continuous_orchestrator_emits_per_chunk_events() -> None:
         logger=logger,
         audio_in=audio_in,
         foreground_model=FakeForegroundModel(),
+        audio_output=_NullAudioOutput(),
     )
 
     clock = SyntheticClock()
