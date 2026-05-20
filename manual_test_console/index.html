@@ -1625,7 +1625,18 @@
     const cb = (evt.caused_by || []).map((s) => s.slice(0, 12)).join(",") || "-";
     row.title = `${fmtTs(evt.timestamp_mono_ms)}  src=${evt.source}  seq=${evt.seq_no}\ncaused_by=[${cb}]  hash=${(evt.payload_hash || "").slice(0,12)}\nevent_id=${evt.event_id}`;
 
+    const pinBtn = document.createElement("button");
+    pinBtn.className = "pin-btn" + (isPinned ? " pinned" : "");
+    pinBtn.textContent = isPinned ? "unpin" : "pin";
+    pinBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const id = evt.event_id;
+      if (pinnedIds.has(id)) { pinnedIds.delete(id); } else { pinnedIds.add(id); }
+      saveFilterState();
+      applyFilter();
+    });
     row.appendChild(kind);
+    row.appendChild(pinBtn);
     row.dataset.eventId = evt.event_id || "";
     eventRowsById.set(evt.event_id, row);
     return row;

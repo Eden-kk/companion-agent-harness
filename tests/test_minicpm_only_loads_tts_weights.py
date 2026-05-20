@@ -70,7 +70,11 @@ def test_tts_label_uses_adapter_name_on_success(tmp_path: Path) -> None:
             if runner is not None:
                 await runner.close()
 
-    asyncio.get_event_loop().run_until_complete(_run())
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(_run())
+    finally:
+        loop.close()
     label = app[KEY_TTS_LABEL]
     assert "MiniCPM-o native TTS" in label
     assert "Kokoro" not in label
@@ -86,7 +90,7 @@ def test_tts_label_falls_back_to_noop_on_failure(tmp_path: Path) -> None:
         blob_dir=tmp_path / "blobs",
         live_pipeline_enabled=True,
         tts_adapter_factory=_bad_factory,
-        tts_adapter_name="MiniCPM-o native TTS",
+        tts_adapter_name="Kokoro-82M-ONNX",
         use_stubs=False,
     )
 
@@ -100,7 +104,11 @@ def test_tts_label_falls_back_to_noop_on_failure(tmp_path: Path) -> None:
             if runner is not None:
                 await runner.close()
 
-    asyncio.get_event_loop().run_until_complete(_run())
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(_run())
+    finally:
+        loop.close()
     label = app[KEY_TTS_LABEL]
     assert label == "stub:NoopTtsAdapter"
     assert "Kokoro" not in label

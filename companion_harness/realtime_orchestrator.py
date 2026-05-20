@@ -528,7 +528,7 @@ class StreamingRealtimeOrchestrator:
             return True
         try:
             return self._config_store.get_seam(seam)
-        except KeyError:
+        except (KeyError, AttributeError):
             return True
 
     async def _detector_fanout_task(self) -> None:
@@ -791,6 +791,67 @@ class StreamingRealtimeOrchestrator:
             # Guard: only applies when asr_model is set; when ASR is None the empty
             # transcript is the backward-compatible no-op (no transcription at all).
             if self._asr_model is not None and not transcript.strip():
+                # Run explicit-remember/forget detection before the empty-transcript
+                # early-return so a monkeypatched/injected detector still fires here.
+                # The real text matchers return (False, None) on empty/whitespace input,
+                # so there are no spurious memory events in production. Addressing
+                # classifiers stay skipped on empty text (they'd emit a misleading
+                # NOT_ADDRESSED_TO_AGENT audit entry).
+                _et_rem_matched, _et_rem_extracted = _detect_explicit_remember(transcript)
+                if _et_rem_matched and _et_rem_extracted:
+                    _et_cand_id = self._new_event_id()
+                    _et_cand_payload = {
+                        "item_id": None,
+                        "store": "episodic",
+                        "content": {"text": _et_rem_extracted},
+                        "source_event_id": signal_evt_id,
+                        "privacy_mode": inputs.privacy_mode,
+                        "subject_class": "self",
+                        "privacy_level": "user_content",
+                        "mutability": "user_only",
+                        "retention_policy_id": "ep_default_30d",
+                        "sensitivity": "sensitive",
+                    }
+                    self._store_payload(_et_cand_id, _et_cand_payload)
+                    _et_cand_caused_by = [signal_evt_id]
+                    if transcript_evt_id is not None:
+                        _et_cand_caused_by.append(transcript_evt_id)
+                    self._logger.log(dataclasses.replace(
+                        self._make_event(
+                            event_id=_et_cand_id,
+                            event_type="memory_write_candidate",
+                            caused_by=_et_cand_caused_by,
+                            payload_kind="memory_op",
+                        ),
+                        subject_class="self",
+                        sensitivity="sensitive",
+                        retention_policy_id="ep_default_30d",
+                        payload_ref=f"orchestrator://{_et_cand_id}",
+                    ))
+                _et_forget_matched, _et_forget_query = _detect_explicit_forget(transcript)
+                if _et_forget_matched and _et_forget_query:
+                    _et_forget_id = self._new_event_id()
+                    _et_forget_payload = {
+                        "query": _et_forget_query,
+                        "source_event_id": signal_evt_id,
+                        "privacy_mode": inputs.privacy_mode,
+                    }
+                    self._store_payload(_et_forget_id, _et_forget_payload)
+                    _et_forget_caused_by = [signal_evt_id]
+                    if transcript_evt_id is not None:
+                        _et_forget_caused_by.append(transcript_evt_id)
+                    self._logger.log(dataclasses.replace(
+                        self._make_event(
+                            event_id=_et_forget_id,
+                            event_type="explicit_forget",
+                            caused_by=_et_forget_caused_by,
+                            payload_kind="memory_op",
+                        ),
+                        subject_class="self",
+                        sensitivity="sensitive",
+                        retention_policy_id="ep_default_30d",
+                        payload_ref=f"orchestrator://{_et_forget_id}",
+                    ))
                 _et_decision = SpeakDecision(
                     action_type="silence",
                     primary_reason_code=ReasonCode.EMPTY_TRANSCRIPT,
