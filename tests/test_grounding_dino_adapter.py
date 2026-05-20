@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import io
 
+import pytest
 from PIL import Image
 
+pytest.importorskip("torch")
 from companion_harness.grounding_dino_adapter import GroundingDINOAdapter
 from companion_harness.vision_sidecar import GroundingModel
 

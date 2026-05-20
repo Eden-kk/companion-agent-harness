@@ -14,6 +14,8 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
+pytest.importorskip("torch")
+
 
 # ---------------------------------------------------------------------------
 # Fake base model — mirrors test_minicpm_torch_compile_flag._FakeBase

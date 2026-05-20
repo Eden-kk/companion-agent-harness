@@ -151,6 +151,7 @@ def test_v15_mapper_rejects_unknown_scenario():
 # ---------------------------------------------------------------------------
 
 def test_fdb_v1_skip_counter_tracks_malformed_rows():
+    pytest.importorskip("huggingface_hub")
     with patch("huggingface_hub.dataset_info", _fake_dataset_info):
         with patch.dict(os.environ, {"HF_TOKEN": "fake-token"}):
             src = FullDuplexBenchV1CaseSource(synthetic=False)

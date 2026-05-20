@@ -19,6 +19,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
+pytest.importorskip("kokoro_onnx")
 from companion_harness.tts_kokoro import KokoroTtsAdapter, _MAX_CHUNK_BYTES
 
 

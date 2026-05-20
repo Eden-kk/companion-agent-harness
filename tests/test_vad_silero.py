@@ -7,6 +7,7 @@ on ALL audio — VAD never fires vad_turn_signal.
 import numpy as np
 import pytest
 
+pytest.importorskip("onnxruntime")
 from companion_harness.vad_silero import SileroVADModel
 
 

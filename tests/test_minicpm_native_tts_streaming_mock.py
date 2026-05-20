@@ -11,6 +11,8 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
+pytest.importorskip("soundfile")
+
 
 # ---------------------------------------------------------------------------
 # Helpers — build a minimal fake streaming_model + duplex

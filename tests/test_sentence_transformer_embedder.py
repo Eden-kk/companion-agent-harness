@@ -5,6 +5,9 @@ Uses the real ~90MB MiniLM-L6-v2 model; first run downloads weights.
 
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("sentence_transformers")
 from companion_harness.embedder_sentence_transformer import (
     SentenceTransformerEmbedder,
 )
