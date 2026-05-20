@@ -321,7 +321,7 @@ async def test_classifier_mechanical_fallback_addressing_agent(tmp_path: Path):
         audio_in=audio_in,
         vad_probs=[0.9, 0.9, 0.9, 0.9, 0.1, 0.1, 0.1],
         spy_policy=spy,
-        asr_model=_ScriptedASRModel(""),  # no wake-word
+        asr_model=_ScriptedASRModel("hello there how are you"),  # no wake-word, substantive
         addressing_classifier=WakeWordAddressingClassifier(),
     )
 
