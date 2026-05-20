@@ -49,6 +49,14 @@ __all__ = ["MiniCPMDuplexModel", "MiniCPMStreamingModel"]
 
 _MODEL_ID = "openbmb/MiniCPM-o-4_5"
 
+
+class _AlwaysEnded:
+    """Data descriptor: get→True (turn always ended), set→no-op (gate silently ignored)."""
+    def __get__(self, obj, objtype=None) -> bool:
+        return True
+    def __set__(self, obj, value) -> None:
+        pass
+
 # 16 kHz PCM16 — 1 second of audio = 16000 int16 samples = 32000 bytes
 _SAMPLE_RATE = 16000
 _CHUNK_SAMPLES = _SAMPLE_RATE  # 1-second chunks match MiniCPMODuplex default CHUNK_MS=1000
@@ -163,6 +171,7 @@ class MiniCPMStreamingModel:
         self._session_id = session_id
         self._seq = 0
         self._inference_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="minicpm-infer")
+        self._stream_chunks_active: bool = False
 
     def __del__(self) -> None:
         # Singleton lives for the process, but release the executor thread on GC
@@ -392,68 +401,78 @@ class MiniCPMStreamingModel:
         Unlike infer_stream (which yields only on speak), this yields for every
         chunk so the orchestrator can emit per-chunk audit events.
         """
-        if getattr(self, "_stream_chunks_active", False):
+        if self._stream_chunks_active:
             raise RuntimeError("stream_chunks re-entry: generator already active on this model")
         self._stream_chunks_active = True
         try:
             duplex = self._duplex
-            duplex.prepare(prefix_system_prompt="Continuous streaming omni companion.")
+            orig_cls = type(duplex)
+            relaxed_cls = type(
+                f"{orig_cls.__name__}_GateRelaxed",
+                (orig_cls,),
+                {"current_turn_ended": _AlwaysEnded()},
+            )
+            duplex.__class__ = relaxed_cls
+            try:
+                duplex.prepare(prefix_system_prompt="Continuous streaming omni companion.")
 
-            buf = np.array([], dtype=np.float32)
-            latest_evt_id: str = ""
-            loop = asyncio.get_running_loop()
+                buf = np.array([], dtype=np.float32)
+                latest_evt_id: str = ""
+                loop = asyncio.get_running_loop()
 
-            def _audio_kv_len() -> "int | None":
-                c = getattr(duplex.model, "audio_past_key_values", None)
-                if c is None:
+                def _audio_kv_len() -> "int | None":
+                    c = getattr(duplex.model, "audio_past_key_values", None)
+                    if c is None:
+                        return None
+                    try:
+                        if hasattr(c, "key_cache") and len(c.key_cache) > 0:
+                            return int(c.key_cache[0].shape[2])
+                        if isinstance(c, tuple) and len(c) > 0:
+                            return int(c[0][0].shape[2])
+                    except (AttributeError, IndexError, TypeError):
+                        return None
                     return None
-                try:
-                    if hasattr(c, "key_cache") and len(c.key_cache) > 0:
-                        return int(c.key_cache[0].shape[2])
-                    if isinstance(c, tuple) and len(c) > 0:
-                        return int(c[0][0].shape[2])
-                except (AttributeError, IndexError, TypeError):
-                    return None
-                return None
 
-            def _gpu_work(pcm_float: np.ndarray) -> dict:
-                duplex.streaming_prefill(audio_waveform=pcm_float)
-                return duplex.streaming_generate(
-                    max_new_speak_tokens_per_chunk=duplex.max_new_speak_tokens_per_chunk,
-                    temperature=duplex.temperature,
-                    top_k=duplex.top_k,
-                    top_p=duplex.top_p,
-                    listen_prob_scale=duplex.listen_prob_scale,
-                    text_repetition_penalty=duplex.text_repetition_penalty,
-                    text_repetition_window_size=duplex.text_repetition_window_size,
-                )
+                def _gpu_work(pcm_float: np.ndarray) -> dict:
+                    duplex.streaming_prefill(audio_waveform=pcm_float)
+                    return duplex.streaming_generate(
+                        max_new_speak_tokens_per_chunk=duplex.max_new_speak_tokens_per_chunk,
+                        temperature=duplex.temperature,
+                        top_k=duplex.top_k,
+                        top_p=duplex.top_p,
+                        listen_prob_scale=duplex.listen_prob_scale,
+                        text_repetition_penalty=duplex.text_repetition_penalty,
+                        text_repetition_window_size=duplex.text_repetition_window_size,
+                    )
 
-            while True:
-                pcm_bytes, evt_id = await audio_in.get()
-                if pcm_bytes == b"" and evt_id == "":
-                    break
-                latest_evt_id = evt_id
-                samples = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-                buf = np.concatenate([buf, samples])
-                while len(buf) >= _CHUNK_SAMPLES:
-                    chunk, buf = buf[:_CHUNK_SAMPLES], buf[_CHUNK_SAMPLES:]
+                while True:
+                    pcm_bytes, evt_id = await audio_in.get()
+                    if pcm_bytes == b"" and evt_id == "":
+                        break
+                    latest_evt_id = evt_id
+                    samples = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+                    buf = np.concatenate([buf, samples])
+                    while len(buf) >= _CHUNK_SAMPLES:
+                        chunk, buf = buf[:_CHUNK_SAMPLES], buf[_CHUNK_SAMPLES:]
+                        result = await loop.run_in_executor(self._inference_executor, _gpu_work, chunk)
+                        is_listen = bool(result.get("is_listen", True))
+                        text = result.get("text", "") or ""
+                        kv_len = _audio_kv_len()
+                        self._last_is_listen = is_listen
+                        yield (is_listen, text, kv_len, latest_evt_id)
+
+                # drain trailing sub-_CHUNK_SAMPLES buffer (invariant #1: every chunk → event)
+                if len(buf) > 0 and latest_evt_id:
+                    pad = np.zeros(_CHUNK_SAMPLES - len(buf), dtype=np.float32)
+                    chunk = np.concatenate([buf, pad])
                     result = await loop.run_in_executor(self._inference_executor, _gpu_work, chunk)
                     is_listen = bool(result.get("is_listen", True))
                     text = result.get("text", "") or ""
                     kv_len = _audio_kv_len()
                     self._last_is_listen = is_listen
                     yield (is_listen, text, kv_len, latest_evt_id)
-
-            # drain trailing sub-_CHUNK_SAMPLES buffer (invariant #1: every chunk → event)
-            if len(buf) > 0 and latest_evt_id:
-                pad = np.zeros(_CHUNK_SAMPLES - len(buf), dtype=np.float32)
-                chunk = np.concatenate([buf, pad])
-                result = await loop.run_in_executor(self._inference_executor, _gpu_work, chunk)
-                is_listen = bool(result.get("is_listen", True))
-                text = result.get("text", "") or ""
-                kv_len = _audio_kv_len()
-                self._last_is_listen = is_listen
-                yield (is_listen, text, kv_len, latest_evt_id)
+            finally:
+                duplex.__class__ = orig_cls
         finally:
             self._stream_chunks_active = False
 

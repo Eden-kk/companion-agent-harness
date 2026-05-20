@@ -52,7 +52,8 @@ class _ForegroundModelProtocol(Protocol):
 class _AudioOutputProtocol(Protocol):
     @property
     def is_playing(self) -> bool: ...
-    def start_generation(self, *, caused_by: list[str]) -> str: ...
+    def start_generation(self, caused_by: list[str]) -> str: ...
+    def request_stop(self, caused_by: list[str]) -> str: ...
 
 
 class ContinuousOrchestrator:
@@ -129,19 +130,21 @@ class ContinuousOrchestrator:
             )
             decision = decide_chunk(inputs, caused_by_evt_id=caused_by_evt_id)
             self._emit_policy_decision(decision, caused_by_evt_id)
-            self._act(decision, caused_by_evt_id)
+            self._act(decision, is_listen, caused_by_evt_id)
             chunk_idx += 1
 
     # ------------------------------------------------------------------
     # Act on the per-chunk decision (PR3a — start speech only; PR3b adds stop)
     # ------------------------------------------------------------------
 
-    def _act(self, decision: SpeakDecision, caused_by_evt_id: str) -> None:
-        # Start speech on a speak decision only when not already speaking.
-        # is_playing is owned by the audio_output adapter (mirrors the
-        # turn-based path). PR3b adds the model-native barge-in stop path;
-        # PR3a only starts. (start_generation returns a gen_event_id that
-        # PR3b will capture as caused_by for the stop; PR3a has no stop yet.)
+    def _act(self, decision: SpeakDecision, is_listen: bool, caused_by_evt_id: str) -> None:
+        if is_listen and self._audio_output.is_playing:
+            self._audio_output.request_stop(caused_by=[caused_by_evt_id])
+            self._emit_barge_in(caused_by_evt_id)
+            # stop wins: model yielded (is_listen); a speak decision (if any) is
+            # overridden by silence this chunk. decide_chunk also returns silence
+            # on is_listen, so the two layers agree.
+            return
         if decision.action_type in _SPEAK_ACTIONS and not self._audio_output.is_playing:
             self._audio_output.start_generation(caused_by=[caused_by_evt_id])
 
@@ -223,6 +226,34 @@ class ContinuousOrchestrator:
             sensitivity="safe",
             retention_policy_id="signal_default_30d",
             payload_inline=kv_payload,
+        )
+        self._logger.log(evt)
+
+    def _emit_barge_in(self, caused_by_evt_id: str) -> None:
+        now_ms = int(time.monotonic() * 1000)
+        seq = self._next_seq()
+        event_id = f"{self._session_id}-bi-{seq}-{now_ms}"
+        payload_inline: dict = {}
+        payload_hash = hashlib.sha256(
+            json.dumps(payload_inline, sort_keys=True).encode()
+        ).hexdigest()[:16]
+        evt = Event(
+            event_id=event_id,
+            session_id=self._session_id,
+            schema_version=_SCHEMA_VERSION,
+            seq_no=seq,
+            event_type="model_native_barge_in",
+            timestamp_mono_ms=now_ms,
+            timestamp_wall=datetime.now(timezone.utc).isoformat(),
+            source=_SOURCE,
+            caused_by=[caused_by_evt_id],
+            payload_hash=payload_hash,
+            payload_ref=None,
+            payload_kind="signal",
+            subject_class="self",
+            sensitivity="safe",
+            retention_policy_id="signal_default_30d",
+            payload_inline=payload_inline,
         )
         self._logger.log(evt)
 

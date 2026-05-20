@@ -72,6 +72,8 @@ EXPECTED_EVENT_TYPES = {
     "audio_kv_reset",
     # ContinuousOrchestrator PR3a: per-chunk policy decision
     "policy_decision",
+    # ContinuousOrchestrator PR3b: model-native barge-in stop signal
+    "model_native_barge_in",
 }
 
 
