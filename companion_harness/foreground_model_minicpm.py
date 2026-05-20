@@ -32,6 +32,7 @@ import asyncio
 import hashlib
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, AsyncGenerator, AsyncIterator
 
@@ -121,6 +122,7 @@ class MiniCPMStreamingModel:
         *,
         init_vision: bool = False,
         enable_torch_compile: bool = False,
+        sliding_window_mode: str = "off",
         logger: "EventLogger | None" = None,
         session_id: str = "",
     ) -> None:
@@ -150,7 +152,7 @@ class MiniCPMStreamingModel:
             self._torch_compile_active = False
         self._tokenizer = AutoTokenizer.from_pretrained(_MODEL_ID, trust_remote_code=True)
 
-        self._duplex = base.as_duplex(generate_audio=False)
+        self._duplex = base.as_duplex(generate_audio=False, sliding_window_mode=sliding_window_mode)
         # Tracks is_listen from the most recent streaming_generate call.
         # True (listen) is the safe default — EOU has not fired yet.
         self._last_is_listen: bool = True
@@ -160,6 +162,7 @@ class MiniCPMStreamingModel:
         self._logger = logger
         self._session_id = session_id
         self._seq = 0
+        self._inference_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="minicpm-infer")
 
     def set_session(self, session_id: str, logger: "EventLogger") -> None:
         """Bind this singleton model to a new ingest session.
@@ -364,6 +367,85 @@ class MiniCPMStreamingModel:
         gen = await self.infer_stream(frame_iter, caused_by)
         async for proposal in gen:
             on_proposal(proposal)
+
+    async def stream_chunks(
+        self,
+        audio_in: "asyncio.Queue[tuple[bytes, str]]",
+    ) -> AsyncGenerator[tuple[bool, str, "int | None", str], None]:
+        """Continuous per-chunk async generator for ContinuousOrchestrator.
+
+        Consumes (pcm16_bytes, event_id) tuples from audio_in until a sentinel
+        (b"", "") is received, accumulates into 1-second chunks, runs the duplex
+        GPU call via run_in_executor, and yields one record per chunk:
+            (is_listen, text, audio_kv_len, caused_by_evt_id)
+
+        Unlike infer_stream (which yields only on speak), this yields for every
+        chunk so the orchestrator can emit per-chunk audit events.
+        """
+        if getattr(self, "_stream_chunks_active", False):
+            raise RuntimeError("stream_chunks re-entry: generator already active on this model")
+        self._stream_chunks_active = True
+        try:
+            duplex = self._duplex
+            duplex.prepare(prefix_system_prompt="Continuous streaming omni companion.")
+
+            buf = np.array([], dtype=np.float32)
+            latest_evt_id: str = ""
+            loop = asyncio.get_running_loop()
+
+            def _audio_kv_len() -> "int | None":
+                c = getattr(duplex.model, "audio_past_key_values", None)
+                if c is None:
+                    return None
+                try:
+                    if hasattr(c, "key_cache") and len(c.key_cache) > 0:
+                        return int(c.key_cache[0].shape[2])
+                    if isinstance(c, tuple) and len(c) > 0:
+                        return int(c[0][0].shape[2])
+                except Exception:
+                    return None
+                return None
+
+            def _gpu_work(pcm_float: np.ndarray) -> dict:
+                duplex.streaming_prefill(audio_waveform=pcm_float)
+                return duplex.streaming_generate(
+                    max_new_speak_tokens_per_chunk=duplex.max_new_speak_tokens_per_chunk,
+                    temperature=duplex.temperature,
+                    top_k=duplex.top_k,
+                    top_p=duplex.top_p,
+                    listen_prob_scale=duplex.listen_prob_scale,
+                    text_repetition_penalty=duplex.text_repetition_penalty,
+                    text_repetition_window_size=duplex.text_repetition_window_size,
+                )
+
+            while True:
+                pcm_bytes, evt_id = await audio_in.get()
+                if pcm_bytes == b"" and evt_id == "":
+                    break
+                latest_evt_id = evt_id
+                samples = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+                buf = np.concatenate([buf, samples])
+                while len(buf) >= _CHUNK_SAMPLES:
+                    chunk, buf = buf[:_CHUNK_SAMPLES], buf[_CHUNK_SAMPLES:]
+                    result = await loop.run_in_executor(self._inference_executor, _gpu_work, chunk)
+                    is_listen = bool(result.get("is_listen", True))
+                    text = result.get("text", "") or ""
+                    kv_len = _audio_kv_len()
+                    self._last_is_listen = is_listen
+                    yield (is_listen, text, kv_len, latest_evt_id)
+
+            # drain trailing sub-_CHUNK_SAMPLES buffer (invariant #1: every chunk → event)
+            if len(buf) > 0 and latest_evt_id:
+                pad = np.zeros(_CHUNK_SAMPLES - len(buf), dtype=np.float32)
+                chunk = np.concatenate([buf, pad])
+                result = await loop.run_in_executor(self._inference_executor, _gpu_work, chunk)
+                is_listen = bool(result.get("is_listen", True))
+                text = result.get("text", "") or ""
+                kv_len = _audio_kv_len()
+                self._last_is_listen = is_listen
+                yield (is_listen, text, kv_len, latest_evt_id)
+        finally:
+            self._stream_chunks_active = False
 
     def reset_streaming_session(self, *, caused_by: list[str]) -> "Event":
         """Clear duplex KV cache (audio_past_key_values + llm_past_key_values).
