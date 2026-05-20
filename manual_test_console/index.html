@@ -125,6 +125,22 @@
   .toast-area { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); display: flex; flex-direction: column; gap: 4px; z-index: 1000; }
   .toast { background: #2b1f23; color: var(--err); border: 1px solid var(--err); padding: 6px 12px; border-radius: 4px; font-size: 11.5px; opacity: 0.95; }
   .show-tuning { display: none; }
+  /* ---- Dialogue panel ---- */
+  .col-stack { display: flex; flex-direction: column; overflow: hidden; }
+  .col-stack .panel { flex: 1; min-height: 0; border-right: none; }
+  .col-stack .panel + .panel { border-top: 1px solid #1f2530; }
+  .bargein-open h2   { background: #6e1010; color: #fff; border-color: #c0392b; }
+  .bargein-interrupted h2 { background: #7a4a00; color: #fff; border-color: #c17f00; }
+  @keyframes bargein-pulse { 0%,100% { opacity:1; } 50% { opacity:0.55; } }
+  .bargein-open h2 { animation: bargein-pulse 0.9s ease-in-out infinite; }
+  .dialogue-row { padding: 4px 8px; font-family: monospace; font-size: 11.5px; border-bottom: 1px dotted #1f2530; }
+  .dialogue-row .ts { color: #6a737d; margin-right: 8px; }
+  .dialogue-row .role-user { color: #79b8ff; font-weight: bold; }
+  .dialogue-row .role-agent { color: #34d058; font-weight: bold; }
+  .dialogue-row .text { margin-left: 8px; }
+  .dialogue-row.streaming .text { font-style: italic; }
+  .dialogue-row.streaming .text::after { content: "▋"; animation: blink 1s step-start infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
   @media (max-width: 1024px) {
     main { grid-template-columns: 1fr 1fr; }
     #tuning-panel { position: fixed; right: 0; top: 38px; bottom: 0; width: min(420px, 92vw); z-index: 999; border-left: 1px solid #1f2530; box-shadow: -4px 0 18px rgba(0,0,0,0.55); }
@@ -156,14 +172,20 @@
   <button id="btn-show-tuning" class="show-tuning" title="Show threshold-tuning panel">&#9881; Tuning</button>
 </header>
 <main id="main-grid">
-  <section class="panel">
-    <h2>Ingested input Events</h2>
-    <div class="rows" id="ingest-rows"></div>
-    <div class="video-area">
-      <video id="cam-preview" autoplay muted playsinline></video>
-      <div class="thumbs" id="thumbs"></div>
-    </div>
-  </section>
+  <div class="col-stack">
+    <section class="panel" id="dialogue-panel">
+      <h2>Dialogue — <span id="bargein-status">○ idle</span></h2>
+      <div class="rows" id="dialogue-rows"></div>
+    </section>
+    <section class="panel">
+      <h2>Ingested input Events</h2>
+      <div class="rows" id="ingest-rows"></div>
+      <div class="video-area">
+        <video id="cam-preview" autoplay muted playsinline></video>
+        <div class="thumbs" id="thumbs"></div>
+      </div>
+    </section>
+  </div>
   <section class="panel">
     <h2>TurnSignals / SpeakDecisions / causal chain</h2>
     <div class="filter-bar" id="audit-filter-bar">
@@ -229,6 +251,7 @@
   const AUDIO_OUT_URL = `${wsScheme}//${location.host}/ws/audio_out`;
 
   const ingestRows = document.getElementById("ingest-rows");
+  const dialogueRows = document.getElementById("dialogue-rows");
   const signalRows = document.getElementById("signal-rows");
   const logEl = document.getElementById("log");
   const btnStart = document.getElementById("btn-start");
@@ -260,6 +283,26 @@
   let videoTimer = null;
   const knownEventIds = new Set();
   const eventRowsById = new Map();
+  const dialogueAccum = new Map(); // response_id → live DOM row
+
+  const dialoguePanel = document.getElementById("dialogue-panel");
+  const bargeinStatus = document.getElementById("bargein-status");
+  let bargeinInterruptedTimer = null;
+  function setBargeinState(state) {
+    clearTimeout(bargeinInterruptedTimer);
+    dialoguePanel.classList.remove("bargein-open", "bargein-interrupted");
+    if (state === "open") {
+      dialoguePanel.classList.add("bargein-open");
+      bargeinStatus.textContent = "● barge-in OPEN";
+    } else if (state === "interrupted") {
+      dialoguePanel.classList.add("bargein-interrupted");
+      bargeinStatus.textContent = "✕ interrupted";
+      bargeinInterruptedTimer = setTimeout(() => setBargeinState("idle"), 1000);
+    } else {
+      bargeinStatus.textContent = "○ idle";
+    }
+  }
+
   // Modality buckets to render in the right column.
   const SIGNAL_TYPES = new Set([
     "vad_frame", "vad_turn_signal",
@@ -284,9 +327,29 @@
     return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   }
 
+  function fmtWallTs(iso) {
+    if (!iso) return "";
+    const d = new Date(iso);
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    const ss = String(d.getSeconds()).padStart(2, "0");
+    const ms = String(d.getMilliseconds()).padStart(3, "0");
+    return `${hh}:${mm}:${ss}.${ms}`;
+  }
+
+  function appendDialogueRow(role, text, ts) {
+    const row = document.createElement("div");
+    row.className = "dialogue-row";
+    const roleClass = role === "USER" ? "role-user" : "role-agent";
+    row.innerHTML = `<span class="ts">${escapeHtml(fmtWallTs(ts))}</span><span class="${roleClass}">${role}</span><span class="text">${escapeHtml(text)}</span>`;
+    dialogueRows.appendChild(row);
+    while (dialogueRows.children.length > 200) dialogueRows.removeChild(dialogueRows.firstChild);
+    dialogueRows.scrollTop = dialogueRows.scrollHeight;
+  }
+
   function eventPreview(evt) {
     const p = evt.payload_inline || {};
-    if (evt.event_type === "asr_transcript_emitted") return (p.text || "").slice(0, 80);
+    if (evt.event_type === "asr_transcript_emitted") return (p.text_preview || p.text || "").slice(0, 80);
     if (evt.event_type === "policy_decision") return "";
     if (evt.event_type === "speak_decision") return (p.reason || p.action_type || "");
     if (evt.event_type === "foreground_proposal") return (p.text || p.content || "").slice(0, 80);
@@ -337,6 +400,31 @@
       orphanMeta.textContent = `orphans: ${orphanCount}`;
     }
 
+    // Dialogue panel routing.
+    const p = evt.payload_inline || {};
+    if (evt.event_type === "asr_transcript_emitted") {
+      const text = (p.text_preview || "").trim();
+      if (text) appendDialogueRow("USER", text, evt.timestamp_wall);
+    } else if (evt.event_type === "proposer_token_buffered") {
+      // ring_seq is session-scoped monotonic (not reset per turn), so keying by it is correct for this single-stream console.
+      const rid = p.ring_seq != null ? String(p.ring_seq) : "";
+      let drow = dialogueAccum.get(rid);
+      if (!drow) {
+        drow = document.createElement("div");
+        drow.className = "dialogue-row streaming";
+        drow.innerHTML = `<span class="ts">${escapeHtml(fmtWallTs(evt.timestamp_wall))}</span><span class="role-agent">AGENT</span><span class="text"></span>`;
+        dialogueRows.appendChild(drow);
+        while (dialogueRows.children.length > 200) dialogueRows.removeChild(dialogueRows.firstChild);
+        dialogueAccum.set(rid, drow);
+      }
+      drow.querySelector(".text").textContent += (p.text_preview || "");
+      dialogueRows.scrollTop = dialogueRows.scrollHeight;
+    } else if (evt.event_type === "commit_or_discard") {
+      // Finalize streaming row on commit/discard.
+      for (const [rid, drow] of dialogueAccum) { drow.classList.remove("streaming"); }
+      dialogueAccum.clear();
+    }
+
     const row = document.createElement("div");
     row.className = "row " + (orphan ? "orphan " : "") + (evt.event_type || "");
     const kind = document.createElement("div");
@@ -379,7 +467,7 @@
   // ---------------- Display WS ----------------
   function connectDisplay() {
     displayWs = new WebSocket(DISPLAY_URL);
-    displayWs.onopen = () => { dispStatus.textContent = "display: connected"; dispStatus.className = "status ok"; log("display ws connected"); };
+    displayWs.onopen = () => { dispStatus.textContent = "display: connected"; dispStatus.className = "status ok"; log("display ws connected"); dialogueRows.innerHTML = ""; dialogueAccum.clear(); setBargeinState("idle"); };
     displayWs.onclose = () => { dispStatus.textContent = "display: closed"; dispStatus.className = "status off"; log("display ws closed; retrying in 2s"); setTimeout(connectDisplay, 2000); };
     displayWs.onerror = (e) => log("display ws error");
     displayWs.onmessage = (msg) => {
