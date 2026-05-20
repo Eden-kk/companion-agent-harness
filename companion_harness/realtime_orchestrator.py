@@ -736,6 +736,7 @@ class StreamingRealtimeOrchestrator:
                     sensitivity="sensitive",
                     retention_policy_id="transcript_audit_30d",
                     payload_ref=f"orchestrator://{transcript_evt_id}",
+                    payload_inline={"text_preview": transcript[:200]},
                 )
                 self._logger.log(transcript_evt)
 
