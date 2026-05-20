@@ -69,24 +69,50 @@ Despite the speak-bias, every barge-in trial yielded within 1–3 chunks; the si
 Raw outputs: `/tmp/probe-turn-gate-barge-in.json`, `/tmp/probe-turn-gate-v2.json`.
 <!-- PROBE-RESULTS-END -->
 
-## 4. Why one KV cache is essential (not just convenient)
+## 4. The KV substrate: component caches + one unified backbone
 
-The stop/continue judgment requires the model to weigh *what I'm saying* against *what the user is now saying* — a comparison that only works if both live in the same attention context. MiniCPM-o already keeps everything in one `llm_past_key_values` as a stream of `<unit>…</unit>` blocks in token-time order:
+MiniCPM-o is **not** a single monolithic cache. It has separate physical KV stores by component: `audio_past_key_values` (the audio encoder, **capped ~1500 tokens, auto-resetting** — `modeling_minicpmo.py:565`), `tts_past_key_values` (the speech head), and `llm_past_key_values` (the language backbone). Two consequences:
+
+- **"Listen" memory is inherently rolling.** The audio-encoder KV caps and auto-resets (the probe printed `audio_past_key_values length 1502 exceed 1500, reset`). Raw-audio context is short-lived by construction; long-term listening memory must be summarized into the backbone KV or held in the external MemoryManager — never assume the audio KV retains it.
+- **The backbone unifies everything, necessarily.** Vision tokens and audio embeddings both flow into the one `llm_past_key_values`, where the model attends over them together. The stop/continue judgment requires this: the probe (§3.1) showed the model weighing its own in-progress speech against incoming user audio — a comparison that only works if both live in one attention context.
+
+The backbone holds a stream of `<unit>…</unit>` blocks in token-time order:
 
 ```
 [system][user-audio unit][model-speak unit][user-audio unit ← barge-in][model attends over ALL of it]
 ```
 
-"Realize it in one KV cache" is therefore not something to build — it is what `streaming_generate` already uses. Keep all four streams in that single cache:
+**Realize it in one backbone cache** is therefore not something to build — it is what `streaming_generate` already uses. The four roles all land in that one backbone KV:
 
-| Stream | Entry into the single KV |
+| Role | Entry into the backbone KV |
 |---|---|
 | User audio (listen) | `streaming_prefill(audio_waveform=...)` |
 | Model speech (talk) | speak tokens appended during `streaming_generate` |
 | Vision | `streaming_prefill(frame_list=...)` |
 | Background thoughts (think) | `streaming_prefill(text_list=[thought])` — chunk-boundary injection, cheap (~10–30 ms), supported |
 
-The background reasoner does heavy thinking off the realtime path and **whispers context into the foreground's ear** (the same KV) as text units. The foreground then conditions its next speak/listen decision on that context. This is the resolution to "thinking by a background model, talk+listen by MiniCPM."
+The background reasoner does heavy thinking off the realtime path and **whispers context into the foreground's ear** (the same backbone KV) as text units. The foreground then conditions its next speak/listen decision on that context. This is the resolution to "thinking by a background model, talk+listen by MiniCPM."
+
+### 4.1 Role management within the backbone — and what needs training
+
+The four roles share the one backbone KV; there is **no physical per-role lane** (that would be the 2605.12460 / Moshi parallel-lane architecture — retraining). What is achievable is **logical** role management within the single cache:
+
+- **Strategy 1 — role-typed units.** Extend the native `<unit>` typing (the model already tags AUDIO/VISION/TEXT) with a harness-side role label: `user-audio`, `model-speech`, `background-think`, `vision`. One physical cache, logically labeled. Foundation for the rest.
+- **Strategy 2 — role-aware eviction.** Drive the `context` sliding window (`context_max_units`, `context_previous_max_tokens`) by role priority: keep system prompt + recent user-audio + recent thoughts; evict old **model-speech first** (the model needs its own past utterances less than the user's). This is the §5 unbounded-growth fix made role-aware.
+- **Strategy 3 — role snapshots.** The model's native snapshot (`restore_speculative_snapshot`, `modeling_minicpmo.py:1603–1717`) already clones `audio_past_key_values`; the harness currently snapshots only `decoder.cache` (`foreground_model_minicpm.py:627`). Upgrade to the fuller snapshot and keep a "clean listen state" to restore to after a discarded speak attempt — exactly what the barge-in path needs.
+
+**Does role-tagging need training?** Decompose by role:
+
+| Role | Native to MiniCPM-o? | Training |
+|---|---|---|
+| user-audio | Yes (`AUDIO` unit) | none |
+| vision | Yes (`VISION` unit) | none |
+| model-speech | Yes (`<\|speak\|>` vs `<\|listen\|>`) | none |
+| **background-think** | **No native concept** | **the open question** |
+
+Three of four roles are already trained-in; the harness tags them for audit/eviction without touching the model. Only `background-think` is new, and it has three levels: (1) **harness metadata only** — free bookkeeping for audit/eviction; (2) **in-context markers + system-prompt protocol** ("`[CONTEXT: …]` is information, never voice it"), reusing the native `TEXT` unit + `context_previous_marker` affordance — free to try, reliability unproven under streaming decode; (3) **reliable learned behavior** — finetune on streaming data where think-context is injected and the model learns to incorporate-not-voice it. **Discipline: probe level 2 first; finetune (level 3) only if prompt-only proves unreliable.** Do not finetune speculatively — background-think may piggyback on the native `TEXT`/context-injection path well enough.
+
+Related finding: `enable_thinking` is a real parameter on the **base** streaming path (`modeling_minicpmo.py:1805/1966`) but is **not exposed** by the `MiniCPMODuplex` wrapper the harness uses (line 3129). There may be a latent native foreground think-channel the duplex wrapper discards — probe in §10.
 
 ## 5. The coupling you must not miss: turn-free *requires* the sliding window
 
@@ -157,16 +183,20 @@ Everything needed exists:
 | Finer granularity (~200 ms) | `chunk_ms` ↓ from 1000 |
 | Unbounded session memory | `sliding_window_mode="context"` (REQUIRED once per-turn resets are gone) |
 | Safety-net stop | `break_event` (VAD fast path) |
-| The single context | `llm_past_key_values` — already one cache |
+| Unified reasoning context | `llm_past_key_values` (audio/tts encoders have separate component caches — §4) |
+| Logical role partition | harness-side role tags on `<unit>` blocks + role-aware `context` window (§4.1) |
+| Native foreground thinking | `enable_thinking` (base streaming path only; not in the duplex wrapper — §4.1) |
 
 ## 10. Staging (probe-gated)
 
 1. **Probe** (`scripts/probe_turn_gate_barge_in.py`, `_v2.py`) — §3 go/no-go. **DONE → GO** (§3.1). Decided: orchestration, not fine-tuning.
-1b. **Backchannel-discrimination probe** — the untested half of §3.1 caveat 3. Feed a backchannel ("mm-hmm", "yeah") as the condition audio with the gate open; expect the model to KEEP speaking (no yield). Only when this passes can the model's yield judgment be trusted without the BackchannelClassifier. Until then, keep the discrimination layer (§6). Run this before Stage 3.
+1b. **Backchannel-discrimination probe** — the untested half of §3.1 caveat 3. Feed a backchannel ("mm-hmm", "yeah") as the condition audio with the gate open; expect the model to KEEP speaking (no yield). Only when this passes can the model's yield judgment be trusted without the BackchannelClassifier. Until then, keep the discrimination layer (§6). Run before Stage 3.
+1c. **Prompt-compliance probe** — does the duplex model honor a structured-output system prompt (treat `[CONTEXT: …]` as silent information, not speech) under streaming decode? Gates whether `background-think` (§4.1) works via in-context protocol or needs finetuning. Run before Stage 5.
+1d. **`enable_thinking` re-exposure probe** — patch the duplex wrapper to pass `enable_thinking=True` to the base streaming path (§4.1); measure whether a native foreground think-channel appears and its latency cost. Informs Stage 5's think-source choice.
 2. **Continuous feeder + sliding window.** Replace per-response drain; enable `context` window. (Inseparable — §5.)
 3. **Model-native barge-in primary; VAD demoted to safety net.** Wire the relaxed gate's `<|listen|>` as the primary barge-in signal.
 4. **SpeakPolicy → continuous per-chunk gate.** The big refactor; preserves invariants #4/#5.
-5. **Background-thought injection** via `streaming_prefill(text_list=...)` into the shared KV.
+5. **Background-thought injection + role-typed KV management** (§4.1) — inject thoughts as role-tagged `background-think` units via `streaming_prefill(text_list=...)`; enable role-aware eviction (Strategy 2) and the fuller role snapshot (Strategy 3). Think-source (in-context protocol vs `enable_thinking`) decided by probes 1c/1d; finetune only if 1c fails.
 6. **Tune `chunk_ms` → ~200 ms and `listen_prob_scale`** empirically against Stage 6 `false_proactive_utterances_per_hour` and barge-in latency gates.
 
 ## 11. Risks
@@ -179,6 +209,8 @@ Everything needed exists:
 | Determinism under continuous operation | Log per-chunk `(is_listen, tokens)`; Tier-B replays recorded outputs, not live sampling |
 | Continuous SpeakPolicy is a core-path refactor | Stage 4 isolated; keep rule-based + per-chunk deterministic |
 | GPU cost of continuous proposers + foreground + vision | Confirm on b200 before flag flip; the background reasoner runs off the realtime path |
+| `background-think` role unreliable via prompt-only (needs finetuning) | Probe 1c (§10) decides; only `background-think` is non-native — user-audio/vision/model-speech are trained-in (§4.1). Finetune is the fallback, not the default |
+| Audio-encoder KV auto-reset (~1500 cap) drops listening context mid-session | Expected behavior (§4); long-term listen memory lives in backbone KV / MemoryManager, not the audio cache |
 
 ## 12. References
 
