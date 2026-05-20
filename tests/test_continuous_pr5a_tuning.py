@@ -33,7 +33,7 @@ _BYTES_PER_SAMPLE = 2
 
 def test_effective_listen_prob_scale_override_and_fallback() -> None:
     """Set value → returns it; None → falls back to the duplex's own value."""
-    pytest.importorskip("torch")
+    pytest.importorskip("torch")  # guard: importing the adapter pulls torch; the method itself is pure
     from companion_harness.foreground_model_minicpm import MiniCPMStreamingModel  # noqa: PLC0415
 
     m = object.__new__(MiniCPMStreamingModel)  # bypass __init__ (loads the model)
@@ -131,11 +131,11 @@ class _RecordingAudioOutput:
     def is_playing(self) -> bool:
         return False
 
-    def start_generation(self, *, caused_by: list[str]) -> str:
+    def start_generation(self, caused_by: list[str]) -> str:  # match _AudioOutputProtocol (positional)
         self.start_calls += 1
         return "gen"
 
-    def request_stop(self, *, caused_by: list[str]) -> str:
+    def request_stop(self, caused_by: list[str]) -> str:  # match _AudioOutputProtocol (positional)
         self.stop_calls += 1
         return "stop"
 
