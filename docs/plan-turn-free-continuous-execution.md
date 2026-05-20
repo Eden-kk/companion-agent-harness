@@ -125,7 +125,9 @@ Bit-identical Tier-B replay requires a canonical, scalar, ordered serialization 
 
 **Precedence rule (design §9).** Policy gate is authoritative; `listen_prob_scale` only biases the model's upstream `is_listen` sampling; gate-closed ⇒ silence regardless of model preference. Encode this ordering in the gate.
 
-**Success criterion.** `test_continuous_latency_and_proactivity`: with `chunk_ms≈200`, barge-in p95 within the Stage-1 budget and Stage-6 `false_proactive_utterances_per_hour` within target on the fixture set. This is the programmatic merge gate.
+**Real-time headroom + fallback (resolves the borderline 209 ms vs 200 ms finding).** PR5a targets `chunk_ms=200` **with `torch.compile` enabled** (needed to bring per-chunk compute under the 200 ms budget; the 209 ms figure was measured without it). If, on the target hardware, p95 still misses the Stage-1 barge-in budget at 200 ms, **fall back to `chunk_ms=250`** (next sweep step, comfortably real-time at 365 ms→ with compile headroom) rather than shipping a chunk size whose compute overruns the chunk period. The success criterion below is evaluated at the chosen `chunk_ms` (200 with compile, else 250).
+
+**Success criterion.** `test_continuous_latency_and_proactivity`: at the chosen `chunk_ms` (200 with `torch.compile`, else 250), barge-in p95 within the Stage-1 budget and Stage-6 `false_proactive_utterances_per_hour` within target on the fixture set. This is the programmatic merge gate. (A chunk size whose mean per-chunk compute exceeds its own duration fails this gate by construction — p95 cannot stay within budget if the loop can't keep real-time.)
 
 **Invariants touched.** #8, Stage-1 latency budgets, Stage-6 texture gates.
 
