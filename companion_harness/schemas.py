@@ -22,6 +22,7 @@ __all__ = [
     "DecisionTrace",
     "TurnSignal",
     "PolicyInputs",
+    "PerChunkPolicyInputs",
     "SpeakDecision",
     "ThinkerProposal",
     "RubricViolation",
@@ -181,6 +182,28 @@ class PolicyInputs:
     tool_progress_evidence:      ToolProgressEvidence | None = None  # v0.1f Anchor 4
     user_transcript:             str = ""  # ASR output for the current/just-completed turn. v0.1f addition.
     current_speaker_id:          str | None = None  # v0.2b: latest speaker_id from DiarizationAdapter; None when diarization disabled.
+
+
+@dataclass
+class PerChunkPolicyInputs:
+    """Deterministic per-chunk signal for the continuous gate (turn-free, PR2).
+
+    Tier-B replay (invariant #5): the recorded signal `decide_chunk` consumes.
+    Every field is a scalar/enum-string — NO dicts/sets — so it serializes
+    canonically and replays bit-identically with no iteration-order dependence.
+    Distinct from the per-turn `PolicyInputs` (whose `eou_probability`/
+    `user_speaking` are turn-defined). Fields are added incrementally as the
+    gate's rules consume them — PR3 adds the barge-in signals (vad / smart-turn /
+    assistant_audio / risk_mode); the dict-valued per-turn budget/cooldown state
+    is flattened to scalars here.
+    """
+    chunk_index:                    int   # session clock (audio_chunk_idx)
+    model_is_listen:                bool  # the model's own per-chunk listen(True)/speak(False) signal
+    backchannel_score:              float
+    user_addressed_agent:           bool
+    privacy_mode:                   str
+    social_mode:                    str
+    budget_full_response_remaining: int = 1
 
 
 @dataclass
