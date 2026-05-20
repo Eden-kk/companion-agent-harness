@@ -33,7 +33,7 @@ jobs:
           pip install ${{ matrix.extras.install }}
 
       - name: Run local test suite
-        run: python -m pytest -m "not gpu" -q tests/
+        run: python -m pytest -m "not gpu and not real_corpus and not requires_diarization" -q tests/
 
       - name: Replay report (informational)
         run: python scripts/v0_1a_replay_report.py
