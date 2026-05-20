@@ -325,4 +325,21 @@ EVENT_TYPE_SCHEMAS: dict[str, StageSixEventSchema] = {
             "new_len. caused_by[] closes through the raw_audio_chunk event_id."
         ),
     ),
+
+    # policy_decision is emitted by BOTH the turn-based RealtimeOrchestrator
+    # (per-turn, with a DecisionTrace) and the ContinuousOrchestrator (PR3a,
+    # per-chunk). Both use retention_policy_id="decision_trace_30d" so the type
+    # has one canonical retention class. caused_by: [raw_audio_chunk.event_id].
+    "policy_decision": StageSixEventSchema(
+        payload_kind="signal",
+        subject_class="self",
+        sensitivity="safe",
+        retention_policy_id="decision_trace_30d",
+        notes=(
+            "Per-policy-decision audit. RealtimeOrchestrator emits it per turn "
+            "(with a DecisionTrace artifact); ContinuousOrchestrator emits it per "
+            "chunk after decide_chunk (payload: action_type, primary_reason_code). "
+            "caused_by[] closes through the raw_audio_chunk event_id (invariants #1, #4)."
+        ),
+    ),
 }
