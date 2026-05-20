@@ -64,9 +64,33 @@ Despite the speak-bias, every barge-in trial yielded within 1–3 chunks; the si
 **Caveats (do not skip):**
 1. N=3, synthetic (Kokoro) barge-in audio, single speaker. Confirm with real human barge-in and larger N before any flag-flip.
 2. `listen_prob_scale=0.3` is an artificial speak-bias for the test; the production value biases the *other* way, toward listening (§9, invariant #8).
-3. **Only the "stop on a real interruption" half is shown.** The complementary half the north star requires — the model *keeps talking through a backchannel* ("mm-hmm") and yields only on a genuine interruption — is **not yet tested**. That is the immediate follow-up probe (feed a backchannel as the condition audio; expect NO yield). Until it passes, keep VAD + BackchannelClassifier as the discrimination layer (§6 safety net) rather than trusting the model's raw yield judgment unconditionally.
+3. The "stop on a real interruption" half is shown here; the complementary "keep talking through a backchannel" half is now confirmed in §3.2 (probe 1b).
 
 Raw outputs: `/tmp/probe-turn-gate-barge-in.json`, `/tmp/probe-turn-gate-v2.json`.
+
+### 3.2 Follow-up probe results — 1b / 1c / 1d (`scripts/probe_continuous_followups.py`)
+
+Run 2026-05-19, same environment, one model load.
+
+**1b — Backchannel discrimination: DISCRIMINATES (GO).** Gate bypassed, `listen_prob_scale=0.3`, three conditions × 2 trials, metric chunks-to-yield:
+
+| Condition | Yielded | chunks-to-yield |
+|---|---|---|
+| SILENCE (control) | 0/2 | — (kept talking the whole window) |
+| BACKCHANNEL ("Mm-hmm. Yeah. Uh-huh.") | 0/2 | — (kept talking) |
+| INTERRUPTION ("No wait, stop…") | 2/2 | [8, 4] |
+
+The model narrated *coherently straight through* the backchannel ("…the traveler felt weightless as they left the atmosphere behind… stars appeared brighter than ever. Landing on the moon was quiet but powerful…") and yielded only on the real interruption. **The model judges *whether* to stop, natively** — backchannel ≈ silence, interruption yields. This closes §3.1 caveat 3. Caveat: N=2, synthetic; keep the BackchannelClassifier as a safety net until validated at scale, but the model demonstrably *can* discriminate.
+
+**1c — Prompt-compliance: compliance solid, incorporation flaky.** With a protocol system prompt ("`[CONTEXT: …]` is private; never read it aloud"), `[CONTEXT: the secret password is XYLOPHONE7]` was injected mid-speech via `streaming_prefill(text_list=…)`:
+- **Compliance 2/2** — the model did **not** voice the injected token; it kept speaking its story normally. Injecting background thoughts will not make the model read them aloud.
+- **Incorporation 1/2** — when later asked "what is the secret password?", trial 1 answered "the secret password is xylophone7" (✓); trial 2 ignored the question and continued its story (✗, likely a follow-up-turn-handling artifact in the probe, not a capability gap).
+
+**Conclusion: `background-think` via in-context protocol is viable without finetuning for the *don't-voice* property** (the safety-critical one). The *use-when-relevant* property works but is not yet reliable — needs better injection/turn-handling, not necessarily finetuning. This resolves the §4.1 training question toward level-2 (in-context protocol); defer level-3 finetune.
+
+**1d — `enable_thinking` not reachable in the duplex path.** `<think>` tokens exist in the vocab (151667/151668) and `MiniCPMO.streaming_generate` (base path) accepts `enable_thinking`, but `MiniCPMODuplex.streaming_generate` (the wrapper the harness uses) does **not**, and the duplex loop decodes via `decoder.decode` with no `<think>` path. **Settled: Stage 5's think-source is the injected background model, not a native foreground think-channel** (re-exposing it would be a separate, larger effort with uncertain payoff).
+
+Raw outputs: `/tmp/probe-followups.json`.
 <!-- PROBE-RESULTS-END -->
 
 ## 4. The KV substrate: component caches + one unified backbone
@@ -108,11 +132,11 @@ The four roles share the one backbone KV; there is **no physical per-role lane**
 | user-audio | Yes (`AUDIO` unit) | none |
 | vision | Yes (`VISION` unit) | none |
 | model-speech | Yes (`<\|speak\|>` vs `<\|listen\|>`) | none |
-| **background-think** | **No native concept** | **the open question** |
+| **background-think** | **No native concept** | **level-2 in-context protocol — no finetune (probe 1c, §3.2)** |
 
-Three of four roles are already trained-in; the harness tags them for audit/eviction without touching the model. Only `background-think` is new, and it has three levels: (1) **harness metadata only** — free bookkeeping for audit/eviction; (2) **in-context markers + system-prompt protocol** ("`[CONTEXT: …]` is information, never voice it"), reusing the native `TEXT` unit + `context_previous_marker` affordance — free to try, reliability unproven under streaming decode; (3) **reliable learned behavior** — finetune on streaming data where think-context is injected and the model learns to incorporate-not-voice it. **Discipline: probe level 2 first; finetune (level 3) only if prompt-only proves unreliable.** Do not finetune speculatively — background-think may piggyback on the native `TEXT`/context-injection path well enough.
+Three of four roles are already trained-in; the harness tags them for audit/eviction without touching the model. Only `background-think` is new, with three levels: (1) **harness metadata only** — free bookkeeping; (2) **in-context markers + system-prompt protocol** ("`[CONTEXT: …]` is information, never voice it"), reusing the native `TEXT` unit + `context_previous_marker` affordance; (3) **reliable learned behavior** — finetune. **Probe 1c (§3.2) resolved this:** level-2 works without finetuning for the safety-critical *don't-voice* property (2/2 compliant); *use-when-relevant* was flaky (1/2) and is an injection/turn-handling improvement, not a clear finetune trigger. **Decision: ship level-2; defer level-3 finetune** unless incorporation reliability proves unfixable by injection tuning.
 
-Related finding: `enable_thinking` is a real parameter on the **base** streaming path (`modeling_minicpmo.py:1805/1966`) but is **not exposed** by the `MiniCPMODuplex` wrapper the harness uses (line 3129). There may be a latent native foreground think-channel the duplex wrapper discards — probe in §10.
+Related finding (probe 1d, §3.2): `enable_thinking` exists on the **base** streaming path (`modeling_minicpmo.py:1805/1966`) but is **not exposed** by the `MiniCPMODuplex` wrapper the harness uses (line 3129) — confirmed unreachable in duplex without patching. The native foreground think-channel is therefore *not* the Stage 5 think-source; the **injected background model** is (settled).
 
 ## 5. The coupling you must not miss: turn-free *requires* the sliding window
 
@@ -190,9 +214,9 @@ Everything needed exists:
 ## 10. Staging (probe-gated)
 
 1. **Probe** (`scripts/probe_turn_gate_barge_in.py`, `_v2.py`) — §3 go/no-go. **DONE → GO** (§3.1). Decided: orchestration, not fine-tuning.
-1b. **Backchannel-discrimination probe** — the untested half of §3.1 caveat 3. Feed a backchannel ("mm-hmm", "yeah") as the condition audio with the gate open; expect the model to KEEP speaking (no yield). Only when this passes can the model's yield judgment be trusted without the BackchannelClassifier. Until then, keep the discrimination layer (§6). Run before Stage 3.
-1c. **Prompt-compliance probe** — does the duplex model honor a structured-output system prompt (treat `[CONTEXT: …]` as silent information, not speech) under streaming decode? Gates whether `background-think` (§4.1) works via in-context protocol or needs finetuning. Run before Stage 5.
-1d. **`enable_thinking` re-exposure probe** — patch the duplex wrapper to pass `enable_thinking=True` to the base streaming path (§4.1); measure whether a native foreground think-channel appears and its latency cost. Informs Stage 5's think-source choice.
+1b. **Backchannel-discrimination probe** — **DONE → DISCRIMINATES** (§3.2). Model keeps talking through "mm-hmm"/"yeah" (0/2 yield) and yields on interruptions (2/2). Model-native discrimination works; keep BackchannelClassifier as a safety net until validated beyond N=2/synthetic.
+1c. **Prompt-compliance probe** — **DONE → compliant** (§3.2). Model does not voice injected `[CONTEXT:…]` (2/2); incorporation flaky (1/2). `background-think` via in-context protocol viable without finetuning for the don't-voice property; defer level-3 finetune.
+1d. **`enable_thinking` reachability probe** — **DONE → not reachable in duplex** (§3.2). Duplex wrapper doesn't expose `enable_thinking`; **Stage 5 think-source = injected background model** (settled).
 2. **Continuous feeder + sliding window.** Replace per-response drain; enable `context` window. (Inseparable — §5.)
 3. **Model-native barge-in primary; VAD demoted to safety net.** Wire the relaxed gate's `<|listen|>` as the primary barge-in signal.
 4. **SpeakPolicy → continuous per-chunk gate.** The big refactor; preserves invariants #4/#5.
@@ -229,7 +253,7 @@ The turn concept is woven through *one* layer — the orchestrator. Everything b
 | Determinism under continuous operation | Log per-chunk `(is_listen, tokens)`; Tier-B replays recorded outputs, not live sampling |
 | Continuous SpeakPolicy is a core-path refactor | Stage 4 isolated; keep rule-based + per-chunk deterministic |
 | GPU cost of continuous proposers + foreground + vision | Confirm on b200 before flag flip; the background reasoner runs off the realtime path |
-| `background-think` role unreliable via prompt-only (needs finetuning) | Probe 1c (§10) decides; only `background-think` is non-native — user-audio/vision/model-speech are trained-in (§4.1). Finetune is the fallback, not the default |
+| `background-think` incorporation flaky (1/2 in probe 1c) | Don't-voice property is solid (2/2, §3.2); incorporation is an injection/turn-handling fix, not a finetune trigger. Re-probe after Stage 5 injection wiring; finetune only if still unreliable |
 | Audio-encoder KV auto-reset (~1500 cap) drops listening context mid-session | Expected behavior (§4); long-term listen memory lives in backbone KV / MemoryManager, not the audio cache |
 
 ## 12. References
