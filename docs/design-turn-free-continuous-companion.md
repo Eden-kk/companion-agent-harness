@@ -113,7 +113,7 @@ The backbone holds a stream of `<unit>…</unit>` blocks in token-time order:
 | User audio (listen) | `streaming_prefill(audio_waveform=...)` |
 | Model speech (talk) | speak tokens appended during `streaming_generate` |
 | Vision | `streaming_prefill(frame_list=...)` |
-| Background thoughts (think) | `streaming_prefill(text_list=[thought])` — chunk-boundary injection, cheap (~10–30 ms), supported |
+| Background thoughts (think) | `streaming_prefill(text_list=[thought])` — chunk-boundary injection, latency to be measured, supported |
 
 The background reasoner does heavy thinking off the realtime path and **whispers context into the foreground's ear** (the same backbone KV) as text units. The foreground then conditions its next speak/listen decision on that context. This is the resolution to "thinking by a background model, talk+listen by MiniCPM."
 
@@ -122,7 +122,7 @@ The background reasoner does heavy thinking off the realtime path and **whispers
 The four roles share the one backbone KV; there is **no physical per-role lane** (that would be the 2605.12460 / Moshi parallel-lane architecture — retraining). What is achievable is **logical** role management within the single cache:
 
 - **Strategy 1 — role-typed units.** Extend the native `<unit>` typing (the model already tags AUDIO/VISION/TEXT) with a harness-side role label: `user-audio`, `model-speech`, `background-think`, `vision`. One physical cache, logically labeled. Foundation for the rest.
-- **Strategy 2 — role-aware eviction.** Drive the `context` sliding window (`context_max_units`, `context_previous_max_tokens`) by role priority: keep system prompt + recent user-audio + recent thoughts; evict old **model-speech first** (the model needs its own past utterances less than the user's). This is the §5 unbounded-growth fix made role-aware.
+- **Strategy 2 — role-aware eviction (deferred — do not build until vanilla eviction shows a concrete failure).** Drive the `context` sliding window (`context_max_units`, `context_previous_max_tokens`) by role priority: keep system prompt + recent user-audio + recent thoughts; evict old **model-speech first**. Ship Stage 2 with vanilla `sliding_window_mode="context"` default priorities first; implement role-aware eviction only if observed coherence failures justify it.
 - **Strategy 3 — role snapshots.** The model's native snapshot (`restore_speculative_snapshot`, `modeling_minicpmo.py:1603–1717`) already clones `audio_past_key_values`; the harness currently snapshots only `decoder.cache` (`foreground_model_minicpm.py:627`). Upgrade to the fuller snapshot and keep a "clean listen state" to restore to after a discarded speak attempt — exactly what the barge-in path needs.
 
 **Does role-tagging need training?** Decompose by role:
@@ -171,6 +171,8 @@ Continuous audio feeder ──┐         (replaces per-response drain)
 
 Inversion from today: **VAD goes from primary barge-in trigger to safety net.** The model's own `<|listen|>` judgment becomes primary; VAD fires only if the model is too slow to yield (the chunk-latency floor).
 
+**BackchannelClassifier as confirmatory veto.** Until model-native backchannel discrimination (§3.2 probe 1b) is validated beyond N=2/synthetic, the classifier runs as a **confirmatory veto**: if the model emits a yield (`is_listen=True`) but the classifier scores the overlapping audio as a backchannel, the yield is suppressed and the model keeps speaking. Once validated at scale (see Stage 3 precondition below), the classifier demotes to logging-only.
+
 ## 7. Invariant compliance under turn-free operation
 
 The conceptual move that makes this shippable in *this* harness: **a "turn" stops being a runtime control unit and becomes an audit-time label.**
@@ -178,9 +180,9 @@ The conceptual move that makes this shippable in *this* harness: **a "turn" stop
 | Invariant | Turn-free realization |
 |---|---|
 | #1 No unlogged behavior | Per-chunk decisions logged; "turns" reconstructed at audit time from the continuous stream |
-| #2 No direct Thinker speech | Background model injects thoughts into KV (context only); foreground speak tokens remain gated downstream |
-| #4 No proactive speech without policy approval | SpeakPolicy becomes a **continuous per-chunk gate** on the audio stream; every chunk of speak tokens passes it |
-| #5 Deterministic replay | Log the model's per-chunk `(is_listen, tokens)` as the replay-safe signal; given that sequence the policy gate is bit-identical. Model sampling is non-deterministic; Tier-B replays the *recorded* chunk outputs |
+| #2 No direct Thinker speech | `background-think` is **context, not a speech proposal** — exactly analogous to memory-retrieval context that already shapes foreground output today. Invariants #2 and #4 are satisfied because the gate acts on the foreground's *output tokens* (the candidates), not on the context that shaped them. Probe 1c (§3.2) empirically confirms the model does not voice injected context (the don't-voice property). Foreground speak tokens still pass the downstream SpeakPolicy gate. |
+| #4 No proactive speech without policy approval | SpeakPolicy becomes a **continuous per-chunk gate** on the audio stream; every chunk of speak tokens passes it regardless of what background-think context shaped the model's generation. |
+| #5 Deterministic replay (Tier-B) | The continuous gate consumes a **deterministic per-chunk `PolicyInputs` signal** — the `is_listen` flag, detector signals, and mode/budget/cooldown state — **not** the model's sampled tokens. Tier-B replays those *recorded signals* through the live gate rules to produce bit-identical gate decisions. The model's token *content* is non-deterministic and falls under Tier-A behavioral tolerance (#6), not Tier-B bit-identical replay. |
 | #8 Silence wins ties | `listen_prob_scale > 1` + policy gate defaults closed + native `is_listen` default |
 | #10 EventLogger async non-blocking | Unchanged |
 
@@ -202,7 +204,7 @@ Everything needed exists:
 | Model-native barge-in decision | relax `current_turn_ended` gate (`modeling_minicpmo.py:3215`) |
 | Background thought injection (same KV) | `streaming_prefill(text_list=[...])` |
 | Vision (same KV) | `streaming_prefill(frame_list=[...])` |
-| Bias toward silence | `listen_prob_scale > 1` |
+| Bias toward silence | `listen_prob_scale > 1` — **precedence rule:** the policy gate (defaults closed) is authoritative; `listen_prob_scale` only biases the model's raw `is_listen` sampling upstream of the gate. If the model wants to speak but the gate is closed (quiet_mode / budget exhausted / not addressed), silence wins — the gate does not open. |
 | Startup patience | `force_listen_count` |
 | Finer granularity (~200 ms) | `chunk_ms` ↓ from 1000 |
 | Unbounded session memory | `sliding_window_mode="context"` (REQUIRED once per-turn resets are gone) |
@@ -218,9 +220,9 @@ Everything needed exists:
 1c. **Prompt-compliance probe** — **DONE → compliant** (§3.2). Model does not voice injected `[CONTEXT:…]` (2/2); incorporation flaky (1/2). `background-think` via in-context protocol viable without finetuning for the don't-voice property; defer level-3 finetune.
 1d. **`enable_thinking` reachability probe** — **DONE → not reachable in duplex** (§3.2). Duplex wrapper doesn't expose `enable_thinking`; **Stage 5 think-source = injected background model** (settled).
 2. **Continuous feeder + sliding window.** Replace per-response drain; enable `context` window. (Inseparable — §5.)
-3. **Model-native barge-in primary; VAD demoted to safety net.** Wire the relaxed gate's `<|listen|>` as the primary barge-in signal.
-4. **SpeakPolicy → continuous per-chunk gate.** The big refactor; preserves invariants #4/#5.
-5. **Background-thought injection + role-typed KV management** (§4.1) — inject thoughts as role-tagged `background-think` units via `streaming_prefill(text_list=...)`; enable role-aware eviction (Strategy 2) and the fuller role snapshot (Strategy 3). Think-source (in-context protocol vs `enable_thinking`) decided by probes 1c/1d; finetune only if 1c fails.
+3. **Model-native barge-in primary; VAD demoted to safety net.** Wire the relaxed gate's `<|listen|>` as the primary barge-in signal. **Precondition before flag-flip:** re-probe at N≥20 with real human audio (not synthetic) for both barge-in (1/v2) and backchannel discrimination (1b); only after that result does VAD/BackchannelClassifier demote from confirmatory veto to safety-net/logging-only. The BackchannelClassifier runs as a confirmatory veto until this gate is passed (§6).
+4. **SpeakPolicy → continuous per-chunk gate.** The big refactor; preserves invariants #4/#5. Requires a **new per-chunk `PolicyInputs` schema** and re-tuned thresholds (see §10.5); the rule structure, `ReasonCode` taxonomy, and `DecisionTrace` format are reused, not the input schema or threshold values.
+5. **Background-thought injection + role-typed KV management** (§4.1) — inject thoughts as role-tagged `background-think` units via `streaming_prefill(text_list=...)`; enable the fuller role snapshot (Strategy 3). Ship with vanilla `sliding_window_mode="context"` (Strategy 1); **Strategy 2 (role-aware eviction) is deferred** — do not build until vanilla eviction produces observed coherence failures. Think-source (in-context protocol vs `enable_thinking`) decided by probes 1c/1d; finetune only if 1c fails.
 6. **Tune `chunk_ms` → ~200 ms and `listen_prob_scale`** empirically against Stage 6 `false_proactive_utterances_per_hour` and barge-in latency gates.
 
 ## 10.5 Build strategy: same repo, new continuous core (not a new repo)
@@ -232,7 +234,7 @@ The turn concept is woven through *one* layer — the orchestrator. Everything b
 | EventLogger / causal graph / replay | **reuse** | per-chunk events fit the schema; "turns" become audit segments |
 | Adapter Protocols (VAD/SmartTurn/ASR/addressing/memory/vision/TTS) | **reuse** | all still needed; VAD demotes to safety net |
 | MiniCPM foreground adapter | **reuse + extend** | gate-relax + `streaming_prefill(text_list)` + role tags land here |
-| SpeakPolicy rules / ReasonCode / DecisionTrace | **reuse logic, change cadence** | per-turn → per-chunk gate |
+| SpeakPolicy rules / ReasonCode / DecisionTrace | **reuse rule structure + ReasonCode taxonomy + DecisionTrace; new per-chunk `PolicyInputs` schema + re-tuned thresholds** | Existing `PolicyInputs` fields (`eou_probability`, `user_speaking`, `assistant_speaking`) are per-turn-defined and thresholds were tuned per-turn; the continuous gate needs a new per-chunk schema and fresh threshold calibration. What transfers is the rule *structure*, `ReasonCode` taxonomy, and `DecisionTrace` format, not the input schema or threshold values. |
 | Memory 4-store + SleepTimeAgent | **reuse** | architecture-agnostic |
 | Server / WebSocket / dashboard UI | **reuse** | this is the "same UI" |
 | Eval subsystem (FDB, harness_native) | **reuse** | |
@@ -241,7 +243,7 @@ The turn concept is woven through *one* layer — the orchestrator. Everything b
 | Path A/B streaming-TTS variants | **retire** | superseded by the clean continuous core |
 | VAD-onset barge-in path | **invert** | model-native primary, VAD safety net (§6) |
 
-**Strangler-fig migration:** write a new `continuous_orchestrator.py` alongside the existing one, behind a flag, consuming the same adapters + EventLogger below it. This gives a clean continuous loop, A/B against the turn-based orchestrator on the same fixtures, incremental contract-test migration, and retirement of the turn machinery + Path A/B once the new core passes. Do **not** retrofit the 2610-line orchestrator — it carries the turn machinery plus half-built streaming variants (the open bugs in the status snapshot). The deepest genuinely-new work is SpeakPolicy per-turn → continuous per-chunk gate (touches invariant #5); build it fresh in the new core rather than bending the old one.
+**Strangler-fig migration:** write a new `continuous_orchestrator.py` alongside the existing one, behind a flag, consuming the same adapters + EventLogger below it. This gives a clean continuous loop, A/B against the turn-based orchestrator on the same fixtures, incremental contract-test migration, and retirement of the turn machinery + Path A/B once the new core passes. Do **not** retrofit the 2610-line orchestrator — it carries the turn machinery plus half-built streaming variants (the open bugs in the status snapshot). The deepest genuinely-new work is SpeakPolicy per-turn → continuous per-chunk gate (touches invariant #5); build it fresh in the new core rather than bending the old one. Retiring Path A/B and the turn machinery requires a **test-migration table** — each existing contract test mapped to: kept-as-is / ported-to-new-core / deleted-with-rationale — before the old code is removed.
 
 ## 11. Risks
 
@@ -252,9 +254,10 @@ The turn concept is woven through *one* layer — the orchestrator. Everything b
 | Sliding-window eviction artifacts in long sessions | TML's named open problem; measure with cost telemetry; pick `context` over `basic` |
 | Determinism under continuous operation | Log per-chunk `(is_listen, tokens)`; Tier-B replays recorded outputs, not live sampling |
 | Continuous SpeakPolicy is a core-path refactor | Stage 4 isolated; keep rule-based + per-chunk deterministic |
-| GPU cost of continuous proposers + foreground + vision | Confirm on b200 before flag flip; the background reasoner runs off the realtime path |
+| GPU cost of continuous proposers + foreground + vision | The background reasoner runs in a **separate process on a dedicated CUDA stream** (design default), isolated from the foreground's realtime decode path. GPU-contention measurement (foreground latency under background-model load) is a **named prerequisite of Stage 5** — measure on b200 before enabling the background model; do not treat this as a deferred risk. |
 | `background-think` incorporation flaky (1/2 in probe 1c) | Don't-voice property is solid (2/2, §3.2); incorporation is an injection/turn-handling fix, not a finetune trigger. Re-probe after Stage 5 injection wiring; finetune only if still unreliable |
 | Audio-encoder KV auto-reset (~1500 cap) drops listening context mid-session | Expected behavior (§4); long-term listen memory lives in backbone KV / MemoryManager, not the audio cache |
+| Audio-encoder KV auto-reset firing mid-generation — behavior unanalyzed | When the audio KV cap (~1500) is hit mid-generation, it is unknown whether the backbone attention sees a truncated audio context and suffers silent coherence loss (relevant for sessions longer than ~15 min). Mitigation: investigate this boundary explicitly before enabling long-session operation; add cost/coherence telemetry to detect regression. |
 
 ## 12. References
 
