@@ -37,7 +37,7 @@ class _FakeBase:
     def cuda(self) -> "_FakeBase":
         return self
 
-    def as_duplex(self, generate_audio: bool, sliding_window_mode: str = "off") -> _FakeDuplex:
+    def as_duplex(self, generate_audio: bool, sliding_window_mode: str = "off", chunk_ms: int = 1000) -> _FakeDuplex:
         return _FakeDuplex()
 
 

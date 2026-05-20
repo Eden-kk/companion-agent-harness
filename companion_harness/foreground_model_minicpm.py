@@ -131,6 +131,7 @@ class MiniCPMStreamingModel:
         init_vision: bool = False,
         enable_torch_compile: bool = False,
         sliding_window_mode: str = "off",
+        chunk_ms: int = 1000,
         logger: "EventLogger | None" = None,
         session_id: str = "",
     ) -> None:
@@ -144,6 +145,7 @@ class MiniCPMStreamingModel:
             init_tts=True,
         ).eval().cuda()
         self._base = base
+        self._chunk_samples = _SAMPLE_RATE * chunk_ms // 1000
         if enable_torch_compile:
             try:
                 self._base.llm = torch.compile(
@@ -152,7 +154,12 @@ class MiniCPMStreamingModel:
                     fullgraph=False,
                     dynamic=True,
                 )
+                _dummy = torch.zeros(1, 16, dtype=torch.long, device=base.device)
+                with torch.no_grad():
+                    self._base.llm(input_ids=_dummy, use_cache=False)
+                del _dummy
                 self._torch_compile_active = True
+                print("torch.compile warmup complete (PyTorch #168042 fix)", flush=True)
             except Exception as exc:
                 print(f"warning: torch.compile failed: {type(exc).__name__}: {exc}", flush=True)
                 self._torch_compile_active = False
@@ -160,7 +167,9 @@ class MiniCPMStreamingModel:
             self._torch_compile_active = False
         self._tokenizer = AutoTokenizer.from_pretrained(_MODEL_ID, trust_remote_code=True)
 
-        self._duplex = base.as_duplex(generate_audio=False, sliding_window_mode=sliding_window_mode)
+        # first_chunk_ms not forwarded; model default applies (revisit in PR5b if the
+        # first chunk needs extra headroom at chunk_ms=200).
+        self._duplex = base.as_duplex(generate_audio=False, sliding_window_mode=sliding_window_mode, chunk_ms=chunk_ms)
         # Tracks is_listen from the most recent streaming_generate call.
         # True (listen) is the safe default — EOU has not fired yet.
         self._last_is_listen: bool = True
@@ -452,8 +461,8 @@ class MiniCPMStreamingModel:
                     latest_evt_id = evt_id
                     samples = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
                     buf = np.concatenate([buf, samples])
-                    while len(buf) >= _CHUNK_SAMPLES:
-                        chunk, buf = buf[:_CHUNK_SAMPLES], buf[_CHUNK_SAMPLES:]
+                    while len(buf) >= self._chunk_samples:
+                        chunk, buf = buf[:self._chunk_samples], buf[self._chunk_samples:]
                         result = await loop.run_in_executor(self._inference_executor, _gpu_work, chunk)
                         is_listen = bool(result.get("is_listen", True))
                         text = result.get("text", "") or ""
@@ -461,9 +470,9 @@ class MiniCPMStreamingModel:
                         self._last_is_listen = is_listen
                         yield (is_listen, text, kv_len, latest_evt_id)
 
-                # drain trailing sub-_CHUNK_SAMPLES buffer (invariant #1: every chunk → event)
+                # drain trailing sub-chunk buffer (invariant #1: every chunk → event)
                 if len(buf) > 0 and latest_evt_id:
-                    pad = np.zeros(_CHUNK_SAMPLES - len(buf), dtype=np.float32)
+                    pad = np.zeros(self._chunk_samples - len(buf), dtype=np.float32)
                     chunk = np.concatenate([buf, pad])
                     result = await loop.run_in_executor(self._inference_executor, _gpu_work, chunk)
                     is_listen = bool(result.get("is_listen", True))
