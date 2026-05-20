@@ -328,14 +328,13 @@
   }
 
   function fmtWallTs(iso) {
-    try {
-      const d = new Date(iso);
-      const hh = String(d.getHours()).padStart(2, "0");
-      const mm = String(d.getMinutes()).padStart(2, "0");
-      const ss = String(d.getSeconds()).padStart(2, "0");
-      const ms = String(d.getMilliseconds()).padStart(3, "0");
-      return `${hh}:${mm}:${ss}.${ms}`;
-    } catch (_) { return iso || ""; }
+    if (!iso) return "";
+    const d = new Date(iso);
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    const ss = String(d.getSeconds()).padStart(2, "0");
+    const ms = String(d.getMilliseconds()).padStart(3, "0");
+    return `${hh}:${mm}:${ss}.${ms}`;
   }
 
   function appendDialogueRow(role, text, ts) {
@@ -350,7 +349,7 @@
 
   function eventPreview(evt) {
     const p = evt.payload_inline || {};
-    if (evt.event_type === "asr_transcript_emitted") return (p.text || "").slice(0, 80);
+    if (evt.event_type === "asr_transcript_emitted") return (p.text_preview || p.text || "").slice(0, 80);
     if (evt.event_type === "policy_decision") return "";
     if (evt.event_type === "speak_decision") return (p.reason || p.action_type || "");
     if (evt.event_type === "foreground_proposal") return (p.text || p.content || "").slice(0, 80);
@@ -407,6 +406,7 @@
       const text = (p.text_preview || "").trim();
       if (text) appendDialogueRow("USER", text, evt.timestamp_wall);
     } else if (evt.event_type === "proposer_token_buffered") {
+      // ring_seq is session-scoped monotonic (not reset per turn), so keying by it is correct for this single-stream console.
       const rid = p.ring_seq != null ? String(p.ring_seq) : "";
       let drow = dialogueAccum.get(rid);
       if (!drow) {

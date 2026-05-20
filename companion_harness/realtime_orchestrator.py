@@ -736,6 +736,10 @@ class StreamingRealtimeOrchestrator:
                     sensitivity="sensitive",
                     retention_policy_id="transcript_audit_30d",
                     payload_ref=f"orchestrator://{transcript_evt_id}",
+                    # Console-only display preview for the manual-test dialogue bar. Deliberate,
+                    # scoped exception to "payload_inline = non-sensitive only": full transcript
+                    # stays governed behind payload_ref/SensitiveField; this 200-char preview is
+                    # for live dev display only and is NOT a replay/retention-governed field.
                     payload_inline={"text_preview": transcript[:200]},
                 )
                 self._logger.log(transcript_evt)
