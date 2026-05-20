@@ -366,6 +366,7 @@ EVENT_TYPE_SCHEMAS: dict[str, StageSixEventSchema] = {
         subject_class="self",
         sensitivity="safe",
         retention_policy_id="signal_default_30d",
+        required_fields=("backchannel_score",),
         notes=(
             "Emitted by ContinuousOrchestrator when a model-native barge-in is "
             "suppressed because bc_score >= _BACKCHANNEL_THRESHOLD (user is "

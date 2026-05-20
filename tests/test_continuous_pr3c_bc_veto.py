@@ -124,8 +124,12 @@ def test_backchannel_vetoes_barge_in() -> None:
     # No model_native_barge_in
     assert not any(e.event_type == "model_native_barge_in" for e in logger.events)
 
+    # Suppressed event carries the deciding score (invariant #1)
+    assert suppressed[0].payload_inline["backchannel_score"] == 0.9
+
     # decide_chunk still returns silence on the yield chunk (blocker-2)
     pds = [e for e in logger.events if e.event_type == "policy_decision"]
+    assert len(pds) == 2
     assert pds[1].payload_inline["action_type"] == "silence"
 
     # caused_by closure (invariant #1)

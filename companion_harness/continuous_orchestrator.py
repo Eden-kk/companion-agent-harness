@@ -4,7 +4,7 @@ Consumes audio_in continuously via the foreground model's stream_chunks()
 adapter; per chunk it emits a continuous_chunk_processed audit event, calls the
 per-chunk gate decide_chunk (PR2), emits a policy_decision, and starts speech via
 the injected audio_output adapter on a speak decision (PR3a — start-only; PR3b
-adds the model-native barge-in stop path).
+adds the model-native barge-in stop path; PR3c adds backchannel veto).
 
 Adapter-first (CLAUDE.md): this module imports no model SDK and never touches
 _duplex / streaming_prefill / streaming_generate. All per-chunk mechanics live
@@ -50,6 +50,9 @@ class _NullBackchannelSource:
         return 0.0
 
 
+_NULL_BC_SOURCE = _NullBackchannelSource()
+
+
 class _ForegroundModelProtocol(Protocol):
     async def stream_chunks(
         self,
@@ -81,7 +84,7 @@ class ContinuousOrchestrator:
         audio_in: "asyncio.Queue[tuple[bytes, str]]",
         foreground_model: _ForegroundModelProtocol,
         audio_output: _AudioOutputProtocol,
-        backchannel_source: _BackchannelSourceProtocol = _NullBackchannelSource(),
+        backchannel_source: _BackchannelSourceProtocol = _NULL_BC_SOURCE,
         privacy_mode: str = "normal",
         social_mode: str = "user_addressing_agent",
         budget_full_response_remaining: int = 1,
@@ -131,8 +134,8 @@ class ContinuousOrchestrator:
             inputs = PerChunkPolicyInputs(
                 chunk_index=chunk_idx,
                 model_is_listen=is_listen,
-                backchannel_score=0.0,        # BC source wired in PR3c
-                user_addressed_agent=True,    # addressing wired in PR3c
+                backchannel_score=0.0,        # intentionally 0.0 — bc_score is orchestrator-level only; never fed to decide_chunk (blocker-2)
+                user_addressed_agent=True,    # continuous companion is addressed by construction; refined later
                 privacy_mode=self._privacy_mode,
                 social_mode=self._social_mode,
                 # budget decrement is wired in PR3b/PR3c; constant here is intentional
@@ -146,13 +149,14 @@ class ContinuousOrchestrator:
             chunk_idx += 1
 
     # ------------------------------------------------------------------
-    # Act on the per-chunk decision (PR3a — start speech only; PR3b adds stop)
+    # Act on the per-chunk decision (PR3a — start speech only; PR3b adds stop;
+    # PR3c adds backchannel veto)
     # ------------------------------------------------------------------
 
     def _act(self, decision: SpeakDecision, is_listen: bool, bc_score: float, caused_by_evt_id: str) -> None:
         if is_listen and self._audio_output.is_playing:
             if bc_score >= _BACKCHANNEL_THRESHOLD:
-                self._emit_barge_in_suppressed(caused_by_evt_id)
+                self._emit_barge_in_suppressed(bc_score, caused_by_evt_id)
                 return
             self._audio_output.request_stop(caused_by=[caused_by_evt_id])
             self._emit_barge_in(caused_by_evt_id)
@@ -272,11 +276,11 @@ class ContinuousOrchestrator:
         )
         self._logger.log(evt)
 
-    def _emit_barge_in_suppressed(self, caused_by_evt_id: str) -> None:
+    def _emit_barge_in_suppressed(self, bc_score: float, caused_by_evt_id: str) -> None:
         now_ms = int(time.monotonic() * 1000)
         seq = self._next_seq()
         event_id = f"{self._session_id}-bis-{seq}-{now_ms}"
-        payload_inline = {}
+        payload_inline = {"backchannel_score": bc_score}
         payload_hash = hashlib.sha256(
             json.dumps(payload_inline, sort_keys=True).encode()
         ).hexdigest()[:16]
