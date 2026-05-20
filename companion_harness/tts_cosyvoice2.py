@@ -72,7 +72,6 @@ class CosyVoice2TtsAdapter:
         model_dir: str,
         reference_wav: str | None = None,
         reference_text: str | None = None,
-        language: str = "zh",
         speed: float = 1.0,
         warmup: bool = True,
     ) -> None:
@@ -80,7 +79,6 @@ class CosyVoice2TtsAdapter:
         self._cosy = CosyVoice2(model_dir, load_jit=False, fp16=True)
         self._reference_wav = reference_wav
         self._reference_text = reference_text
-        self._language = language
         self._speed = speed
         self._synthesize_lock = asyncio.Lock()
         self._inference_executor = ThreadPoolExecutor(

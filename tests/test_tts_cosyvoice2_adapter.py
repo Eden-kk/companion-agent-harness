@@ -89,15 +89,14 @@ def test_synthesize_yields_chunks(patched_cosyvoice) -> None:
         assert len(chunk) <= 9600
 
 
-def test_synthesize_chunk_size_boundary(patched_cosyvoice) -> None:
+def test_synthesize_chunk_size_boundary(monkeypatch) -> None:
     """Large array is sub-chunked to <= 9600 bytes per yield."""
     # 48000 float32 samples → 96000 bytes PCM16 → at least 10 chunks
     large_arr = np.zeros(48000, dtype=np.float32)
     stub_module, _ = _make_cosyvoice_stub([large_arr])
-    import sys
-    sys.modules["cosyvoice"] = stub_module
-    sys.modules["cosyvoice.cli"] = stub_module.cli
-    sys.modules["cosyvoice.cli.cosyvoice"] = stub_module.cli.cosyvoice
+    monkeypatch.setitem(sys.modules, "cosyvoice", stub_module)
+    monkeypatch.setitem(sys.modules, "cosyvoice.cli", stub_module.cli)
+    monkeypatch.setitem(sys.modules, "cosyvoice.cli.cosyvoice", stub_module.cli.cosyvoice)
 
     from companion_harness.tts_cosyvoice2 import CosyVoice2TtsAdapter  # noqa: WPS433
     adapter = CosyVoice2TtsAdapter(model_dir="/fake/model", warmup=False)
@@ -162,7 +161,7 @@ def test_synthesize_streaming_flushes_end_of_stream(patched_cosyvoice) -> None:
     assert len(chunks) >= 1
 
 
-def test_cancelled_error_mid_stream_drains_queue(patched_cosyvoice) -> None:
+def test_cancelled_error_mid_stream_drains_queue(monkeypatch) -> None:
     """CancelledError mid-stream drains queue and joins producer within 100 ms."""
     # Use a slow stub: sleeps briefly between items to give cancellation a window
     slow_arrs = [np.zeros(4800, dtype=np.float32)] * 5
@@ -183,10 +182,9 @@ def test_cancelled_error_mid_stream_drains_queue(patched_cosyvoice) -> None:
     cli_cosyvoice_module.CosyVoice2 = _SlowCosyVoice2
     stub_module.cli = cli_module
     cli_module.cosyvoice = cli_cosyvoice_module
-    import sys
-    sys.modules["cosyvoice"] = stub_module
-    sys.modules["cosyvoice.cli"] = cli_module
-    sys.modules["cosyvoice.cli.cosyvoice"] = cli_cosyvoice_module
+    monkeypatch.setitem(sys.modules, "cosyvoice", stub_module)
+    monkeypatch.setitem(sys.modules, "cosyvoice.cli", cli_module)
+    monkeypatch.setitem(sys.modules, "cosyvoice.cli.cosyvoice", cli_cosyvoice_module)
 
     from companion_harness.tts_cosyvoice2 import CosyVoice2TtsAdapter  # noqa: WPS433
     adapter = CosyVoice2TtsAdapter(model_dir="/fake/model", warmup=False)
@@ -196,27 +194,24 @@ def test_cancelled_error_mid_stream_drains_queue(patched_cosyvoice) -> None:
         # Get first chunk then cancel
         first = await gen.__anext__()
         assert first is not None
-        t0 = asyncio.get_event_loop().time()
         task = asyncio.current_task()
         task.cancel()
+        t0 = asyncio.get_event_loop().time()
         try:
             await gen.__anext__()
-        except (asyncio.CancelledError, StopAsyncIteration):
+        except asyncio.CancelledError:
+            await gen.aclose()
+            elapsed = asyncio.get_event_loop().time() - t0
+            assert elapsed < 0.5  # producer joins within 100 ms (generous CI bound)
+            raise
+        except StopAsyncIteration:
             pass
-        elapsed = asyncio.get_event_loop().time() - t0
-        return elapsed
-
-    import time
-    t0 = time.monotonic()
 
     async def _outer():
         try:
             task = asyncio.create_task(_run())
-            return await task
+            await task
         except asyncio.CancelledError:
             pass
 
     asyncio.run(_outer())
-    elapsed = time.monotonic() - t0
-    # Producer thread should join within 100 ms after cancellation
-    assert elapsed < 0.5  # generous bound for CI
