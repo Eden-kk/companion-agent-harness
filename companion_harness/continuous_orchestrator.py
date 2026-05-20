@@ -134,7 +134,7 @@ class ContinuousOrchestrator:
             inputs = PerChunkPolicyInputs(
                 chunk_index=chunk_idx,
                 model_is_listen=is_listen,
-                backchannel_score=0.0,        # intentionally 0.0 — bc_score is orchestrator-level only; never fed to decide_chunk (blocker-2)
+                backchannel_score=0.0,        # bc_score is orchestrator-level only (read separately below); never fed to decide_chunk — invariant #4
                 user_addressed_agent=True,    # continuous companion is addressed by construction; refined later
                 privacy_mode=self._privacy_mode,
                 social_mode=self._social_mode,
