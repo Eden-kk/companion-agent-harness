@@ -65,6 +65,11 @@ EXPECTED_EVENT_TYPES = {
     "commit_or_discard",
     # AudioOutBroker per-subscriber drop audit (invariant #10)
     "audio_subscriber_drop",
+    # MiniCPMStreamingModel inter-turn reset audit
+    "minicpm_session_reset",
+    # ContinuousOrchestrator PR1: per-chunk + KV-reset audit
+    "continuous_chunk_processed",
+    "audio_kv_reset",
 }
 
 
