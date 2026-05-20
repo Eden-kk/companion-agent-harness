@@ -21,7 +21,7 @@ from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Protocol
 
-from companion_harness.continuous_speak_policy import decide_chunk
+from companion_harness.continuous_speak_policy import _BACKCHANNEL_THRESHOLD, decide_chunk
 from companion_harness.schemas import Event, PerChunkPolicyInputs, SpeakDecision
 
 if TYPE_CHECKING:
@@ -39,6 +39,15 @@ _SPEAK_ACTIONS = frozenset({
     "full_response", "backchannel", "short_reaction", "clarification",
     "alert", "tool_status", "aesthetic_reaction",
 })
+
+
+class _BackchannelSourceProtocol(Protocol):
+    def latest_score(self) -> float: ...
+
+
+class _NullBackchannelSource:
+    def latest_score(self) -> float:
+        return 0.0
 
 
 class _ForegroundModelProtocol(Protocol):
@@ -72,6 +81,7 @@ class ContinuousOrchestrator:
         audio_in: "asyncio.Queue[tuple[bytes, str]]",
         foreground_model: _ForegroundModelProtocol,
         audio_output: _AudioOutputProtocol,
+        backchannel_source: _BackchannelSourceProtocol = _NullBackchannelSource(),
         privacy_mode: str = "normal",
         social_mode: str = "user_addressing_agent",
         budget_full_response_remaining: int = 1,
@@ -81,6 +91,7 @@ class ContinuousOrchestrator:
         self._audio_in = audio_in
         self._foreground = foreground_model
         self._audio_output = audio_output
+        self._backchannel_source = backchannel_source
         self._privacy_mode = privacy_mode
         self._social_mode = social_mode
         self._budget_full_response_remaining = budget_full_response_remaining
@@ -128,17 +139,21 @@ class ContinuousOrchestrator:
                 # for PR3a (full_response re-entry is guarded by audio is_playing).
                 budget_full_response_remaining=self._budget_full_response_remaining,
             )
+            bc_score = self._backchannel_source.latest_score()
             decision = decide_chunk(inputs, caused_by_evt_id=caused_by_evt_id)
             self._emit_policy_decision(decision, caused_by_evt_id)
-            self._act(decision, is_listen, caused_by_evt_id)
+            self._act(decision, is_listen, bc_score, caused_by_evt_id)
             chunk_idx += 1
 
     # ------------------------------------------------------------------
     # Act on the per-chunk decision (PR3a — start speech only; PR3b adds stop)
     # ------------------------------------------------------------------
 
-    def _act(self, decision: SpeakDecision, is_listen: bool, caused_by_evt_id: str) -> None:
+    def _act(self, decision: SpeakDecision, is_listen: bool, bc_score: float, caused_by_evt_id: str) -> None:
         if is_listen and self._audio_output.is_playing:
+            if bc_score >= _BACKCHANNEL_THRESHOLD:
+                self._emit_barge_in_suppressed(caused_by_evt_id)
+                return
             self._audio_output.request_stop(caused_by=[caused_by_evt_id])
             self._emit_barge_in(caused_by_evt_id)
             # stop wins: model yielded (is_listen); a speak decision (if any) is
@@ -243,6 +258,34 @@ class ContinuousOrchestrator:
             schema_version=_SCHEMA_VERSION,
             seq_no=seq,
             event_type="model_native_barge_in",
+            timestamp_mono_ms=now_ms,
+            timestamp_wall=datetime.now(timezone.utc).isoformat(),
+            source=_SOURCE,
+            caused_by=[caused_by_evt_id],
+            payload_hash=payload_hash,
+            payload_ref=None,
+            payload_kind="signal",
+            subject_class="self",
+            sensitivity="safe",
+            retention_policy_id="signal_default_30d",
+            payload_inline=payload_inline,
+        )
+        self._logger.log(evt)
+
+    def _emit_barge_in_suppressed(self, caused_by_evt_id: str) -> None:
+        now_ms = int(time.monotonic() * 1000)
+        seq = self._next_seq()
+        event_id = f"{self._session_id}-bis-{seq}-{now_ms}"
+        payload_inline = {}
+        payload_hash = hashlib.sha256(
+            json.dumps(payload_inline, sort_keys=True).encode()
+        ).hexdigest()[:16]
+        evt = Event(
+            event_id=event_id,
+            session_id=self._session_id,
+            schema_version=_SCHEMA_VERSION,
+            seq_no=seq,
+            event_type="barge_in_suppressed_backchannel",
             timestamp_mono_ms=now_ms,
             timestamp_wall=datetime.now(timezone.utc).isoformat(),
             source=_SOURCE,
