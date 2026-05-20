@@ -5,3 +5,5 @@ websockets>=12.0  # lazy-imported by run_ws_server / _handle_ws_client
 aiohttp>=3.9  # manual_test_console.server (HTTP + WebSocket on one port)
 pyyaml>=6.0  # replay_privacy_policy.yaml loaded by several test modules
 mcp>=1.6.0   # MCPBackgroundReasoner (v0.2a Task 2); needed for local contract tests
+numpy>=1.24   # imported at collection time by several test modules
+pillow>=9.0   # imported at collection time by video/image test modules

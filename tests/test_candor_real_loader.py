@@ -90,6 +90,7 @@ def _fake_dataset_info(*args, **kwargs):
 
 
 def test_skip_counter_tracks_malformed_rows():
+    pytest.importorskip("huggingface_hub")
     with patch("companion_harness.evals.adapters.candor._CANDOR_REVISION", "abc123"):
         with patch("huggingface_hub.dataset_info", _fake_dataset_info):
             with patch.dict(os.environ, {"HF_TOKEN": "fake-token"}):
@@ -151,6 +152,7 @@ def test_skip_rate_gate_fires_above_threshold():
 
 def test_candor_adapter_respects_limit_flag():
     """With limit=7 and 20 available rows, exactly 7 cases should be yielded."""
+    pytest.importorskip("huggingface_hub")
     with patch("companion_harness.evals.adapters.candor._CANDOR_REVISION", "abc123"):
         with patch("huggingface_hub.dataset_info", _fake_dataset_info):
             with patch.dict(os.environ, {"HF_TOKEN": "fake-token"}):

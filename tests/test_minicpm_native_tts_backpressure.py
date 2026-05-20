@@ -13,6 +13,8 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
+pytest.importorskip("soundfile")
+
 
 def _make_duplex_n_chunks(n):
     call_idx = 0

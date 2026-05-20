@@ -14,6 +14,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+pytest.importorskip("torch")
+
 
 # ---------------------------------------------------------------------------
 # Minimal fake base model so MiniCPMStreamingModel.__init__ never touches GPU.

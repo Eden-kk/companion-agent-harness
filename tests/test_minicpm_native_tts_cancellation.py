@@ -12,6 +12,8 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
+pytest.importorskip("soundfile")
+
 
 def _make_infinite_duplex():
     """Duplex that emits audio chunks indefinitely until break is set."""

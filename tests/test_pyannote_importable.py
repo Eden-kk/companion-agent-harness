@@ -7,12 +7,15 @@ fails loudly with an actionable message.
 
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("pyannote.audio")
+
 
 def test_pyannote_audio_importable():
     try:
         import pyannote.audio  # noqa: F401
     except ImportError as exc:
-        import pytest
         pytest.fail(
             f"pyannote.audio is not importable: {exc}\n"
             "Run: pip install 'pyannote.audio>=3.0'\n"

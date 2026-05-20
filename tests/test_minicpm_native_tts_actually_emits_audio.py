@@ -49,6 +49,7 @@ def _make_fake_streaming_model(pcm_bytes: bytes = b"\x00" * 320) -> MagicMock:
 @pytest.mark.asyncio
 async def test_synthesize_yields_chunks():
     """MiniCPMNativeTtsAdapter.synthesize() must yield at least one non-empty bytes chunk."""
+    pytest.importorskip("soundfile")
     import numpy as np
     import tempfile, os
 

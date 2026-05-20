@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import io
 
+import pytest
 from PIL import Image
 
+pytest.importorskip("transformers")
 from companion_harness.clip_scene_scorer import CLIPSceneChangeScorer
 from companion_harness.vision_sidecar import SceneScorer
 

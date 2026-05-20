@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+pytest.importorskip("soxr")
+
 _SCRIPT = Path(__file__).parent.parent / "tests" / "manual" / "repro_f0a_f0b.py"
 
 
