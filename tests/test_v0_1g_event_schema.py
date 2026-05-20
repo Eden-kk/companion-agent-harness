@@ -76,6 +76,8 @@ EXPECTED_EVENT_TYPES = {
     "model_native_barge_in",
     # ContinuousOrchestrator PR3c: barge-in suppressed by backchannel classifier
     "barge_in_suppressed_backchannel",
+    # ContinuousOrchestrator PR4: background thought injected into foreground KV cache
+    "background_think_injected",
 }
 
 

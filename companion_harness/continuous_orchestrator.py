@@ -53,12 +53,26 @@ class _NullBackchannelSource:
 _NULL_BC_SOURCE = _NullBackchannelSource()
 
 
+class _BackgroundThoughtSourceProtocol(Protocol):
+    def pending_thought(self) -> str | None: ...
+
+
+class _NullThoughtSource:
+    def pending_thought(self) -> str | None:
+        return None
+
+
+_NULL_THOUGHT_SOURCE = _NullThoughtSource()
+
+
 class _ForegroundModelProtocol(Protocol):
     async def stream_chunks(
         self,
         audio_in: "asyncio.Queue[tuple[bytes, str]]",
     ) -> AsyncGenerator[tuple[bool, str, int | None, str], None]:
         ...
+
+    def inject_scratchpad(self, text: str) -> None: ...
 
 
 class _AudioOutputProtocol(Protocol):
@@ -85,6 +99,7 @@ class ContinuousOrchestrator:
         foreground_model: _ForegroundModelProtocol,
         audio_output: _AudioOutputProtocol,
         backchannel_source: _BackchannelSourceProtocol = _NULL_BC_SOURCE,
+        thought_source: _BackgroundThoughtSourceProtocol = _NULL_THOUGHT_SOURCE,
         privacy_mode: str = "normal",
         social_mode: str = "user_addressing_agent",
         budget_full_response_remaining: int = 1,
@@ -95,6 +110,7 @@ class ContinuousOrchestrator:
         self._foreground = foreground_model
         self._audio_output = audio_output
         self._backchannel_source = backchannel_source
+        self._thought_source = thought_source
         self._privacy_mode = privacy_mode
         self._social_mode = social_mode
         self._budget_full_response_remaining = budget_full_response_remaining
@@ -147,6 +163,11 @@ class ContinuousOrchestrator:
             self._emit_policy_decision(decision, caused_by_evt_id)
             self._act(decision, is_listen, bc_score, caused_by_evt_id)
             chunk_idx += 1
+
+            thought = self._thought_source.pending_thought()
+            if thought is not None:
+                self._foreground.inject_scratchpad(thought)
+                self._emit_background_think_injected(n_chars=len(thought), caused_by_evt_id=caused_by_evt_id)
 
     # ------------------------------------------------------------------
     # Act on the per-chunk decision (PR3a — start speech only; PR3b adds stop;
@@ -290,6 +311,34 @@ class ContinuousOrchestrator:
             schema_version=_SCHEMA_VERSION,
             seq_no=seq,
             event_type="barge_in_suppressed_backchannel",
+            timestamp_mono_ms=now_ms,
+            timestamp_wall=datetime.now(timezone.utc).isoformat(),
+            source=_SOURCE,
+            caused_by=[caused_by_evt_id],
+            payload_hash=payload_hash,
+            payload_ref=None,
+            payload_kind="signal",
+            subject_class="self",
+            sensitivity="safe",
+            retention_policy_id="signal_default_30d",
+            payload_inline=payload_inline,
+        )
+        self._logger.log(evt)
+
+    def _emit_background_think_injected(self, *, n_chars: int, caused_by_evt_id: str) -> None:
+        now_ms = int(time.monotonic() * 1000)
+        seq = self._next_seq()
+        event_id = f"{self._session_id}-bti-{seq}-{now_ms}"
+        payload_inline = {"role": "background-think", "n_chars": n_chars}
+        payload_hash = hashlib.sha256(
+            json.dumps(payload_inline, sort_keys=True).encode()
+        ).hexdigest()[:16]
+        evt = Event(
+            event_id=event_id,
+            session_id=self._session_id,
+            schema_version=_SCHEMA_VERSION,
+            seq_no=seq,
+            event_type="background_think_injected",
             timestamp_mono_ms=now_ms,
             timestamp_wall=datetime.now(timezone.utc).isoformat(),
             source=_SOURCE,

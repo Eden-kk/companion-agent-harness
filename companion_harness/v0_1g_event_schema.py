@@ -375,4 +375,23 @@ EVENT_TYPE_SCHEMAS: dict[str, StageSixEventSchema] = {
             "raw_audio_chunk event_id (invariant #1)."
         ),
     ),
+
+    # ContinuousOrchestrator PR4: background thought injected into foreground KV cache.
+    # Emitted when a thought_source yields a non-None thought that is prefilled as a
+    # role-tagged text unit. caused_by: [raw_audio_chunk.event_id].
+    "background_think_injected": StageSixEventSchema(
+        payload_kind="signal",
+        subject_class="self",
+        sensitivity="safe",
+        retention_policy_id="signal_default_30d",
+        required_fields=("role", "n_chars"),
+        notes=(
+            "Emitted by ContinuousOrchestrator when it enqueues a background thought "
+            "for injection into the foreground KV cache; the adapter drains it as a "
+            "role-tagged text unit via streaming_prefill(text_list=[...]) before the "
+            "next chunk's audio prefill. Payload carries role + n_chars ONLY "
+            "(NO thought text — SensitiveField; invariant #3). caused_by[] closes "
+            "through the raw_audio_chunk event_id (invariants #1, #2 — context not speech)."
+        ),
+    ),
 }
