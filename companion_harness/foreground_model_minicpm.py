@@ -42,6 +42,7 @@ import torch
 from transformers import AutoModel, AutoTokenizer
 
 from companion_harness.schemas import Event, MemoryItem, ThinkerProposal
+from companion_harness.tts_minicpm_native_compat import _patch_torchaudio
 
 if TYPE_CHECKING:
     from companion_harness.event_logger import EventLogger
@@ -134,9 +135,12 @@ class MiniCPMStreamingModel:
         sliding_window_mode: str = "off",
         chunk_ms: int = 1000,
         listen_prob_scale: float | None = None,
+        native_audio: bool = False,
         logger: "EventLogger | None" = None,
         session_id: str = "",
     ) -> None:
+        # native_audio=True: single generate_audio=True duplex does listen+speak.
+        # infer_stream() is unsupported on a native_audio instance (continuous-only).
         base = AutoModel.from_pretrained(
             _MODEL_ID,
             trust_remote_code=True,
@@ -172,7 +176,23 @@ class MiniCPMStreamingModel:
 
         # first_chunk_ms not forwarded; model default applies (revisit in PR5b if the
         # first chunk needs extra headroom at chunk_ms=200).
-        self._duplex = base.as_duplex(generate_audio=False, sliding_window_mode=sliding_window_mode, chunk_ms=chunk_ms)
+        if native_audio:
+            _patch_torchaudio()
+            # Native audio REQUIRES chunk_ms=1000 — the model is trained at 1000 and
+            # produces NO speech at chunk_ms=200 (verified: 0 speak chunks). The ~1s
+            # latency is inherent to native audio; low-latency needs external TTS on text.
+            self._duplex = base.as_duplex(generate_audio=True, sliding_window_mode=sliding_window_mode, chunk_ms=1000)
+            self._chunk_samples = 16000
+            import tempfile, os as _os, soundfile as _sf  # noqa: WPS433
+            _silence = np.zeros(16000, dtype=np.float32)
+            _fd, _ref_path = tempfile.mkstemp(suffix=".wav", prefix="minicpm_native_ref_")
+            _os.close(_fd)
+            _sf.write(_ref_path, _silence, 16000)
+            self._native_audio_ref_path: str = _ref_path
+            self._native_audio = True
+        else:
+            self._duplex = base.as_duplex(generate_audio=False, sliding_window_mode=sliding_window_mode, chunk_ms=chunk_ms)
+            self._native_audio = False
         # Tracks is_listen from the most recent streaming_generate call.
         # True (listen) is the safe default — EOU has not fired yet.
         self._last_is_listen: bool = True
@@ -435,9 +455,13 @@ class MiniCPMStreamingModel:
                 (orig_cls,),
                 {"current_turn_ended": _AlwaysEnded()},
             )
-            duplex.__class__ = relaxed_cls
+            if not self._native_audio:
+                duplex.__class__ = relaxed_cls
             try:
-                duplex.prepare(prefix_system_prompt="Continuous streaming omni companion.")
+                if self._native_audio:
+                    duplex.prepare(prefix_system_prompt="Continuous streaming omni companion.", prompt_wav_path=self._native_audio_ref_path)
+                else:
+                    duplex.prepare(prefix_system_prompt="Continuous streaming omni companion.")
 
                 buf = np.array([], dtype=np.float32)
                 latest_evt_id: str = ""
@@ -456,10 +480,12 @@ class MiniCPMStreamingModel:
                         return None
                     return None
 
-                def _gpu_work(pcm_float: np.ndarray) -> dict:
+                _native = self._native_audio
+
+                def _gpu_work(pcm_float: np.ndarray) -> "tuple[dict, bytes]":
                     self._drain_scratchpad(duplex)
                     duplex.streaming_prefill(audio_waveform=pcm_float)
-                    return duplex.streaming_generate(
+                    result = duplex.streaming_generate(
                         max_new_speak_tokens_per_chunk=duplex.max_new_speak_tokens_per_chunk,
                         temperature=duplex.temperature,
                         top_k=duplex.top_k,
@@ -468,6 +494,15 @@ class MiniCPMStreamingModel:
                         text_repetition_penalty=duplex.text_repetition_penalty,
                         text_repetition_window_size=duplex.text_repetition_window_size,
                     )
+                    if _native:
+                        wav = result.get("audio_waveform")
+                        if wav is not None and len(wav) > 0:
+                            audio_pcm = (np.clip(np.asarray(wav, dtype=np.float32) * 4.0, -1.0, 1.0) * 32767.0).astype("<i2").tobytes()
+                        else:
+                            audio_pcm = b""
+                    else:
+                        audio_pcm = b""
+                    return result, audio_pcm
 
                 while True:
                     pcm_bytes, evt_id = await audio_in.get()
@@ -478,25 +513,32 @@ class MiniCPMStreamingModel:
                     buf = np.concatenate([buf, samples])
                     while len(buf) >= self._chunk_samples:
                         chunk, buf = buf[:self._chunk_samples], buf[self._chunk_samples:]
-                        result = await loop.run_in_executor(self._inference_executor, _gpu_work, chunk)
+                        result, audio_pcm = await loop.run_in_executor(self._inference_executor, _gpu_work, chunk)
                         is_listen = bool(result.get("is_listen", True))
                         text = result.get("text", "") or ""
                         kv_len = _audio_kv_len()
                         self._last_is_listen = is_listen
-                        yield (is_listen, text, kv_len, latest_evt_id)
+                        if _native:
+                            yield (is_listen, text, kv_len, audio_pcm, latest_evt_id)
+                        else:
+                            yield (is_listen, text, kv_len, latest_evt_id)
 
                 # drain trailing sub-chunk buffer (invariant #1: every chunk → event)
                 if len(buf) > 0 and latest_evt_id:
                     pad = np.zeros(self._chunk_samples - len(buf), dtype=np.float32)
                     chunk = np.concatenate([buf, pad])
-                    result = await loop.run_in_executor(self._inference_executor, _gpu_work, chunk)
+                    result, audio_pcm = await loop.run_in_executor(self._inference_executor, _gpu_work, chunk)
                     is_listen = bool(result.get("is_listen", True))
                     text = result.get("text", "") or ""
                     kv_len = _audio_kv_len()
                     self._last_is_listen = is_listen
-                    yield (is_listen, text, kv_len, latest_evt_id)
+                    if _native:
+                        yield (is_listen, text, kv_len, audio_pcm, latest_evt_id)
+                    else:
+                        yield (is_listen, text, kv_len, latest_evt_id)
             finally:
-                duplex.__class__ = orig_cls
+                if not self._native_audio:
+                    duplex.__class__ = orig_cls
         finally:
             self._stream_chunks_active = False
 

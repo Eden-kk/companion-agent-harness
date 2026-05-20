@@ -113,6 +113,17 @@ class AudioOutputController:
         """
         evt = self._emit("assistant_audio_stop_requested", caused_by, payload_kind="signal")
         self._stop_event.set()
+        # Clear _playing here, not only in the play() drain loop: the continuous path
+        # (native push_chunk) never runs play(), so without this _playing stays True
+        # forever after a barge-in → every subsequent listen chunk re-fires barge-in.
+        # Idempotent for the turn-based path (play() also clears it on _stop_event).
+        self._playing = False
+        _flush = getattr(self._sink, "flush", None)
+        if _flush is not None:
+            try:
+                asyncio.get_running_loop().create_task(_flush())
+            except RuntimeError:
+                pass  # no running loop (e.g. sync test context) — skip
         return evt.event_id
 
     def set_generation_task(self, task: asyncio.Task[None] | None) -> None:
@@ -169,6 +180,18 @@ class AudioOutputController:
             await self._sink(chunk)
 
         self._flush([generation_event_id])
+
+    async def push_chunk(self, pcm_bytes: bytes, *, caused_by: list[str]) -> None:
+        """Forward a native-audio PCM chunk to the sink, logged (invariant #1).
+
+        Used by ContinuousOrchestrator in native_audio mode. Mirrors play()'s
+        per-chunk queue_buffer (audit event) + sink push. Respects _stop_event
+        (barge-in drop).
+        """
+        if self._stop_event.is_set():
+            return
+        self.queue_buffer(pcm_bytes, caused_by=caused_by)
+        await self._sink(pcm_bytes)
 
     @property
     def is_playing(self) -> bool:

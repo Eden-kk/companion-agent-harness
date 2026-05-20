@@ -69,7 +69,7 @@ class _ForegroundModelProtocol(Protocol):
     async def stream_chunks(
         self,
         audio_in: "asyncio.Queue[tuple[bytes, str]]",
-    ) -> AsyncGenerator[tuple[bool, str, int | None, str], None]:
+    ) -> "AsyncGenerator[tuple[bool, str, int | None, str] | tuple[bool, str, int | None, bytes, str], None]":
         ...
 
     def inject_scratchpad(self, text: str) -> None: ...
@@ -80,6 +80,7 @@ class _AudioOutputProtocol(Protocol):
     def is_playing(self) -> bool: ...
     def start_generation(self, caused_by: list[str]) -> str: ...
     def request_stop(self, caused_by: list[str]) -> str: ...
+    async def push_chunk(self, pcm_bytes: bytes, *, caused_by: list[str]) -> None: ...
 
 
 class ContinuousOrchestrator:
@@ -115,6 +116,10 @@ class ContinuousOrchestrator:
         self._social_mode = social_mode
         self._budget_full_response_remaining = budget_full_response_remaining
         self._seq = 0
+        # AGENT dialogue streaming (proposer_token_buffered keyed by ring_seq).
+        self._dialogue_ring_seq = 0
+        self._utterance_active = False
+        self._utterance_chars = 0
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -125,7 +130,9 @@ class ContinuousOrchestrator:
         prior_kv_len: int | None = None
         chunk_idx = 0
 
-        async for is_listen, text, audio_kv_len, caused_by_evt_id in self._foreground.stream_chunks(self._audio_in):
+        async for record in self._foreground.stream_chunks(self._audio_in):
+            is_listen, text, audio_kv_len, *mid, caused_by_evt_id = record
+            audio_pcm: bytes = mid[0] if mid else b""
             self._emit_chunk_processed(
                 is_listen=is_listen,
                 audio_kv_len=audio_kv_len,
@@ -162,6 +169,20 @@ class ContinuousOrchestrator:
             decision = decide_chunk(inputs, caused_by_evt_id=caused_by_evt_id)
             self._emit_policy_decision(decision, caused_by_evt_id)
             self._act(decision, is_listen, bc_score, caused_by_evt_id)
+            if not is_listen and audio_pcm:
+                await self._audio_output.push_chunk(audio_pcm, caused_by=[caused_by_evt_id])
+            # AGENT dialogue: stream the model's response text to the dialogue panel
+            # (proposer_token_buffered keyed by ring_seq; commit_or_discard finalizes).
+            if not is_listen and text:
+                if not self._utterance_active:
+                    self._dialogue_ring_seq += 1
+                    self._utterance_active = True
+                    self._utterance_chars = 0
+                self._emit_proposer_token_buffered(self._dialogue_ring_seq, text, caused_by_evt_id)
+                self._utterance_chars += len(text)
+            elif is_listen and self._utterance_active:
+                self._emit_commit_or_discard(self._utterance_chars, caused_by_evt_id)
+                self._utterance_active = False
             chunk_idx += 1
 
             thought = self._thought_source.pending_thought()
@@ -173,6 +194,38 @@ class ContinuousOrchestrator:
     # Act on the per-chunk decision (PR3a — start speech only; PR3b adds stop;
     # PR3c adds backchannel veto)
     # ------------------------------------------------------------------
+
+    def _emit_proposer_token_buffered(self, ring_seq: int, text: str, caused_by_evt_id: str) -> None:
+        now_ms = int(time.monotonic() * 1000)
+        seq = self._next_seq()
+        payload_inline = {"ring_seq": ring_seq, "is_listen": False, "text_preview": text[:32]}
+        payload_hash = hashlib.sha256(json.dumps(payload_inline, sort_keys=True).encode()).hexdigest()[:16]
+        self._logger.log(Event(
+            event_id=f"{self._session_id}-ptb-{seq}-{now_ms}", session_id=self._session_id,
+            schema_version=_SCHEMA_VERSION, seq_no=seq, event_type="proposer_token_buffered",
+            timestamp_mono_ms=now_ms, timestamp_wall=datetime.now(timezone.utc).isoformat(),
+            source=_SOURCE, caused_by=[caused_by_evt_id], payload_hash=payload_hash, payload_ref=None,
+            payload_kind="signal", subject_class="self", sensitivity="safe",
+            retention_policy_id="signal_default_30d", payload_inline=payload_inline,
+        ))
+
+    def _emit_commit_or_discard(self, committed_token_count: int, caused_by_evt_id: str) -> None:
+        now_ms = int(time.monotonic() * 1000)
+        seq = self._next_seq()
+        payload_inline = {
+            "committed": True, "discarded_token_count": 0,
+            "committed_token_count": committed_token_count,
+            "signal_evt_id": caused_by_evt_id, "policy_evt_id": caused_by_evt_id,
+        }
+        payload_hash = hashlib.sha256(json.dumps(payload_inline, sort_keys=True).encode()).hexdigest()[:16]
+        self._logger.log(Event(
+            event_id=f"{self._session_id}-cod-{seq}-{now_ms}", session_id=self._session_id,
+            schema_version=_SCHEMA_VERSION, seq_no=seq, event_type="commit_or_discard",
+            timestamp_mono_ms=now_ms, timestamp_wall=datetime.now(timezone.utc).isoformat(),
+            source=_SOURCE, caused_by=[caused_by_evt_id], payload_hash=payload_hash, payload_ref=None,
+            payload_kind="signal", subject_class="self", sensitivity="safe",
+            retention_policy_id="signal_default_30d", payload_inline=payload_inline,
+        ))
 
     def _act(self, decision: SpeakDecision, is_listen: bool, bc_score: float, caused_by_evt_id: str) -> None:
         if is_listen and self._audio_output.is_playing:
