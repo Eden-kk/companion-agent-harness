@@ -342,4 +342,19 @@ EVENT_TYPE_SCHEMAS: dict[str, StageSixEventSchema] = {
             "caused_by[] closes through the raw_audio_chunk event_id (invariants #1, #4)."
         ),
     ),
+
+    # ContinuousOrchestrator PR3b: model-native barge-in stop signal.
+    # Emitted when is_listen=True arrives while audio is playing.
+    # caused_by: [raw_audio_chunk.event_id].
+    "model_native_barge_in": StageSixEventSchema(
+        payload_kind="signal",
+        subject_class="self",
+        sensitivity="safe",
+        retention_policy_id="signal_default_30d",
+        notes=(
+            "Emitted by ContinuousOrchestrator when the model yields is_listen=True "
+            "while audio output is playing, triggering request_stop() (invariant #8). "
+            "caused_by[] closes through the raw_audio_chunk event_id (invariant #1)."
+        ),
+    ),
 }
