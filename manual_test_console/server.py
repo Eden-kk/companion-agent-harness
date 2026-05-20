@@ -1564,7 +1564,7 @@ def build_app(
 
     async def _on_startup(_app: web.Application) -> None:
         await logger.start()
-        needs_foreground = live_pipeline_enabled or streaming_raw_mode
+        needs_foreground = live_pipeline_enabled or streaming_raw_mode or continuous
         if needs_foreground and foreground_model is None and foreground_model_factory is not None:
             print("Loading MiniCPM-o foreground model (this may take minutes)...", flush=True)
             t0 = time.monotonic()
