@@ -408,7 +408,6 @@ class MiniCPMStreamingModel:
             duplex.streaming_prefill(text_list=[self._scratchpad_queue.popleft()])
 
     def _effective_listen_prob_scale(self, duplex) -> float:
-        # Continuous-path override; None falls back to the duplex's own value (current behavior).
         return self._listen_prob_scale if self._listen_prob_scale is not None else duplex.listen_prob_scale
 
     async def stream_chunks(
