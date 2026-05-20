@@ -1,6 +1,6 @@
 # Design: Turn-free continuous companion
 
-**Status:** DRAFT — for review (round 0). Gated on a probe result (§3); do not start architecture stages until the probe returns GO.
+**Status:** DRAFT — round 2 review; probes complete (§3.1/§3.2 = GO). Architecture stages 2–6 unblocked.
 **Scope:** remove the "turn" as a runtime control unit; let user and model free-talk with model-judged barge-in; talk + listen + think concurrently over a single MiniCPM-o KV cache, with heavy reasoning offloaded to a background model that injects context into that same cache.
 **Out-of-scope:** retraining MiniCPM-o; building a native parallel-stream (Moshi-style) model; mid-decode KV surgery; a Reflex/filler model.
 
@@ -186,6 +186,30 @@ The conceptual move that makes this shippable in *this* harness: **a "turn" stop
 | #8 Silence wins ties | `listen_prob_scale > 1` + policy gate defaults closed + native `is_listen` default |
 | #10 EventLogger async non-blocking | Unchanged |
 
+### Per-chunk PolicyInputs (Tier-B replay signal)
+
+The continuous gate consumes the following deterministic recorded fields — all signals, not model tokens:
+
+```
+chunk_index: int                        # session clock (audio_chunk_idx)
+model_is_listen: bool                   # model's per-chunk yield signal (recorded and replayed as a
+                                        #   signal; its derivation from token sampling is Tier-A, but
+                                        #   the boolean itself is logged)
+vad_speech_active: bool
+smart_turn_p_done: float
+smart_turn_p_continue: float
+backchannel_score: float
+assistant_audio_playing: bool
+user_addressed_agent: bool
+privacy_mode: enum
+social_mode: enum
+risk_mode: enum
+proactivity_budget_remaining: dict
+cooldown_state: dict
+```
+
+Tier-B logs and replays this tuple through the gate rules → bit-identical `SpeakDecision`; the execution plan formalizes the exact dataclass.
+
 ## 8. The honest limit on "simultaneous" (the 2605.12460 caveat)
 
 - **Fine-grained interleaving** (chunk-level, prefill-then-generate, ~200 ms–1 s): ✅ achievable by relaxing the gate + shrinking `chunk_ms` to ~200 ms. At that granularity it *feels* simultaneous to a human; sufficient for free-talk barge-in.
@@ -219,8 +243,8 @@ Everything needed exists:
 1b. **Backchannel-discrimination probe** — **DONE → DISCRIMINATES** (§3.2). Model keeps talking through "mm-hmm"/"yeah" (0/2 yield) and yields on interruptions (2/2). Model-native discrimination works; keep BackchannelClassifier as a safety net until validated beyond N=2/synthetic.
 1c. **Prompt-compliance probe** — **DONE → compliant** (§3.2). Model does not voice injected `[CONTEXT:…]` (2/2); incorporation flaky (1/2). `background-think` via in-context protocol viable without finetuning for the don't-voice property; defer level-3 finetune.
 1d. **`enable_thinking` reachability probe** — **DONE → not reachable in duplex** (§3.2). Duplex wrapper doesn't expose `enable_thinking`; **Stage 5 think-source = injected background model** (settled).
-2. **Continuous feeder + sliding window.** Replace per-response drain; enable `context` window. (Inseparable — §5.)
-3. **Model-native barge-in primary; VAD demoted to safety net.** Wire the relaxed gate's `<|listen|>` as the primary barge-in signal. **Precondition before flag-flip:** re-probe at N≥20 with real human audio (not synthetic) for both barge-in (1/v2) and backchannel discrimination (1b); only after that result does VAD/BackchannelClassifier demote from confirmatory veto to safety-net/logging-only. The BackchannelClassifier runs as a confirmatory veto until this gate is passed (§6).
+2. **Continuous feeder + sliding window.** Replace per-response drain; enable `context` window. (Inseparable — §5.) **Precondition: characterize audio-KV mid-generation reset behavior — no observed coherence regression across a reset event (measure output coherence before vs after a reset; >15 min sessions).**
+3. **Model-native barge-in primary; VAD demoted to safety net.** Wire the relaxed gate's `<|listen|>` as the primary barge-in signal. **Precondition before flag-flip:** re-probe at N≥20 with real human audio (not synthetic) for both barge-in (1/v2) and backchannel discrimination (1b); only after that result does VAD/BackchannelClassifier demote from confirmatory veto to safety-net/logging-only. The BackchannelClassifier runs as a confirmatory veto until this gate is passed (§6). **GO criterion: interruption yield-rate ≥ 80% AND backchannel false-yield-rate ≤ 10% at N≥20 with real human audio.**
 4. **SpeakPolicy → continuous per-chunk gate.** The big refactor; preserves invariants #4/#5. Requires a **new per-chunk `PolicyInputs` schema** and re-tuned thresholds (see §10.5); the rule structure, `ReasonCode` taxonomy, and `DecisionTrace` format are reused, not the input schema or threshold values.
 5. **Background-thought injection + role-typed KV management** (§4.1) — inject thoughts as role-tagged `background-think` units via `streaming_prefill(text_list=...)`; enable the fuller role snapshot (Strategy 3). Ship with vanilla `sliding_window_mode="context"` (Strategy 1); **Strategy 2 (role-aware eviction) is deferred** — do not build until vanilla eviction produces observed coherence failures. Think-source (in-context protocol vs `enable_thinking`) decided by probes 1c/1d; finetune only if 1c fails.
 6. **Tune `chunk_ms` → ~200 ms and `listen_prob_scale`** empirically against Stage 6 `false_proactive_utterances_per_hour` and barge-in latency gates.
@@ -255,7 +279,7 @@ The turn concept is woven through *one* layer — the orchestrator. Everything b
 | Determinism under continuous operation | Log per-chunk `(is_listen, tokens)`; Tier-B replays recorded outputs, not live sampling |
 | Continuous SpeakPolicy is a core-path refactor | Stage 4 isolated; keep rule-based + per-chunk deterministic |
 | GPU cost of continuous proposers + foreground + vision | The background reasoner runs in a **separate process on a dedicated CUDA stream** (design default), isolated from the foreground's realtime decode path. GPU-contention measurement (foreground latency under background-model load) is a **named prerequisite of Stage 5** — measure on b200 before enabling the background model; do not treat this as a deferred risk. |
-| `background-think` incorporation flaky (1/2 in probe 1c) | Don't-voice property is solid (2/2, §3.2); incorporation is an injection/turn-handling fix, not a finetune trigger. Re-probe after Stage 5 injection wiring; finetune only if still unreliable |
+| `background-think` incorporation flaky (1/2 in probe 1c) | Don't-voice property is solid (2/2, §3.2); incorporation is an injection/turn-handling fix, not a finetune trigger. Re-probe after Stage 5 injection wiring; finetune only if still unreliable. **Criterion: ≥ 80% incorporation at N≥10 before the background model goes to production in Stage 5; below that, treat as an injection/turn-handling bug first, finetune only if unfixable.** |
 | Audio-encoder KV auto-reset (~1500 cap) drops listening context mid-session | Expected behavior (§4); long-term listen memory lives in backbone KV / MemoryManager, not the audio cache |
 | Audio-encoder KV auto-reset firing mid-generation — behavior unanalyzed | When the audio KV cap (~1500) is hit mid-generation, it is unknown whether the backbone attention sees a truncated audio context and suffers silent coherence loss (relevant for sessions longer than ~15 min). Mitigation: investigate this boundary explicitly before enabling long-session operation; add cost/coherence telemetry to detect regression. |
 
