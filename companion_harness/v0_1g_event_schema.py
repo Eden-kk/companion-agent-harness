@@ -297,4 +297,32 @@ EVENT_TYPE_SCHEMAS: dict[str, StageSixEventSchema] = {
             "(no full text, per §3.6 option b)."
         ),
     ),
+
+    # ContinuousOrchestrator (PR1): one per fully-accumulated 1-second chunk.
+    # caused_by: [raw_audio_chunk.event_id].
+    "continuous_chunk_processed": StageSixEventSchema(
+        payload_kind="signal",
+        subject_class="self",
+        sensitivity="safe",
+        retention_policy_id="signal_default_30d",
+        notes=(
+            "Emitted once per 1-second chunk processed by ContinuousOrchestrator. "
+            "Payload carries is_listen (bool), audio_kv_len (int|None), n_chars (int). "
+            "caused_by[] closes through the raw_audio_chunk event_id (invariant #1)."
+        ),
+    ),
+
+    # ContinuousOrchestrator (PR1): emitted when audio KV cache length drops
+    # (sliding window reset detected). caused_by: [raw_audio_chunk.event_id].
+    "audio_kv_reset": StageSixEventSchema(
+        payload_kind="signal",
+        subject_class="self",
+        sensitivity="safe",
+        retention_policy_id="signal_default_30d",
+        notes=(
+            "Emitted by ContinuousOrchestrator when audio_kv_len drops vs prior chunk, "
+            "indicating a sliding-window KV cache reset. Payload carries prior_len and "
+            "new_len. caused_by[] closes through the raw_audio_chunk event_id."
+        ),
+    ),
 }
