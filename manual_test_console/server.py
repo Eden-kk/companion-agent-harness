@@ -1886,7 +1886,7 @@ def build_app(
 
 
 def _load_minicpm_streaming_model(
-    *, init_vision: bool = False, enable_torch_compile: bool = False
+    *, init_vision: bool = False, enable_torch_compile: bool = False, chunk_ms: int = 1000
 ) -> Any:
     """Lazy import + construct MiniCPMStreamingModel. b200 only.
 
@@ -1894,9 +1894,11 @@ def _load_minicpm_streaming_model(
     on machines without torch/CUDA. Tests never reach this path. When
     `init_vision=True` the MiniCPM-o vision tower is loaded (+~18 GB VRAM
     per b200 pre-verification).
+    chunk_ms=200 for the continuous path (PR5a target); default 1000 for the
+    turn-based path (no behavior change for existing callers).
     """
     from companion_harness.foreground_model_minicpm import MiniCPMStreamingModel  # noqa: WPS433
-    return MiniCPMStreamingModel(init_vision=init_vision, enable_torch_compile=enable_torch_compile)
+    return MiniCPMStreamingModel(init_vision=init_vision, enable_torch_compile=enable_torch_compile, chunk_ms=chunk_ms)
 
 
 def _load_silero_vad_model() -> Any:
