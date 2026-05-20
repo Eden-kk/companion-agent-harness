@@ -27,7 +27,9 @@ What is reused vs rewritten is fixed by design §10.5; this plan does not reliti
 - `companion_harness/foreground_model_minicpm.py` — set `sliding_window_mode="context"` via a duplex-param kwarg; no behavior change to the turn-based path
 - `manual_test_console/live_pipeline.py` — `--continuous` opt-in kwarg (default False)
 
-**Success criterion.** `test_continuous_feeder_emits_per_chunk_events`: under `SyntheticClock` + `DirectAudioInputFeeder`, a fixture WAV runs through `continuous_orchestrator` end-to-end and emits per-chunk events with closed `caused_by[]` (invariant #1); the turn-based suite is unchanged (regression-green). Plus the audio-KV-reset precondition probe shows no regression.
+**Success criterion (sole programmatic gate).** `tests/test_continuous_orchestrator_feeder.py::test_continuous_orchestrator_emits_per_chunk_events` — **distinct file** from the existing `tests/test_continuous_feeder.py` (which tests the legacy `StreamingRealtimeOrchestrator` span/drain feeder and MUST stay untouched/regression-green; do not append to or rename it). Under `SyntheticClock` + `DirectAudioInputFeeder`, a fixture WAV runs through `continuous_orchestrator` end-to-end and emits per-chunk events with closed `caused_by[]` (invariant #1); the turn-based suite is regression-green.
+
+The audio-KV-reset probe (Precondition above) is a **separate merge precondition** recorded as GO/NO-GO — it is NOT part of this programmatic test criterion (same probe-vs-test separation as PR3/PR4).
 
 **Policy hook (PR1).** `continuous_orchestrator` calls a placeholder policy hook that unconditionally returns `silence`. This placeholder is explicitly replaced by `decide_chunk` in PR2. PR1 MUST NOT call the per-turn `speak_policy.decide` — that function takes per-turn inputs and is not compatible with the per-chunk continuous path.
 
@@ -48,6 +50,8 @@ Bit-identical Tier-B replay requires a canonical, scalar, ordered serialization 
 - `companion_harness/schemas.py` — `PerChunkPolicyInputs` dataclass
 - `companion_harness/continuous_speak_policy.py` (new) — `decide_chunk(inputs) -> SpeakDecision`, pure + deterministic
 - `tests/test_continuous_policy_replay.py`
+
+**Return type.** `decide_chunk` reuses the existing `SpeakDecision` dataclass from `schemas.py` unchanged. If any field is per-turn-only and cannot be populated per-chunk, define `ChunkSpeakDecision` in `schemas.py` and add it to `__all__` (do not silently overload `SpeakDecision` with optional per-turn fields). `DecisionTrace` is reused as-is.
 
 **Success criterion.** `test_policy_replay_exact_continuous`: a set of **synthetic recorded `PerChunkPolicyInputs` sequences** (where `model_is_listen` is simply a recorded input field, not derived from any orchestrator or gate-relax wiring) is fed through `decide_chunk` twice; the test asserts bit-identical `SpeakDecision` + `DecisionTrace` outputs. This exercises *pure-function determinism only* — orchestrator wiring and gate-relax logic do NOT exist yet at PR2 time; those land in PR3. A determinism guard asserts no `dict`/`set` iteration leaks into the decision path.
 
@@ -162,5 +166,5 @@ Every stage is flag-gated (`--continuous` default OFF). Reverting = flip the fla
 | N≥20 real-audio barge-in/backchannel re-probe (≥80% / ≤10%) | PR3 | gates VAD/BC demotion |
 | ≥80%@N≥10 incorporation re-probe | PR4 | gates background-model production |
 | Audio-KV mid-generation reset characterization | PR1 | precondition probe |
-| arxiv 2605.12460 citation verification | PR1 | verify PDF or drop before citing in shipped code/docs |
+| arxiv 2605.12460 citation | docs-only | design doc §12 reference only — NOT shipped in any code comment/docstring. Verify the PDF or drop the §12 line; no code action. |
 | Test-migration table (all rows resolved, full suite green on continuous core) | PR6 | gates deletion of turn machinery + Path A/B |
