@@ -170,6 +170,18 @@ class AudioOutputController:
 
         self._flush([generation_event_id])
 
+    async def push_chunk(self, pcm_bytes: bytes, *, caused_by: list[str]) -> None:
+        """Forward a native-audio PCM chunk to the sink, logged (invariant #1).
+
+        Used by ContinuousOrchestrator in native_audio mode. Mirrors play()'s
+        per-chunk queue_buffer (audit event) + sink push. Respects _stop_event
+        (barge-in drop).
+        """
+        if self._stop_event.is_set():
+            return
+        self.queue_buffer(pcm_bytes, caused_by=caused_by)
+        await self._sink(pcm_bytes)
+
     @property
     def is_playing(self) -> bool:
         return self._playing

@@ -1902,7 +1902,7 @@ def build_app(
 
 def _load_minicpm_streaming_model(
     *, init_vision: bool = False, enable_torch_compile: bool = False, chunk_ms: int = 1000,
-    listen_prob_scale: float | None = None,
+    listen_prob_scale: float | None = None, native_audio: bool = False,
 ) -> Any:
     """Lazy import + construct MiniCPMStreamingModel. b200 only.
 
@@ -1912,10 +1912,12 @@ def _load_minicpm_streaming_model(
     per b200 pre-verification).
     chunk_ms=200 for the continuous path (PR5a target); default 1000 for the
     turn-based path (no behavior change for existing callers).
+    native_audio=True overrides chunk_ms to 1000 inside the adapter.
     """
     from companion_harness.foreground_model_minicpm import MiniCPMStreamingModel  # noqa: WPS433
     kwargs: dict[str, Any] = dict(
-        init_vision=init_vision, enable_torch_compile=enable_torch_compile, chunk_ms=chunk_ms
+        init_vision=init_vision, enable_torch_compile=enable_torch_compile, chunk_ms=chunk_ms,
+        native_audio=native_audio,
     )
     if listen_prob_scale is not None:
         kwargs["listen_prob_scale"] = listen_prob_scale
@@ -2321,7 +2323,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.continuous:
             def factory() -> Any:  # noqa: WPS430
                 return _load_minicpm_streaming_model(
-                    chunk_ms=200, listen_prob_scale=1.0, enable_torch_compile=args.torch_compile
+                    chunk_ms=200, listen_prob_scale=1.0, enable_torch_compile=args.torch_compile,
+                    native_audio=True,
                 )
         elif args.enable_vision and not args.minicpm_streaming_raw:
             def factory() -> Any:  # noqa: WPS430

@@ -69,7 +69,7 @@ class _ForegroundModelProtocol(Protocol):
     async def stream_chunks(
         self,
         audio_in: "asyncio.Queue[tuple[bytes, str]]",
-    ) -> AsyncGenerator[tuple[bool, str, int | None, str], None]:
+    ) -> "AsyncGenerator[tuple[bool, str, int | None, str] | tuple[bool, str, int | None, bytes, str], None]":
         ...
 
     def inject_scratchpad(self, text: str) -> None: ...
@@ -80,6 +80,7 @@ class _AudioOutputProtocol(Protocol):
     def is_playing(self) -> bool: ...
     def start_generation(self, caused_by: list[str]) -> str: ...
     def request_stop(self, caused_by: list[str]) -> str: ...
+    async def push_chunk(self, pcm_bytes: bytes, *, caused_by: list[str]) -> None: ...
 
 
 class ContinuousOrchestrator:
@@ -125,7 +126,9 @@ class ContinuousOrchestrator:
         prior_kv_len: int | None = None
         chunk_idx = 0
 
-        async for is_listen, text, audio_kv_len, caused_by_evt_id in self._foreground.stream_chunks(self._audio_in):
+        async for record in self._foreground.stream_chunks(self._audio_in):
+            is_listen, text, audio_kv_len, *mid, caused_by_evt_id = record
+            audio_pcm: bytes = mid[0] if mid else b""
             self._emit_chunk_processed(
                 is_listen=is_listen,
                 audio_kv_len=audio_kv_len,
@@ -162,6 +165,8 @@ class ContinuousOrchestrator:
             decision = decide_chunk(inputs, caused_by_evt_id=caused_by_evt_id)
             self._emit_policy_decision(decision, caused_by_evt_id)
             self._act(decision, is_listen, bc_score, caused_by_evt_id)
+            if not is_listen and audio_pcm:
+                await self._audio_output.push_chunk(audio_pcm, caused_by=[caused_by_evt_id])
             chunk_idx += 1
 
             thought = self._thought_source.pending_thought()
