@@ -21,26 +21,20 @@ This is the implementation-level HOW for PR1. It does **not** wire the per-chunk
 Unlike the turn-based orchestrator (T1→T2→T3→T4 with `_decision_in_flight`, `_batch_open/close`, per-response drain), the continuous orchestrator runs **one loop**:
 
 ```
-ContinuousOrchestrator.run():
-    duplex.prepare(prefix_system_prompt=...)          # once, at session start
-    while not stopped:
-        frame_bytes, chunk_evt_id = await audio_in.get()      # same queue contract as today
-        pcm = pcm16_to_float(frame_bytes)
-        accumulate into a 1s (chunk_ms) buffer
-        when buffer full:
-            result = await run_in_executor(duplex.streaming_prefill + streaming_generate)
-            is_listen = result["is_listen"]; text = result["text"]
-            emit continuous_chunk_processed event  (caused_by=[chunk_evt_id]; payload_inline:
-                                                    {is_listen, audio_kv_len, n_chars})
-            decision = self._policy_hook(...)         # PR1: ALWAYS returns silence
-            # PR1 stops here. (PR2 wires decide_chunk; PR3 wires barge-in; PR4 wires think-injection.)
+ContinuousOrchestrator.run():            # depends on the ForegroundModel ADAPTER, never raw _duplex
+    async for chunk in self._foreground.stream_chunks(audio_in):   # NEW adapter method (§6)
+        # chunk: (is_listen: bool, text: str, audio_kv_len: int|None, caused_by_evt_id: str)
+        emit continuous_chunk_processed (caused_by=[chunk.caused_by_evt_id];
+                                         payload_inline={is_listen, audio_kv_len, n_chars})
+        if chunk.audio_kv_len dropped vs prior: emit audio_kv_reset
+        decision = self._policy_hook(...)            # PR1: ALWAYS returns silence
+        # PR1 stops here. (PR2 wires decide_chunk; PR3 barge-in; PR4 think-injection.)
 ```
 
 Key properties:
 - **No EOU batching, no drain task, no `_decision_in_flight`.** The loop is flat.
-- **Same `audio_in` queue contract** as the turn-based orchestrator, so the existing ingest path (`/ws/ingest`) and the eval `DirectAudioInputFeeder` both feed it unchanged.
-- **`run_in_executor`** for the GPU call (single-worker executor, as `MiniCPMStreamingModel` already uses), so the event loop keeps draining `audio_in`.
-- **Buffering:** accumulate incoming ~30 ms transport frames into one `chunk_ms` (default 1000) chunk before `streaming_prefill`, matching today's `infer_stream`.
+- **Same `audio_in` queue contract** as the turn-based orchestrator, so the existing ingest path (`/ws/ingest`) and the eval `DirectAudioInputFeeder` both feed it unchanged. The adapter's `stream_chunks()` consumes `audio_in` directly.
+- **Adapter-first (CLAUDE.md):** `ContinuousOrchestrator` imports no model SDK and never touches `_duplex` / `streaming_prefill` / `streaming_generate`. The per-chunk mechanics — pcm16→float (inline `np.frombuffer(...).astype(np.float32)/32768.0`), 1 s (`chunk_ms`) buffering, `run_in_executor` of the GPU call, and `audio_kv_len` computation — all live inside the adapter's `stream_chunks()` async generator. Unlike the existing `infer_stream_continuous` (yields only on speak), `stream_chunks()` yields one record for **every** chunk.
 
 ## 3. Placeholder policy hook
 
@@ -57,7 +51,7 @@ The real-model `sliding_window_mode="context"` behavior is verified in a manual/
 <!-- PROBE-RESULTS-START -->
 **Result: GO** (`scripts/probe_audio_kv_reset.py`, 2026-05-19, b200/MiniCPM-o 4.5). With the model monologuing (speak-biased so it's actively generating), the audio-KV reset fired at chunk 30 (1450→50 tokens, the ~1500 cap) and the model **continued coherently across the boundary**: before — "…the bustling streets of Tokyo"; after — "…geishas moved gracefully through hidden alleyways" (same scene, narrative continuity held; both coherent, unique-ratio 0.9–1.0). The story lives in the LLM backbone (`llm_past_key_values`, not reset); only the audio-encoder cache reset, which does not break generation.
 
-**PR1 handling:** no special mitigation. Emit an `audio_kv_reset` audit event when detected (observability, invariant #1) and continue. Detection: the orchestrator tracks `duplex.model.audio_past_key_values` length externally each chunk (reusing the `_audio_kv_len` helper from `scripts/probe_audio_kv_reset.py`) and emits `audio_kv_reset` when the length drops versus the prior chunk. This is NOT a `streaming_generate` return field.
+**PR1 handling:** no special mitigation. Emit an `audio_kv_reset` audit event when detected (observability, invariant #1) and continue. Detection (adapter-first): the adapter's `stream_chunks()` computes `audio_kv_len` per chunk inside the adapter (via the `_audio_kv_len` helper on its own `_duplex`); the orchestrator emits `audio_kv_reset` when `audio_kv_len` drops versus the prior chunk. The orchestrator never reaches into `duplex.model`. This is NOT a `streaming_generate` return field. On the CPU test the stub yields `audio_kv_len=None`, so reset detection is exercised only in the manual/b200 run.
 
 **Caveat / follow-up (not a PR1 blocker):** this tests coherence of the model's *own ongoing generation* across the reset. It does not test whether the model retains memory of *user audio* spoken before the reset (that context lives partly in the audio cache that gets wiped). A fact-retention-across-reset probe (user states a fact pre-reset; ask post-reset) is a reasonable follow-up if long-session user-audio recall matters — defer to PR5/PR6 long-session validation.
 <!-- PROBE-RESULTS-END -->
@@ -66,17 +60,17 @@ The real-model `sliding_window_mode="context"` behavior is verified in a manual/
 
 | File | Change |
 |---|---|
-| `companion_harness/continuous_orchestrator.py` (new) | `ContinuousOrchestrator` class: ctor takes adapters as constructor args (mirroring `RealtimeOrchestrator`) + `audio_in` queue + EventLogger; `run()` implements §2; `_policy_hook` placeholder (§3); emits `continuous_chunk_processed` + `audio_kv_reset` events. |
-| `companion_harness/foreground_model_minicpm.py` | add `sliding_window_mode: str = "off"` to `MiniCPMStreamingModel.__init__`, passed through to `base.as_duplex(...)`. Default unchanged for turn-based; `"context"` when continuous. Surgical; no behavior change to existing path. |
+| `companion_harness/continuous_orchestrator.py` (new) | `ContinuousOrchestrator` class: ctor takes adapters as constructor args (mirroring `RealtimeOrchestrator`) + EventLogger; `run()` consumes `self._foreground.stream_chunks(audio_in)` (§2, adapter-first); `_policy_hook` placeholder (§3); emits `continuous_chunk_processed` + `audio_kv_reset`. **Imports no model SDK; never touches `_duplex`.** |
+| `companion_harness/foreground_model_minicpm.py` | (a) add `sliding_window_mode: str = "off"` to `MiniCPMStreamingModel.__init__`, passed to `base.as_duplex(...)` (default unchanged for turn-based; `"context"` when continuous). (b) add `stream_chunks(audio_in)` — an async generator owning the per-chunk loop (pcm→float, 1 s buffer, `run_in_executor(streaming_prefill+generate)`) yielding `(is_listen, text, audio_kv_len, caused_by_evt_id)` for **every** chunk, `audio_kv_len` via the `_audio_kv_len` helper. These adapter additions are what keep the orchestrator SDK-free. Surgical; no behavior change to the existing turn-based path. |
 | `tests/test_continuous_orchestrator_feeder.py` (new) | the success-criterion test (§7). |
 
 `manual_test_console/live_pipeline.py` and `manual_test_console/server.py` are **not touched in PR1**. Live wiring (`--continuous` CLI flag) is deferred to a later PR (see §1).
 
 ## 7. Success criterion (sole programmatic gate)
 
-`tests/test_continuous_orchestrator_feeder.py::test_continuous_orchestrator_emits_per_chunk_events` — **distinct file** from the existing `tests/test_continuous_feeder.py` (legacy `StreamingRealtimeOrchestrator`; do not touch). The test is **CPU-runnable (CI-safe)**: `ContinuousOrchestrator` accepts the foreground model via injection; the test injects a synchronous `FakeDuplex` stub whose `streaming_generate` returns `{"is_listen": True, "text": ""}` and whose `streaming_prefill` is a no-op. No real MiniCPM-o weights are loaded.
+`tests/test_continuous_orchestrator_feeder.py::test_continuous_orchestrator_emits_per_chunk_events` — **distinct file** from the existing `tests/test_continuous_feeder.py` (legacy `StreamingRealtimeOrchestrator`; do not touch). The test is **CPU-runnable (CI-safe)**: `ContinuousOrchestrator` accepts the foreground model via injection; the test injects a `FakeForegroundModel` stub exposing `stream_chunks(audio_in)` that yields `(is_listen=True, text="", audio_kv_len=None, caused_by_evt_id=<chunk id>)` per consumed chunk. No real MiniCPM-o weights and no `_duplex` — the orchestrator depends only on this adapter interface (adapter-first).
 
-Under `SyntheticClock` + `DirectAudioInputFeeder` + `FakeDuplex`, a fixture WAV runs through `ContinuousOrchestrator` end-to-end and:
+Under `SyntheticClock` + `DirectAudioInputFeeder` + `FakeForegroundModel`, a fixture WAV runs through `ContinuousOrchestrator` end-to-end and:
 - emits ≥1 `continuous_chunk_processed` event per consumed chunk,
 - every emitted event has closed `caused_by[]` (no orphans; invariant #1),
 - no TTS/`assistant_audio_*` events fire (PR1 is silence-only),
