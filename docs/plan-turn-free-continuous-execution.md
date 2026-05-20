@@ -10,7 +10,7 @@ This plan turns design §10 stages 2–6 into PRs. Stages 1/1b/1c/1d are complet
 
 ## Build approach (strangler-fig)
 
-A **new** `companion_harness/continuous_orchestrator.py` is written alongside `realtime_orchestrator.py`, consuming the same adapters + EventLogger below it. No retrofit of the 2610-line turn-based orchestrator. A/B both on the same fixtures. The turn machinery + Path A/B variants are retired only after PR5 passes, gated by a test-migration table (see §Test-migration gate).
+A **new** `companion_harness/continuous_orchestrator.py` is written alongside `realtime_orchestrator.py`, consuming the same adapters + EventLogger below it. No retrofit of the 2610-line turn-based orchestrator. A/B both on the same fixtures. The turn machinery + Path A/B variants are retired only after PR5b + PR6 (test-migration gate, see §PR6) are complete.
 
 What is reused vs rewritten is fixed by design §10.5; this plan does not relitigate it.
 
@@ -20,7 +20,7 @@ What is reused vs rewritten is fixed by design §10.5; this plan does not reliti
 
 **Scope.** New `continuous_orchestrator.py` with a continuous audio feeder that pumps chunks indefinitely (replaces the per-response drain). Enable `sliding_window_mode="context"` on the duplex model. Per-chunk events logged; "turns" become an audit-time segmentation, not a runtime unit.
 
-**Precondition (design §10 Stage 2 / round-2 finding).** Characterize audio-encoder KV mid-generation reset (~1500 cap): run a >15-min session that forces ≥1 reset event; assert no coherence regression across the reset (measure: output-text coherence + backbone attention sanity before vs after). Ship a probe `scripts/probe_audio_kv_reset.py`; record the result in this plan before merging PR1.
+**Precondition (design §10 Stage 2 / round-2 finding).** Characterize audio-encoder KV mid-generation reset (~1500 cap): run a >15-min session that forces ≥1 reset event; assert no coherence regression across the reset (measure: output-text coherence + backbone attention sanity before vs after). Ship a probe `scripts/probe_audio_kv_reset.py`; record the result as **GO or NO-GO** in this plan before merging PR1. **NO-GO branch:** if the probe shows a coherence regression across the reset, PR1 does NOT merge as-is. Fallback options: (a) emit a pre-reset boundary event into the backbone before the audio KV rolls over (follow-on mitigation), or (b) defer PR1 until that mitigation is implemented and re-probed. Name the GO/NO-GO outcome in this plan before any merge.
 
 **Files.**
 - `companion_harness/continuous_orchestrator.py` (new)
@@ -28,6 +28,8 @@ What is reused vs rewritten is fixed by design §10.5; this plan does not reliti
 - `manual_test_console/live_pipeline.py` — `--continuous` opt-in kwarg (default False)
 
 **Success criterion.** `test_continuous_feeder_emits_per_chunk_events`: under `SyntheticClock` + `DirectAudioInputFeeder`, a fixture WAV runs through `continuous_orchestrator` end-to-end and emits per-chunk events with closed `caused_by[]` (invariant #1); the turn-based suite is unchanged (regression-green). Plus the audio-KV-reset precondition probe shows no regression.
+
+**Policy hook (PR1).** `continuous_orchestrator` calls a placeholder policy hook that unconditionally returns `silence`. This placeholder is explicitly replaced by `decide_chunk` in PR2. PR1 MUST NOT call the per-turn `speak_policy.decide` — that function takes per-turn inputs and is not compatible with the per-chunk continuous path.
 
 **Invariants touched.** #1 (per-chunk logging), #10 (feeder uses non-blocking `EventLogger.log`).
 
@@ -47,7 +49,7 @@ Bit-identical Tier-B replay requires a canonical, scalar, ordered serialization 
 - `companion_harness/continuous_speak_policy.py` (new) — `decide_chunk(inputs) -> SpeakDecision`, pure + deterministic
 - `tests/test_continuous_policy_replay.py`
 
-**Success criterion.** `test_policy_replay_exact_continuous`: a recorded sequence of `PerChunkPolicyInputs` replayed twice through `decide_chunk` yields **bit-identical** `SpeakDecision` + `DecisionTrace` sequences (invariant #5). A determinism guard asserts no `dict`/`set` iteration leaks into the decision path.
+**Success criterion.** `test_policy_replay_exact_continuous`: a set of **synthetic recorded `PerChunkPolicyInputs` sequences** (where `model_is_listen` is simply a recorded input field, not derived from any orchestrator or gate-relax wiring) is fed through `decide_chunk` twice; the test asserts bit-identical `SpeakDecision` + `DecisionTrace` outputs. This exercises *pure-function determinism only* — orchestrator wiring and gate-relax logic do NOT exist yet at PR2 time; those land in PR3. A determinism guard asserts no `dict`/`set` iteration leaks into the decision path.
 
 **Invariants touched.** #5 (Tier-B determinism), #2/#4 (gate is the only path to speech).
 
@@ -57,7 +59,9 @@ Bit-identical Tier-B replay requires a canonical, scalar, ordered serialization 
 
 **Scope.** Relax the `current_turn_ended` gate (the change validated by probes §3.1/§3.2) in the continuous path only. Wire the model's per-chunk `is_listen` as the **primary** barge-in signal; VAD/SmartTurn demote to safety net (fire only if the model is too slow). `BackchannelClassifier` runs as a **confirmatory veto**: if the model yields but the classifier scores overlapping audio as a backchannel, suppress the yield.
 
-**Flag-flip precondition (design §6 / §10 Stage 3).** Re-probe at **N≥20 with real human audio** (not synthetic). **GO criterion: interruption yield-rate ≥ 80% AND backchannel false-yield-rate ≤ 10%.** Only after this passes does the BackchannelClassifier demote from veto to logging-only and VAD demote to safety net. Until then both stay in the loop.
+**Code states (disambiguated).** PR3 ships in **state (a)**: gate-relax wired in the continuous path, VAD safety-net active, BackchannelClassifier active as a confirmatory veto (design §6). The demotion to **state (b)** — BC → logging-only, VAD → safety-net-only — is a follow-on sub-change gated by the N≥20 real-audio re-probe. PR3 merges in state (a); the probe gates the demotion, not the PR merge.
+
+**Flag-flip precondition (design §6 / §10 Stage 3).** Re-probe at **N≥20 with real human audio** (not synthetic). **GO criterion: interruption yield-rate ≥ 80% AND backchannel false-yield-rate ≤ 10%.** Only after this passes does the BackchannelClassifier demote from veto to logging-only and VAD demote to safety-net-only (state (b)). Until that GO is recorded, both stay in the loop (state (a)).
 
 **Files.**
 - `companion_harness/continuous_orchestrator.py` — barge-in routing (model-primary), BC veto
@@ -85,31 +89,49 @@ Bit-identical Tier-B replay requires a canonical, scalar, ordered serialization 
 
 **Files.**
 - `companion_harness/continuous_orchestrator.py` — scratchpad injection hook
-- `companion_harness/background_reasoner.py` — continuous mode, separate process + CUDA stream
+- `companion_harness/continuous_background_thinker.py` (new) — continuous mode, separate process + CUDA stream. **Do NOT reuse or overwrite `companion_harness/background_reasoner.py`** — that file is the existing MCP tool-reasoner seam (`BackgroundReasoner` protocol) and must remain untouched.
 - `companion_harness/foreground_model_minicpm.py` — `inject_scratchpad(text, caused_by)` + role-tagged units + full snapshot upgrade
 - `tests/test_background_think_injection.py`
 
-**Success criterion.** `test_background_think_compliance`: an injected `[CONTEXT:…]` unit is not voiced by the foreground (the don't-voice property, invariant-critical), and the injection is a logged event with closed `caused_by[]`. GPU-contention measurement recorded under the p95 bound; incorporation re-probe recorded ≥80% before any default-on.
+**Success criterion (merge gate).** `test_background_think_compliance`: an injected `[CONTEXT:…]` unit is not voiced by the foreground (the don't-voice property, invariant-critical), and the injection is a logged event with closed `caused_by[]`. This test is the merge gate.
+
+**Measured properties (not asserted by the unit test).** GPU-contention p95 (foreground per-chunk latency < 250 ms under concurrent background load on b200) and incorporation rate (≥80% at N≥10) are *measured and recorded* in the PR description; they gate default-on sub-changes (see PR5b), not the PR4 merge itself.
+
+**Default state.** PR4 merges with the background model OFF by default (`--background-think` flag, default False). The GPU-contention p95 gate (foreground latency < 250 ms under load) is required before any default-on flip (PR5b), not before PR4 merge.
 
 **Invariants touched.** #1, #2/#4 (injected context is data, gate is on output tokens), #9 (tool-progress narration still evidence-bound), #10.
 
 ---
 
-## PR5 — Tuning + default-on (design Stage 6)
+## PR5a — Tuning (design Stage 6, programmatic gate)
 
-**Scope.** Tune `chunk_ms` → ~200 ms and `listen_prob_scale` (production value biases toward listening — invariant #8). Manual-test cycle. Flip `--continuous` default ON only after a clean cycle + green gates.
+**Scope.** Tune `chunk_ms` → ~200 ms and `listen_prob_scale` (production value biases toward listening — invariant #8).
 
 **Precedence rule (design §9).** Policy gate is authoritative; `listen_prob_scale` only biases the model's upstream `is_listen` sampling; gate-closed ⇒ silence regardless of model preference. Encode this ordering in the gate.
 
-**Success criterion.** `test_continuous_latency_and_proactivity`: with `chunk_ms≈200`, barge-in p95 within the Stage-1 budget and Stage-6 `false_proactive_utterances_per_hour` within target on the fixture set; manual-test findings doc closed with zero critical open items.
+**Success criterion.** `test_continuous_latency_and_proactivity`: with `chunk_ms≈200`, barge-in p95 within the Stage-1 budget and Stage-6 `false_proactive_utterances_per_hour` within target on the fixture set. This is the programmatic merge gate.
 
 **Invariants touched.** #8, Stage-1 latency budgets, Stage-6 texture gates.
 
 ---
 
-## Test-migration gate (design §10.5)
+## PR5b — Default-on flip (design Stage 6, human sign-off)
 
-Before the turn machinery + Path A/B variants are removed, produce a **test-migration table**: each existing contract test → `kept-as-is` / `ported-to-continuous-core` / `deleted-with-rationale`. No turn-based code is deleted until every test is accounted for and the continuous-core ports are green. Tracks: `tests/test_path_b_phase_a.py`, `tests/test_streaming_speculative_continuous.py`, and the orchestrator/barge-in/policy suites.
+**Scope.** Change `--continuous` default to ON. Requires: PR5a green, GPU-contention p95 gate satisfied (from PR4 measurements), incorporation re-probe recorded, and a clean manual-test cycle with zero critical open items.
+
+**Merge gate.** Human sign-off after a clean manual-test cycle. There is no programmatic test gate for this PR — the manual-test cycle IS the gate. The coder must not merge PR5b unilaterally.
+
+**Invariants touched.** #8 (default behavior change), rollout &amp; reversibility (§ below).
+
+---
+
+## PR6 — Retire turn machinery + Path A/B (design §10.5, test-migration gate)
+
+**Scope.** Produce a test-migration table (each existing contract test → `kept-as-is` / `ported-to-continuous-core` / `deleted-with-rationale`), resolve every row, then delete the turn machinery + Path A/B variants. Tracks: `tests/test_path_b_phase_a.py`, `tests/test_streaming_speculative_continuous.py`, and the orchestrator/barge-in/policy suites.
+
+**Success criterion.** Test-migration table produced with all rows resolved; full suite green on the continuous core; turn machinery + Path A/B code deleted. No turn-based code is deleted until every test is accounted for and the continuous-core ports are green.
+
+**Invariants touched.** #1 (audit trail continuity across migration), regression-green on all ported tests.
 
 ---
 
@@ -120,15 +142,16 @@ PR1 (feeder + window)
    └─> PR2 (per-chunk PolicyInputs + gate)   ── deterministic Tier-B contract
           └─> PR3 (model-native barge-in + BC veto)  ── needs the gate
                  └─> PR4 (background-think injection)  ── needs continuous loop + gate
-                        └─> PR5 (tuning + default-on)  ── needs all of the above
-Test-migration gate: blocks deletion of turn machinery (after PR5 green)
+                        └─> PR5a (tuning — programmatic gate)  ── needs all of the above
+                               └─> PR5b (default-on flip — human sign-off)  ── needs PR5a + probes
+                                      └─> PR6 (retire turn machinery + Path A/B)  ── last; after PR5b
 ```
 
-PR1→PR2→PR3→PR4→PR5 is strictly sequential (each builds on the prior's contract). The two real-audio/GPU re-probes (PR3 flag-flip, PR4 GPU+incorporation) gate *demotion/default-on sub-changes*, not the PR merges themselves — so dev can proceed while the human-in-the-loop probes run.
+PR1→PR2→PR3→PR4→PR5a→PR5b→PR6 is strictly sequential (each builds on the prior's contract). The two real-audio/GPU re-probes (PR3 flag-flip, PR4 GPU+incorporation) gate *demotion/default-on sub-changes* (landing in PR5b), not the PR merges themselves — so dev can proceed while the human-in-the-loop probes run. PR6 is last in the chain and is the only PR that deletes the turn machinery.
 
 ## Rollout & reversibility
 
-Every stage is flag-gated (`--continuous` default OFF). Reverting = flip the flag; behavior returns to the turn-based orchestrator. Default-on is earliest v0.3, after PR5 + a clean manual-test cycle. The turn-based path remains the fallback until the test-migration gate is satisfied.
+Every stage is flag-gated (`--continuous` default OFF). Reverting = flip the flag; behavior returns to the turn-based orchestrator. Default-on is earliest v0.3, after PR5a green + PR5b human sign-off. The turn-based path remains the fallback until PR6 (test-migration gate) is satisfied.
 
 ## Open items carried from design review (must be resolved in-PR, not deferred again)
 
@@ -139,4 +162,5 @@ Every stage is flag-gated (`--continuous` default OFF). Reverting = flip the fla
 | N≥20 real-audio barge-in/backchannel re-probe (≥80% / ≤10%) | PR3 | gates VAD/BC demotion |
 | ≥80%@N≥10 incorporation re-probe | PR4 | gates background-model production |
 | Audio-KV mid-generation reset characterization | PR1 | precondition probe |
-| arxiv 2605.12460 citation verification | PR-any | verify PDF or drop before citing in shipped code/docs |
+| arxiv 2605.12460 citation verification | PR1 | verify PDF or drop before citing in shipped code/docs |
+| Test-migration table (all rows resolved, full suite green on continuous core) | PR6 | gates deletion of turn machinery + Path A/B |
