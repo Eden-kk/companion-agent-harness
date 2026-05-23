@@ -97,10 +97,21 @@ as a ChatML system turn. Emit through `EventLogger` (async, non-blocking — inv
 `benchmark_case_started/completed`, `fixture_audio_chunk_injected`,
 `native_duplex_invocation`, and a **new** `held_result_injected` event. Every Event
 carries `caused_by[]` (invariant: DAG closes).
-*Success:* `--adapter tact_bench --limit 1` writes a non-empty per-case event log and a
-trajectory in `ReplayRun.results`.
+*Success (CI gate):* `tests/test_tact_driver.py` with a **fake duplex** (no GPU)
+yields a ReplayRun whose event log has started/held_result_injected/completed (closed
+`caused_by` DAG) and whose `results.trajectory` flags injection at `t_available`. A
+real `--limit 1` GPU smoke is run manually on b200, not in CI (plan-critic C4).
 *Sub-task:* register `held_result_injected` in `EVAL_EVENT_TYPE_SCHEMAS`
-(`evals/schemas.py`) + a retention policy id in `replay_privacy_policy.yaml`.
+(`evals/schemas.py`). NOTE (plan-critic B2): the eval retention ids
+(`eval_run_30d`, `raw_media_default_300s`) are **already** referenced by the existing
+eval schemas and are absent from `replay_privacy_policy.yaml`; no test enforces eval-id
+membership. This is a pre-existing gap — `held_result_injected` reuses `eval_run_30d`
+for consistency; fixing the shared yaml is out of scope for this branch.
+*Resolved (plan-critic B3):* `streaming_prefill(text_list=...)` is verified in the model
+source (modeling_minicpmo.py L2759/L3094) and at runtime by
+`scripts/probe_tact_pending_injection.py` + the text-mode runs — not an open assumption.
+*Mechanism:* in-memory `event_sink` list + `_make_event`, matching `fixture.py` (NOT the
+realtime EventLogger).
 
 **PR3 — `DeliveryJudge` Examiner (model-agnostic).**
 Port the OpenAI Mode-B judge behind the `Examiner` seam; persist `judge-labels.json`;
@@ -119,6 +130,8 @@ incl. `conditional_form == 1.0` where unconditional form < 1.0.
 
 **PR5 — Registry + runners wiring (model-agnostic).**
 Add `tact_bench` to `ADAPTERS`; wire `_run_tact` in `runners.py`; reuse json+md reporters.
+NOTE (plan-critic C5): `runners.py` has no `--input-mode`/`--arm`/`--judge` args today —
+PR5 must add them to the argparse, else the success command errors on an unknown flag.
 *Success:* `python -m companion_harness.evals run --adapter tact_bench --input-mode text`
 writes `run.json` / `metrics.json` / `report.md` / `event_logs/`.
 
@@ -150,9 +163,10 @@ comparing text vs audio and probe-vs-adapter numbers within tolerance.
   disambiguates "can't defer" from "won't defer under emergent gating."
 - **R2 — judge cost/nondeterminism**; mitigate with cassettes in CI + verdict cache.
 - **R3 — `held_result_injected` retention policy** must exist before PR2 emits it.
-- **OQ1 — does the generalized benchmark definition belong in tact-bench or vendored
-  into the harness?** Current split: definition stays in tact-bench; `CaseSource` reads
-  it via a configurable path (default the tact-bench checkout). Confirm before PR1.
+- **OQ1 — RESOLVED (PR1):** the scenario definition is **vendored** into the harness at
+  `companion_harness/evals/adapters/tact_bench_data/scenarios.yaml` so the adapter runs
+  CI-hermetically; the tact-bench repo remains the upstream author (keep in sync).
+  `CaseSource` accepts a `scenarios_path` override for non-default sets.
 - **OQ2 — keep the standalone probes** as a smoke-test, or delete after PR5 supersedes
   them? Recommend: keep `probe_tact_pending_injection.py` (feasibility gate), retire the
   runner probe once the adapter reaches parity (PR7).

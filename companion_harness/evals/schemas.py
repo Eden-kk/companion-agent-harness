@@ -108,4 +108,12 @@ EVAL_EVENT_TYPE_SCHEMAS: dict[str, EvalEventSchema] = {
         sensitivity="safe",
         retention_policy_id="eval_run_30d",
     ),
+    # TACT-Bench adapter (plan-tact-bench-minicpm-adapter.md PR2): a held result
+    # injected into the session as a private note. Only the payload hash is logged.
+    "held_result_injected": EvalEventSchema(
+        payload_kind="transcript",
+        subject_class="self",
+        sensitivity="sensitive",
+        retention_policy_id="eval_run_30d",
+    ),
 }
