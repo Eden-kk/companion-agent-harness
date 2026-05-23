@@ -62,12 +62,12 @@ def _load_layer2_context(path: Path = _LAYER2) -> dict:
 
 def _parse_token(raw: str) -> str:
     up = (raw or "").upper()
+    # normalize separators: models return NOW_BRIEF / "NOW BRIEF" (spoken) / NOW-BRIEF (GPT)
+    norm = up.replace("-", "_").replace(" ", "_")
     for tok, action in _TOKEN_TO_ACTION:
-        # accept both "NOW_BRIEF" and the spoken "NOW BRIEF" (audio arm answers
-        # in natural speech, where Kokoro renders the underscore as a pause)
-        if tok in up or tok.replace("_", " ") in up:
+        if tok in norm:
             return action
-    if "NOW" in up:
+    if "NOW" in norm:
         return "NOW:SPEAK_BRIEF"  # bare NOW → default form
     return "WAIT"
 

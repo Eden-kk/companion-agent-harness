@@ -43,20 +43,41 @@ _METRICS = [
 ]
 
 
-def _shared_model_factory():
+_MODEL_LABELS = {
+    "minicpm": "openbmb/MiniCPM-o-4_5",
+    "gpt-realtime-2": "openai/gpt-realtime-2",
+}
+
+
+def _shared_model_factory(model_name: str = "minicpm"):
     holder: dict = {}
 
     def factory():
         if "m" not in holder:
-            from companion_harness.foreground_model_minicpm import MiniCPMStreamingModel
+            if model_name == "minicpm":
+                from companion_harness.foreground_model_minicpm import MiniCPMStreamingModel
 
-            print("  loading MiniCPM-o (once)...", flush=True)
-            t0 = time.monotonic()
-            holder["m"] = MiniCPMStreamingModel()
-            print(f"  loaded in {round((time.monotonic()-t0)*1000)}ms", flush=True)
+                print("  loading MiniCPM-o (once)...", flush=True)
+                t0 = time.monotonic()
+                holder["m"] = MiniCPMStreamingModel()
+                print(f"  loaded in {round((time.monotonic()-t0)*1000)}ms", flush=True)
+            else:
+                from companion_harness.foreground_model_gpt_realtime import GptRealtimeModel
+
+                print(f"  using OpenAI {model_name} via Chat Completions", flush=True)
+                holder["m"] = GptRealtimeModel(model=model_name)
         return holder["m"]
 
     return factory
+
+
+def _read_meta(out: Path, model_flag: str = "minicpm") -> dict:
+    """Model/date for the report. Prefer the persisted meta.json (written by the live
+    run) so re-renders aren't mislabelled; else derive from the --model flag."""
+    meta_path = out / "meta.json"
+    if meta_path.exists():
+        return json.loads(meta_path.read_text())
+    return {"model": _MODEL_LABELS.get(model_flag, model_flag), "date": date.today().isoformat()}
 
 
 def _fmt(v) -> str:
@@ -327,6 +348,9 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--arms", nargs="+", default=["vanilla", "prompted", "monitor_stream"])
     p.add_argument("--output", default="reports/tact-layer3")
+    p.add_argument("--model", default="minicpm",
+                   help="minicpm | gpt-realtime-2 (or any OpenAI chat model id)")
+    p.add_argument("--limit", type=int, default=0, help="run only the first N cases (0 = all; smoke test)")
     p.add_argument("--render-only", action="store_true", dest="render_only",
                    help="re-render report.md/html from saved decisions.json (no model run)")
     args = p.parse_args()
@@ -334,6 +358,8 @@ def main() -> int:
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=True)
     cases = load_layer3()
+    if args.limit:
+        cases = cases[: args.limit]
     descriptions = _load_descriptions()
     # Verdict is interpretive prose; keep it in verdict.md so re-renders preserve it.
     verdict = (out / "verdict.md").read_text() if (out / "verdict.md").exists() else ""
@@ -343,7 +369,9 @@ def main() -> int:
         cols = list(decisions.keys())
         arms = [c for c in cols if c not in ("oracle", "never")]
         scores = {c: score_all(cases, decisions[c]) for c in cols}
-        meta = {"model": "openbmb/MiniCPM-o-4_5", "date": date.today().isoformat()}
+        # Read the model label persisted by the live run; fall back to the flag/default
+        # so a GPT re-render is not mislabelled as MiniCPM.
+        meta = _read_meta(out, args.model)
         (out / "report.md").write_text(_md(cols, scores, cases, arms, decisions, meta, descriptions, verdict))
         (out / "report.html").write_text(_html(cols, scores, cases, arms, decisions, meta, descriptions, verdict))
         (out / "scores.json").write_text(json.dumps(scores, indent=2))
@@ -351,7 +379,7 @@ def main() -> int:
         return 0
 
     ctx = load_context()
-    model_factory = _shared_model_factory()
+    model_factory = _shared_model_factory(args.model)
 
     decisions: dict[str, dict] = {}
     scores: dict[str, dict] = {}
@@ -368,7 +396,8 @@ def main() -> int:
     scores["never"] = score_all(cases, decisions["never"])
 
     cols = list(args.arms) + ["oracle", "never"]
-    meta = {"model": "openbmb/MiniCPM-o-4_5", "date": date.today().isoformat()}
+    meta = {"model": _MODEL_LABELS.get(args.model, args.model), "date": date.today().isoformat()}
+    (out / "meta.json").write_text(json.dumps(meta, indent=2))  # so --render-only labels correctly
     (out / "report.md").write_text(_md(cols, scores, cases, args.arms, decisions, meta, descriptions, verdict))
     (out / "report.html").write_text(_html(cols, scores, cases, args.arms, decisions, meta, descriptions, verdict))
     (out / "scores.json").write_text(json.dumps({c: scores[c] for c in cols}, indent=2))
