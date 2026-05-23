@@ -15,6 +15,7 @@ import argparse
 import base64
 import io
 import json
+import re
 import sys
 import time
 from datetime import date
@@ -146,7 +147,69 @@ def _chart(cols, scores) -> str:
     return base64.b64encode(buf.getvalue()).decode()
 
 
-def _md(cols, scores, cases, arms, decisions, meta) -> str:
+def _load_descriptions() -> dict:
+    """Plain-language case info joined from Layer 2 (title/topic/standing/payload/gt)."""
+    import yaml
+    from companion_harness.evals.adapters.tact_bench_layer3_run import _LAYER2
+
+    raw = yaml.safe_load(_LAYER2.read_text())["scenarios"]
+    out: dict[str, dict] = {}
+    for c in raw:
+        payloads = []
+        if c.get("item"):
+            payloads.append((c["item"]["id"], c["item"].get("payload", "")))
+        for it in (c.get("items") or []):
+            payloads.append((it["id"], it.get("payload", "")))
+        out[c["id"]] = {
+            "title": c.get("title", ""), "topic": c.get("topic", ""),
+            "standing": c.get("standing_instruction"),
+            "ground_truth": c.get("ground_truth", ""), "payloads": payloads,
+        }
+    return out
+
+
+def _describe(d: dict) -> str:
+    if not d:
+        return ""
+    parts = []
+    if d.get("title"):
+        parts.append(f"*{d['title']}.*")
+    s = f"User context: {d['topic']}" if d.get("topic") else "User context: —"
+    if d.get("standing"):
+        s += f"; earlier the user said: {d['standing']}"
+    parts.append(s + ".")
+    if d.get("payloads"):
+        parts.append("Held: " + "; ".join(f'{pid} = "{p}"' for pid, p in d["payloads"]) + ".")
+    if d.get("ground_truth"):
+        parts.append(f"Correct: {d['ground_truth']}")
+    return " ".join(parts)
+
+
+def _inline_html(s: str) -> str:
+    import html as _h
+    s = _h.escape(s)
+    s = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", s)
+    s = re.sub(r"\*(.+?)\*", r"<i>\1</i>", s)
+    s = re.sub(r"`(.+?)`", r"<code>\1</code>", s)
+    return s
+
+
+def _md_to_html(text: str) -> str:
+    blocks = []
+    for para in (text or "").split("\n\n"):
+        para = para.strip()
+        if not para:
+            continue
+        lines = para.splitlines()
+        if all(ln.lstrip().startswith("- ") for ln in lines):
+            blocks.append("<ul>" + "".join(f"<li>{_inline_html(ln.lstrip()[2:])}</li>" for ln in lines) + "</ul>")
+        else:
+            blocks.append(f"<p>{_inline_html(' '.join(lines))}</p>")
+    return "\n".join(blocks)
+
+
+def _md(cols, scores, cases, arms, decisions, meta, descriptions=None, verdict="") -> str:
+    descriptions = descriptions or {}
     L = [f"# TACT-Bench Layer-3 — mechanical scorer (no LLM judge)", "",
          f"- Model: `{meta['model']}` | cases: {len(cases)} | arms: {', '.join(arms)} | date: {meta['date']}",
          "- Scoring is deterministic (per-tick gt); columns include the gt **oracle** (ceiling) "
@@ -161,9 +224,14 @@ def _md(cols, scores, cases, arms, decisions, meta) -> str:
     for a in arms:
         o = scores[a]["outcomes"]
         L.append(f"| {a} | {o.get('correct',0)} | {o.get('wrong_form',0)} | {o.get('miss',0)} | {o.get('cried_wolf',0)} |")
-    L += ["", "## Per-case detail (gt vs each arm: action@tick [outcome])", ""]
+    if verdict:
+        L += ["", "## Verdict", "", verdict]
+    L += ["", "## Per-case detail (each case in plain language; then gt vs each arm: action@tick [outcome])", ""]
     for c in cases:
         L.append(f"### {c.id} — {c.ticks} ticks")
+        desc = _describe(descriptions.get(c.id, {}))
+        if desc:
+            L += [f"> {desc}", ""]
         for it in c.items:
             exp = f"NOW:{it.expected.form}" if it.expected.kind == "NOW" else it.expected.kind
             L.append(f"- **{it.id}** (u={it.u} r={it.r} s={it.s}, t_avail={it.t_avail}) — "
@@ -174,8 +242,9 @@ def _md(cols, scores, cases, arms, decisions, meta) -> str:
     return "\n".join(L)
 
 
-def _html(cols, scores, cases, arms, decisions, meta) -> str:
+def _html(cols, scores, cases, arms, decisions, meta, descriptions=None, verdict="") -> str:
     import html
+    descriptions = descriptions or {}
     chart = _chart(cols, scores)
     head = "".join(f"<th>{c}</th>" for c in cols)
     mrows = "".join(
@@ -196,7 +265,10 @@ def _html(cols, scores, cases, arms, decisions, meta) -> str:
                 f"<p class='desc'><b>{it.id}</b> (u={it.u} r={it.r} s={it.s}, t_avail={it.t_avail}) — "
                 f"gt <b>{exp}@{it.decisive_tick}</b></p><ul class='arms'>{arms_li}</ul>"
             )
-        blocks.append(f"<div class='case'><h3>{c.id} — {c.ticks} ticks</h3>{''.join(items_html)}</div>")
+        desc = _describe(descriptions.get(c.id, {}))
+        desc_html = f"<p class='casedesc'>{_inline_html(desc)}</p>" if desc else ""
+        blocks.append(f"<div class='case'><h3>{c.id} — {c.ticks} ticks</h3>{desc_html}{''.join(items_html)}</div>")
+    verdict_html = (f"<h2>Verdict</h2>{_md_to_html(verdict)}" if verdict else "")
     setup = (
         "<h2>Setup &amp; background</h2>"
         "<p>TACT-Bench scores <i>when an always-on assistant should surface a result it already "
@@ -231,6 +303,7 @@ def _html(cols, scores, cases, arms, decisions, meta) -> str:
  .meta{{color:#555;font-size:.9rem}} img{{max-width:100%;border:1px solid #eee}}
  .case{{margin:.7rem 0;padding:.4rem .8rem;border:1px solid #eee;border-radius:6px}} .case h3{{font-size:1rem;margin:.2rem 0}}
  .desc{{margin:.3rem 0 .1rem;color:#333}} .arms{{margin:.1rem 0 .4rem 1rem}} code{{font-size:.85em}}
+ .casedesc{{margin:.2rem 0 .5rem;color:#555;font-size:.88rem;background:#fafafa;border-left:3px solid #ddd;padding:.3rem .6rem}}
  pre.prompt{{background:#f7f7f8;border:1px solid #eee;padding:.5rem .7rem;white-space:pre-wrap;font-size:.82rem;border-radius:4px}}
  details{{margin:.3rem 0}} summary{{cursor:pointer}}
 </style></head><body>
@@ -241,7 +314,8 @@ Deterministic per-tick scoring; <b>oracle</b> = gt ceiling, <b>never</b> = silen
 <h2>Metrics</h2>
 <table><thead><tr><th>metric</th><th>direction</th>{head}</tr></thead><tbody>{mrows}</tbody></table>
 <img src="data:image/png;base64,{chart}">
-<h2>Per-case detail <span class="meta">(gt vs each arm: action@tick [outcome])</span></h2>
+{verdict_html}
+<h2>Per-case detail <span class="meta">(each case in plain language; then gt vs each arm: action@tick [outcome])</span></h2>
 {''.join(blocks)}
 <footer style="color:#888;font-size:.8rem;margin-top:2rem">Generated by scripts/run_tact_layer3.py ·
 scorer: companion_harness/evals/adapters/tact_bench_layer3.py</footer>
@@ -260,6 +334,9 @@ def main() -> int:
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=True)
     cases = load_layer3()
+    descriptions = _load_descriptions()
+    # Verdict is interpretive prose; keep it in verdict.md so re-renders preserve it.
+    verdict = (out / "verdict.md").read_text() if (out / "verdict.md").exists() else ""
 
     if args.render_only:
         decisions = json.loads((out / "decisions.json").read_text())
@@ -267,8 +344,8 @@ def main() -> int:
         arms = [c for c in cols if c not in ("oracle", "never")]
         scores = {c: score_all(cases, decisions[c]) for c in cols}
         meta = {"model": "openbmb/MiniCPM-o-4_5", "date": date.today().isoformat()}
-        (out / "report.md").write_text(_md(cols, scores, cases, arms, decisions, meta))
-        (out / "report.html").write_text(_html(cols, scores, cases, arms, decisions, meta))
+        (out / "report.md").write_text(_md(cols, scores, cases, arms, decisions, meta, descriptions, verdict))
+        (out / "report.html").write_text(_html(cols, scores, cases, arms, decisions, meta, descriptions, verdict))
         (out / "scores.json").write_text(json.dumps(scores, indent=2))
         print(f"re-rendered {out}/report.md, report.html, scores.json (no model)")
         return 0
@@ -292,8 +369,8 @@ def main() -> int:
 
     cols = list(args.arms) + ["oracle", "never"]
     meta = {"model": "openbmb/MiniCPM-o-4_5", "date": date.today().isoformat()}
-    (out / "report.md").write_text(_md(cols, scores, cases, args.arms, decisions, meta))
-    (out / "report.html").write_text(_html(cols, scores, cases, args.arms, decisions, meta))
+    (out / "report.md").write_text(_md(cols, scores, cases, args.arms, decisions, meta, descriptions, verdict))
+    (out / "report.html").write_text(_html(cols, scores, cases, args.arms, decisions, meta, descriptions, verdict))
     (out / "scores.json").write_text(json.dumps({c: scores[c] for c in cols}, indent=2))
     (out / "decisions.json").write_text(json.dumps(decisions, indent=2))
     print(f"\nWrote {out}/report.md, report.html, scores.json, decisions.json")
