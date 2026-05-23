@@ -18,7 +18,7 @@ def _label(delivered, fdc=None, form=None):
             "echo_only": False, "rationale": ""}
 
 
-def _run(case_id, behavior, exposes, t_available, label, mask=None, stale=None):
+def _run(case_id, behavior, exposes, t_available, label, mask=None, stale=None, expected_form=None):
     return ReplayRun(
         run_id="r", case_id=case_id, implementation_config_version="v", policy_version="v",
         started_at="t", finished_at="t",
@@ -26,6 +26,7 @@ def _run(case_id, behavior, exposes, t_available, label, mask=None, stale=None):
             "expected_behavior": {
                 "behavior": behavior, "exposes": exposes,
                 "t_available": t_available, "becomes_stale_at": stale,
+                "expected_form": expected_form,
             },
             "speaking_mask": mask or [],
             "judge_label": label,
@@ -94,3 +95,29 @@ def test_metric_class_emits_per_case_contribution():
 def test_tact_metrics_returns_five_named_metrics():
     names = [m.name for m in tact_metrics()]
     assert names == ["cried_wolf", "urgent_miss", "breakpoint_hit", "delivery_rate", "conditional_form"]
+
+
+# --- PR6: conditional_form discriminates against expected_form, not just brevity ---
+
+def test_conditional_form_discriminates_full_vs_brief():
+    # FULL-expected case: a FULL delivery is correct, a BRIEF delivery under-informs.
+    full_ok = _run("full-ok", "FORM", ["form-accuracy"], 7, _label(True, 7, "FULL"), expected_form="FULL")
+    full_underinformed = _run("full-bad", "FORM", ["form-accuracy"], 7, _label(True, 7, "BRIEF"), expected_form="FULL")
+    assert aggregate_tact_metrics([full_ok])["conditional_form"] == 1.0
+    assert aggregate_tact_metrics([full_underinformed])["conditional_form"] == 0.0
+
+
+def test_conditional_form_verbose_trap_is_wrong():
+    # BRIEF-expected (verbose-trap): a FULL delivery is the wrong form.
+    brief_ok = _run("brief-ok", "FORM", ["form-accuracy"], 7, _label(True, 7, "BRIEF"), expected_form="BRIEF")
+    verbose_wrong = _run("verbose", "FORM", ["form-accuracy"], 7, _label(True, 7, "FULL"), expected_form="BRIEF")
+    assert aggregate_tact_metrics([brief_ok])["conditional_form"] == 1.0
+    assert aggregate_tact_metrics([verbose_wrong])["conditional_form"] == 0.0
+    # mixed brief-correct + verbose-wrong → 0.5 (the metric now separates them)
+    assert aggregate_tact_metrics([brief_ok, verbose_wrong])["conditional_form"] == 0.5
+
+
+def test_conditional_form_defaults_to_brief_when_unset():
+    # Existing form cases (no expected_form) still treat BRIEF as correct.
+    brief = _run("d", "FORM", ["form-accuracy"], 7, _label(True, 7, "BRIEF"))
+    assert aggregate_tact_metrics([brief])["conditional_form"] == 1.0

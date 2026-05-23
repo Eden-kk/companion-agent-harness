@@ -1,8 +1,10 @@
 # Scenarios for the vanilla-vs-prompted pilot.
-# 12 cases, 3 per delivery behavior (defer / drop / urgent / form), so each metric
-# has a real denominator (cried-wolf: 6 = defer+drop; breakpoint-hit: 3 = defer;
-# urgent-miss: 3 = urgent; form: 6 = urgent+form). Still small — refine +
-# human-validate before any headline claim (see docs/tact-bench-design.md §4).
+# 14 cases: 3 DEFER, 3 DROP, 3 DELIVER_NOW (urgent), 5 FORM (PR6 added a FULL-correct
+# and a verbose-trap case so conditional_form discriminates). Metric denominators:
+# cried-wolf 6 (defer+drop); breakpoint-hit 3 (defer); urgent-miss 3 (urgent);
+# form 8 (urgent + the 5 form cases). FORM cases may set `expected_form` (BRIEF|FULL;
+# default BRIEF). Still small — refine + human-validate before any headline claim
+# (see docs/tact-bench-design.md §4).
 #
 # Timing convention: t is in 1-second chunks. user_script renders to audio via TTS
 # (audio mode) or is fed as text turns on a 1s silence clock (text mode);
@@ -267,6 +269,50 @@ scenarios:
     ground_truth: "DELIVER (user explicitly asked), at chunk 7 (user idle), form = SPEAK_BRIEF ('done'). A verbose multi-sentence status report = wrong form."
     exposes: [form-accuracy]
 
-  # Optional arbitration case — add only after TC1-12 run cleanly:
+  # ---- FORM discrimination cases (PR6): give conditional_form both directions ----
+  # (the cases above all expect BRIEF; these add a FULL-correct case and a
+  #  verbose-trap so the metric tests form judgment, not just brevity).
+
+  - id: TC13-form-full
+    behavior: FORM
+    current_topic:
+      descriptor: "user actively debugging a failing CI build"
+      anchors: ["CI", "build", "failing", "debug"]
+    standing_instruction: "user said: when the build finishes, give me the full rundown of what broke."
+    user_script:
+      - {t: 0, speaker: user, text: "When the build finishes, give me the full rundown of what broke, I'm digging into it now."}
+      - {t: 4, type: pause, dur: 6}        # user working; result arrives during the pause
+    item:
+      id: build_failures
+      source: async_task
+      payload: "build failed: 3 test failures in the auth module, 1 lint error in api/routes.py, and coverage dropped 4 percent"
+      t_available: 7
+      labels: {urgency: low, relevance: high, standing_order: yes}
+      becomes_stale_at: null
+    expected_form: FULL
+    ground_truth: "DELIVER (user explicitly asked for the full rundown), at chunk 7 (user idle), form = SPEAK_FULL — the user is actively debugging and needs the details; a terse 'build failed' under-informs and is the WRONG form here."
+    exposes: [form-accuracy]
+
+  - id: TC14-form-verbose-trap
+    behavior: FORM
+    current_topic:
+      descriptor: "user wants a one-line headline, not the whole report"
+      anchors: ["report", "headline", "summary"]
+    standing_instruction: "user said: when the Q3 report's ready, just give me the one-sentence headline, not the whole thing."
+    user_script:
+      - {t: 0, speaker: user, text: "When the Q3 report's ready, just give me the one-sentence headline, not the whole thing."}
+      - {t: 4, type: pause, dur: 6}
+    item:
+      id: q3_report
+      source: async_task
+      payload: "Q3 report ready: revenue up 12 percent, churn down 2 points, three regions outperformed, full 40-slide deck attached"
+      t_available: 7
+      labels: {urgency: low, relevance: high, standing_order: yes}
+      becomes_stale_at: null
+    expected_form: BRIEF
+    ground_truth: "DELIVER (user asked), at chunk 7 (user idle), form = SPEAK_BRIEF — a one-sentence headline ('Q3 report's ready, revenue up 12 percent'). Reading the full multi-part result aloud = WRONG form (the trap)."
+    exposes: [form-accuracy]
+
+  # Optional arbitration case — add only after TC1-14 run cleanly:
   # inject TC3-urgent (meeting) and TC1-weather at the same chunk; correct = deliver
   # urgent FIRST, defer/re-anchor weather. Tests priority ordering on one channel.

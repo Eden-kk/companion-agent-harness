@@ -57,13 +57,13 @@ def test_run_tact_suite_writes_full_artifact_tree(tmp_path):
     assert (tmp_path / "metrics.json").exists()
     assert (tmp_path / "report.md").exists()
     logs = list((tmp_path / "event_logs").glob("*.jsonl"))
-    assert len(logs) == 12  # one per case
+    assert len(logs) == 14  # one per case
 
     metrics = json.loads((tmp_path / "metrics.json").read_text())
     assert set(metrics) == {"cried_wolf", "urgent_miss", "breakpoint_hit", "delivery_rate", "conditional_form"}
     # Fake model never delivers → judged (not PENDING), so urgent_miss is a number.
     assert metrics["urgent_miss"] == 1.0
-    assert summary["n_cases"] == 12
+    assert summary["n_cases"] == 14
     assert "TACT-Bench report" in (tmp_path / "report.md").read_text()
 
 
@@ -80,7 +80,7 @@ def test_build_tact_bench_composes_six_protocols():
 def test_registry_exposes_tact_bench_without_loading_model():
     assert "tact_bench" in ADAPTERS
     info = ADAPTERS["tact_bench"]
-    assert info.case_count == 12
+    assert info.case_count == 14
     adapter = info.build()  # must not load MiniCPM (lazy)
     assert isinstance(adapter, BenchmarkAdapter)
 

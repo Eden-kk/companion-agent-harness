@@ -87,6 +87,7 @@ class TactCaseSource:
                 "exposes": list(scenario.get("exposes", [])),
                 "t_available": item.get("t_available"),
                 "becomes_stale_at": item.get("becomes_stale_at"),
+                "expected_form": scenario.get("expected_form"),
                 "ground_truth": scenario.get("ground_truth", ""),
             },
             fixtures=[],
@@ -232,6 +233,43 @@ def _load_real_model() -> object:
     return MiniCPMStreamingModel()
 
 
+# --- Mode A (structured NOW/WAIT/DROP probe) helpers -----------------------
+
+def _transcript_through(user_script: list, t: int) -> str:
+    lines = [
+        f"user: {e['text']}"
+        for e in user_script
+        if e.get("speaker") == "user" and e.get("text") and int(e["t"]) <= t
+    ]
+    return "\n".join(lines) if lines else "(no user speech yet)"
+
+
+def _mode_a_prompt(history: str, item: dict, user_speaking: bool) -> str:
+    payload = item.get("payload", "")
+    urgency = (item.get("labels") or {}).get("urgency", "low")
+    state = (
+        "The user is currently speaking (mid-utterance)."
+        if user_speaking
+        else "The user is currently silent — a natural pause."
+    )
+    return (
+        "You are an always-on voice assistant deciding when to surface a background result.\n"
+        f"Conversation so far:\n{history}\n\n"
+        f"{state}\n"
+        f'You are holding this background result to deliver: "{payload}" (urgency: {urgency}).\n'
+        "Should you deliver it NOW, WAIT for a better moment, or DROP it as no longer worth saying?\n"
+        "Answer with exactly one word: NOW, WAIT, or DROP."
+    )
+
+
+def _parse_now_wait_drop(raw: str) -> str:
+    up = (raw or "").upper()
+    for token in ("NOW", "WAIT", "DROP"):
+        if token in up:
+            return token
+    return "UNKNOWN"
+
+
 @dataclass
 class TactMiniCPMDriver:
     """Drives one TACT case through MiniCPM-o in text/silence-clock mode.
@@ -373,6 +411,33 @@ class TactMiniCPMDriver:
             completed_at_mono_ms=int(time.monotonic() * 1000),
             final_status=final_status,  # type: ignore[arg-type]
         )
+
+    def mode_a_labels(self, case: EvaluationCase) -> list[dict]:
+        """Mode-A structured probe: per-decision-point NOW/WAIT/DROP labels.
+
+        From t_available onward, ask the model — given the conversation so far, the
+        held item, and whether the user is mid-utterance — to emit one of
+        NOW/WAIT/DROP, stopping once it resolves (NOW/DROP). Tests whether deferral
+        is *elicitable* under structured prompting even though the native gate
+        (Mode B) never defers. Prompt-constrained (one-word answer), not
+        logit-constrained decode — a future refinement.
+        """
+        inputs = case.inputs or {}
+        item = inputs.get("item") or {}
+        t_avail = int(item.get("t_available", 0))
+        user_script = inputs.get("user_script") or []
+        _, n_chunks, mask = _build_text_plan(inputs)
+        model = self._model_or_load()
+
+        labels: list[dict] = []
+        for t in range(max(t_avail, 0), n_chunks):
+            speaking = mask[t] if t < len(mask) else False
+            prompt = _mode_a_prompt(_transcript_through(user_script, t), item, speaking)
+            decision = _parse_now_wait_drop(model.chat(prompt, max_new_tokens=4))
+            labels.append({"t": t, "decision": decision, "user_speaking": speaking})
+            if decision in ("NOW", "DROP"):
+                break
+        return labels
 
     @staticmethod
     def _write_event_log(run_config: object, session_id: str, events: list[Event]) -> Path | None:
@@ -560,6 +625,7 @@ def _case_facts(replay_run: ReplayRun) -> SimpleNamespace:
         behavior=eb.get("behavior"),
         t_avail=t_avail,
         stale=eb.get("becomes_stale_at"),
+        expected_form=eb.get("expected_form") or "BRIEF",
         mask=mask,
         pending=pending,
         fdc=fdc,
@@ -623,7 +689,7 @@ def _conditional_form_contrib(f: SimpleNamespace):
         return _PENDING
     if not f.valid:
         return (0, 0)  # form is conditioned on an actual valid delivery
-    return (1 if f.form == "BRIEF" else 0, 1)
+    return (1 if f.form == f.expected_form else 0, 1)  # expected_form: BRIEF (default) | FULL
 
 
 _METRIC_FNS = {
