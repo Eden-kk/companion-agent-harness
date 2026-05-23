@@ -342,7 +342,7 @@ def main(argv: list[str] | None = None) -> int:
     run_p.add_argument(
         "--arm",
         default="prompted",
-        choices=["vanilla", "prompted"],
+        choices=["vanilla", "prompted", "prompted_terse"],
         help="tact_bench: system-prompt arm.",
     )
     run_p.add_argument(

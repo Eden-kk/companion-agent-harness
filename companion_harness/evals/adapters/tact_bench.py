@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import time
@@ -23,6 +24,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Iterable
+
+import numpy as np
 
 from companion_harness.event_logger import EventLogger
 from companion_harness.evals.protocols import BenchmarkAdapter
@@ -124,7 +127,26 @@ _PROMPTED_SYSTEM_PROMPT = (
     "the correct choice. Match length to urgency: urgent -> one short sentence; otherwise brief."
 )
 
-_ARMS = {"vanilla": _VANILLA_SYSTEM_PROMPT, "prompted": _PROMPTED_SYSTEM_PROMPT}
+# A second, deliberately different prompted variant — compact/imperative + a stronger
+# default-to-silence lean — to test prompt-design sensitivity (a 2nd prompted arm).
+_PROMPTED_TERSE_SYSTEM_PROMPT = (
+    "You are an always-on voice assistant on one shared audio channel. You sometimes\n"
+    "privately receive a background result as a system note — never read the note or its\n"
+    "labels aloud, and default to silence.\n"
+    "Rules:\n"
+    "- Urgent, OR the user explicitly asked to be told the moment it's ready -> say it now,\n"
+    "  one short sentence.\n"
+    "- Relevant but not urgent -> stay silent until the user pauses, then deliver briefly,\n"
+    "  re-anchored ('about that X you asked earlier...').\n"
+    "- Stale, already resolved, or irrelevant -> never mention it.\n"
+    "Never interrupt mid-sentence for anything non-urgent. When unsure, stay silent."
+)
+
+_ARMS = {
+    "vanilla": _VANILLA_SYSTEM_PROMPT,
+    "prompted": _PROMPTED_SYSTEM_PROMPT,
+    "prompted_terse": _PROMPTED_TERSE_SYSTEM_PROMPT,
+}
 
 
 def _held_result_turn(item: dict) -> str:
@@ -233,6 +255,79 @@ def _load_real_model() -> object:
     return MiniCPMStreamingModel()
 
 
+# --- Audio mode (PR7): render user turns to 16 kHz audio via Kokoro -----------
+
+_SAMPLE_RATE = 16000
+_KOKORO_MODEL = "/raid/yid042/models/kokoro/kokoro-v0_19.onnx"
+_KOKORO_VOICES = "/raid/yid042/models/kokoro/voices.json"
+
+
+def _load_kokoro() -> object | None:
+    model_path = os.environ.get("KOKORO_MODEL_PATH", _KOKORO_MODEL)
+    voices_path = os.environ.get("KOKORO_VOICES_PATH", _KOKORO_VOICES)
+    if not Path(model_path).exists() or not Path(voices_path).exists():
+        return None
+    try:
+        from companion_harness.tts_kokoro import KokoroTtsAdapter  # noqa: WPS433
+
+        return KokoroTtsAdapter(model_path=model_path, voices_path=voices_path, warmup=False)
+    except Exception:  # noqa: BLE001 — degrade to silence
+        return None
+
+
+def _synthesize_16k(kokoro: object | None, text: str) -> np.ndarray:
+    if kokoro is None:
+        return np.zeros(0, dtype=np.float32)
+    import asyncio  # noqa: WPS433
+
+    async def _collect() -> np.ndarray:
+        out: list[np.ndarray] = []
+        async for pcm16 in kokoro.synthesize(text, []):  # type: ignore[attr-defined]
+            out.append(np.frombuffer(pcm16, dtype=np.int16).astype(np.float32) / 32768.0)
+        return np.concatenate(out) if out else np.zeros(0, dtype=np.float32)
+
+    raw_24k = asyncio.new_event_loop().run_until_complete(_collect())
+    if len(raw_24k) == 0:
+        return np.zeros(0, dtype=np.float32)
+    ratio = _SAMPLE_RATE / 24000.0  # nearest-neighbour 24k -> 16k
+    out_len = int(len(raw_24k) * ratio)
+    idx = np.clip(np.round(np.arange(out_len) / ratio).astype(int), 0, len(raw_24k) - 1)
+    return raw_24k[idx]
+
+
+def _build_audio_timeline(inputs: dict, kokoro: object | None) -> tuple[np.ndarray, int]:
+    user_script = inputs.get("user_script") or []
+    item = inputs.get("item") or {}
+    placements: list[tuple[int, np.ndarray]] = []
+    max_end = 0
+    for e in user_script:
+        t = int(e["t"])
+        start = t * _CHUNK_SAMPLES
+        if e.get("type") == "pause":
+            max_end = max(max_end, start + int(e.get("dur", 1)) * _CHUNK_SAMPLES)
+            continue
+        audio = _synthesize_16k(kokoro, e["text"])
+        placements.append((start, audio))
+        max_end = max(max_end, start + len(audio))
+    t_avail = int(item.get("t_available", 0))
+    max_end = max(max_end, (t_avail + 1) * _CHUNK_SAMPLES)
+    n_chunks = math.ceil(max_end / _CHUNK_SAMPLES) + _TAIL_CHUNKS
+    buf = np.zeros(n_chunks * _CHUNK_SAMPLES, dtype=np.float32)
+    for start, audio in placements:
+        end = min(start + len(audio), len(buf))
+        buf[start:end] = audio[: end - start]
+    return buf, n_chunks
+
+
+def _user_speaking_mask(buf: np.ndarray, n_chunks: int, thresh: float = 1e-4) -> list[bool]:
+    mask: list[bool] = []
+    for t in range(n_chunks):
+        seg = buf[t * _CHUNK_SAMPLES : (t + 1) * _CHUNK_SAMPLES]
+        rms = float(np.sqrt(np.mean(seg.astype(np.float64) ** 2))) if len(seg) else 0.0
+        mask.append(rms > thresh)
+    return mask
+
+
 # --- Mode A (structured NOW/WAIT/DROP probe) helpers -----------------------
 
 def _transcript_through(user_script: list, t: int) -> str:
@@ -283,11 +378,14 @@ class TactMiniCPMDriver:
     arm: str = "prompted"
     input_mode: str = "text"
     model_factory: object | None = None  # () -> model; injectable for tests (no GPU)
+    kokoro_factory: object | None = None  # () -> TTS|None; audio mode only; injectable
 
     def __post_init__(self) -> None:
         if self.arm not in _ARMS:
             raise ValueError(f"unknown arm {self.arm!r}; expected one of {sorted(_ARMS)}")
         self._model: object | None = None
+        self._kokoro: object | None = None
+        self._kokoro_resolved = False
         self._seq = 0
 
     def _model_or_load(self) -> object:
@@ -295,15 +393,19 @@ class TactMiniCPMDriver:
             self._model = self.model_factory() if self.model_factory is not None else _load_real_model()
         return self._model
 
+    def _kokoro_or_load(self) -> object | None:
+        if not self._kokoro_resolved:
+            self._kokoro = self.kokoro_factory() if self.kokoro_factory is not None else _load_kokoro()
+            self._kokoro_resolved = True
+        return self._kokoro
+
     def _next_seq(self) -> int:
         self._seq += 1
         return self._seq
 
     async def run(self, case: EvaluationCase, harness_factory: object, run_config: object) -> ReplayRun:
-        if self.input_mode != "text":
-            raise NotImplementedError("TactMiniCPMDriver: only input_mode='text' is implemented (audio = PR7)")
-
-        import numpy as np  # noqa: WPS433 — lazy; keeps CaseSource import light
+        if self.input_mode not in ("text", "audio"):
+            raise NotImplementedError(f"TactMiniCPMDriver: unknown input_mode {self.input_mode!r}")
 
         self._seq = 0
         inputs = case.inputs or {}
@@ -334,19 +436,33 @@ class TactMiniCPMDriver:
                 caused_by=[], session_id=session_id, seq_no=self._next_seq(), mono_ms=started_ms,
             ))
 
-            text_turns, n_chunks, mask = _build_text_plan(inputs)
             note = _held_result_turn(item)
+            # Plan per mode: text = 1s silence clock + user turns via text channel;
+            # audio = user speech rendered to 16 kHz via Kokoro (held result still
+            # injected as a text system turn).
+            if self.input_mode == "text":
+                text_turns, n_chunks, mask = _build_text_plan(inputs)
+                buf = None
+                silence = np.zeros(_CHUNK_SAMPLES, dtype=np.float32)
+            else:
+                text_turns = {}
+                buf, n_chunks = _build_audio_timeline(inputs, self._kokoro_or_load())
+                mask = _user_speaking_mask(buf, n_chunks)
+                silence = None
 
             duplex = self._model_or_load()._duplex  # noqa: SLF001
             duplex.model.reset_session(reset_token2wav_cache=False)
             duplex.prepare(prefix_system_prompt=_ARMS[self.arm])
-            silence = np.zeros(_CHUNK_SAMPLES, dtype=np.float32)
 
             try:
                 for t in range(n_chunks):
                     texts: list[str] = []
-                    if t in text_turns:
-                        texts.append(text_turns[t])
+                    if self.input_mode == "text":
+                        if t in text_turns:
+                            texts.append(text_turns[t])
+                        audio = silence
+                    else:
+                        audio = buf[t * _CHUNK_SAMPLES : (t + 1) * _CHUNK_SAMPLES]
                     injected = t == t_avail
                     if injected:
                         texts.append(note)
@@ -359,9 +475,9 @@ class TactMiniCPMDriver:
                             extra_hash=note,  # only the hash is stored, never the raw note
                         ))
                     if texts:
-                        duplex.streaming_prefill(audio_waveform=silence, text_list=["".join(texts)])
+                        duplex.streaming_prefill(audio_waveform=audio, text_list=["".join(texts)])
                     else:
-                        duplex.streaming_prefill(audio_waveform=silence)
+                        duplex.streaming_prefill(audio_waveform=audio)
                     result = _generate(duplex)
                     trajectory.append({
                         "t": t,
