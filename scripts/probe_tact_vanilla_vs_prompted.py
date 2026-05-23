@@ -197,6 +197,90 @@ def _held_result_turn(item: dict) -> str:
     return f"<|im_start|>system\n{note}<|im_end|>\n"
 
 
+def _user_turn(text: str) -> str:
+    """User content as a ChatML user-role turn (text-input mode)."""
+    return f"<|im_start|>user\n{text}<|im_end|>\n"
+
+
+def _est_chunks(text: str) -> int:
+    """Estimate an utterance's duration in 1s chunks (~3 words/sec)."""
+    return max(1, round(len(text.split()) / 3))
+
+
+def _build_text_plan(scenario: dict) -> tuple[dict[int, str], int, list[bool]]:
+    """Text-input plan: which chunk carries which user turn + a user-speaking mask.
+
+    No audio is rendered. The held result is injected separately at t_available
+    (mirrors the audio path). The user-speaking mask is derived structurally:
+    a speaker entry occupies ~`_est_chunks` ticks (capped at the next entry),
+    leaving silent ticks as breakpoints — the same role silence plays in audio.
+    """
+    entries = sorted(scenario["user_script"], key=lambda e: int(e["t"]))
+    item = scenario.get("item") or {}
+    t_avail = int(item.get("t_available", 0))
+    text_turns: dict[int, str] = {}
+    speaking: set[int] = set()
+    last = 0
+    for i, e in enumerate(entries):
+        t = int(e["t"])
+        nxt = int(entries[i + 1]["t"]) if i + 1 < len(entries) else None
+        if e.get("type") == "pause":
+            last = max(last, t + int(e.get("dur", 1)))
+            continue
+        text_turns[t] = _user_turn(e["text"])
+        end_speak = t + _est_chunks(e["text"])
+        if nxt is not None:
+            end_speak = min(end_speak, nxt)
+        speaking.update(range(t, end_speak))
+        last = max(last, t + _est_chunks(e["text"]))
+    n_chunks = max(last, t_avail + 1) + _TAIL_CHUNKS
+    mask = [c in speaking for c in range(n_chunks)]
+    return text_turns, n_chunks, mask
+
+
+def _run_arm_text(
+    model: object,
+    scenario: dict,
+    arm_prompt: str,
+    text_turns: dict[int, str],
+    n_chunks: int,
+) -> list[dict]:
+    """Text-input / silence-clock arm: 1s silence per tick (the timer), user
+    turns + held result delivered via the text channel (no speech audio to echo).
+    """
+    duplex = model._duplex  # noqa: SLF001
+    duplex.model.reset_session(reset_token2wav_cache=False)  # type: ignore[attr-defined]
+    duplex.prepare(prefix_system_prompt=arm_prompt)  # type: ignore[attr-defined]
+
+    item = scenario.get("item") or {}
+    t_avail = int(item.get("t_available", -1))
+    note = _held_result_turn(item)
+    silence = np.zeros(_CHUNK_SAMPLES, dtype=np.float32)
+
+    trajectory: list[dict] = []
+    for t in range(n_chunks):
+        texts: list[str] = []
+        if t in text_turns:
+            texts.append(text_turns[t])
+        injected = t == t_avail
+        if injected:
+            texts.append(note)
+        if texts:
+            duplex.streaming_prefill(audio_waveform=silence, text_list=["".join(texts)])  # type: ignore[attr-defined]
+        else:
+            duplex.streaming_prefill(audio_waveform=silence)  # type: ignore[attr-defined]
+        result = _generate(duplex)
+        trajectory.append(
+            {
+                "t": t,
+                "injected": injected,
+                "is_listen": bool(result.get("is_listen", True)),
+                "text": result.get("text", ""),
+            }
+        )
+    return trajectory
+
+
 def _run_arm(
     model: object,
     scenario: dict,
@@ -479,6 +563,10 @@ def _write_report(
                  "confirmed (modeling_minicpmo.py L2759/L3094); injection probed by "
                  "`probe_tact_pending_injection.py`")
     lines.append("- Mode(s) run: B (native gate)")
+    lines.append(f"- Input mode: {meta.get('input_mode', 'audio')}"
+                 + (" (user turns + held result via text on a 1s silence clock; "
+                    "no speech audio to echo)" if meta.get("input_mode") == "text"
+                    else " (user speech rendered to audio via TTS)"))
     lines.append("- Injection framing: held result wrapped as a private ChatML system turn "
                  "(REVISIONS R1; no bare [PENDING:] tag)")
     lines.append(f"- TTS used: {meta['tts']}")
@@ -567,6 +655,9 @@ def main() -> int:
     parser.add_argument("--scenarios", type=Path, default=_DEFAULT_SCENARIOS)
     parser.add_argument("--outdir", type=Path, default=_DEFAULT_OUTDIR)
     parser.add_argument("--limit", type=int, default=0, help="run only the first N scenarios (0=all)")
+    parser.add_argument("--input-mode", choices=["audio", "text"], default="audio",
+                        help="audio = user speech via TTS (echoes); text = user turns + held "
+                             "result via text on a 1s silence clock (no echo, native timer)")
     parser.add_argument("--judge", choices=["none", "openai"], default="none",
                         help="run the LLM delivery judge + fill metrics (needs OPENAI_API_KEY)")
     parser.add_argument("--judge-model", default="gpt-4o", help="OpenAI model for the judge")
@@ -592,7 +683,13 @@ def main() -> int:
     by_id = {s["id"]: s for s in scenarios}
     print(f"Loaded {len(scenarios)} scenarios from {args.scenarios}", flush=True)
 
-    kokoro = _load_kokoro()
+    text_mode = args.input_mode == "text"
+    kokoro = None if text_mode else _load_kokoro()
+
+    def _masks_for(scs: list[dict]) -> dict[str, list[bool]]:
+        if text_mode:
+            return {s["id"]: _build_text_plan(s)[2] for s in scs}
+        return _build_masks(scs, kokoro)
 
     # ---- collect trajectories (or load them) + per-scenario user-speaking masks
     if args.score_only:
@@ -604,27 +701,33 @@ def main() -> int:
         scenarios = [s for s in scenarios if s["id"] in results["scenarios"]]
         print(f"Loaded trajectories for {len(results['scenarios'])} scenarios "
               f"from {args.trajectories}", flush=True)
-        masks = _build_masks(scenarios, kokoro)
+        masks = _masks_for(scenarios)
     else:
-        print("Loading MiniCPMStreamingModel...", flush=True)
+        print(f"Loading MiniCPMStreamingModel (input-mode={args.input_mode})...", flush=True)
         t0 = time.monotonic()
         from companion_harness.foreground_model_minicpm import MiniCPMStreamingModel
 
         model = MiniCPMStreamingModel()
         print(f"  model loaded in {round((time.monotonic() - t0) * 1000)}ms", flush=True)
 
-        results = {"scenarios": {}, "metrics": {}}
+        results = {"scenarios": {}, "metrics": {}, "input_mode": args.input_mode}
         masks = {}
         for scenario in scenarios:
             sid = scenario["id"]
             print(f"\n=== {sid} ===", flush=True)
-            buf, n_chunks = _build_timeline(scenario, kokoro)
-            masks[sid] = _user_speaking_mask(buf, n_chunks)
+            if text_mode:
+                text_turns, n_chunks, masks[sid] = _build_text_plan(scenario)
+            else:
+                buf, n_chunks = _build_timeline(scenario, kokoro)
+                masks[sid] = _user_speaking_mask(buf, n_chunks)
             print(f"  timeline: {n_chunks} chunks ({n_chunks}s)", flush=True)
             results["scenarios"][sid] = {}
             for arm, prompt in _ARMS.items():
                 print(f"  arm={arm} ...", flush=True)
-                traj = _run_arm(model, scenario, prompt, buf, n_chunks)
+                if text_mode:
+                    traj = _run_arm_text(model, scenario, prompt, text_turns, n_chunks)
+                else:
+                    traj = _run_arm(model, scenario, prompt, buf, n_chunks)
                 results["scenarios"][sid][arm] = traj
                 print(f"    spoke: {(_spoken_text(traj) or '(silent)')[:80]!r}", flush=True)
 
@@ -656,7 +759,8 @@ def main() -> int:
     meta = {
         "model_id": "openbmb/MiniCPM-o-4_5",
         "precision": "bf16",
-        "tts": "Kokoro v0_19" if kokoro is not None else "SILENCE (no Kokoro)",
+        "input_mode": results.get("input_mode", args.input_mode),
+        "tts": "n/a (text input)" if text_mode else ("Kokoro v0_19" if kokoro is not None else "SILENCE (no Kokoro)"),
         "judge": f"OpenAI {args.judge_model}" if judged else "n/a",
     }
     md = _write_report(results, scenarios, args.outdir, judged, meta, labels)
