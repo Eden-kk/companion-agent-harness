@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import time
 import uuid
@@ -382,3 +383,138 @@ class TactMiniCPMDriver:
             for e in events:
                 f.write(json.dumps(asdict(e)) + "\n")
         return path
+
+
+# ===========================================================================
+# Examiner — Mode-B delivery judge (model-agnostic; OpenAI-backed)
+# plan-tact-bench-minicpm-adapter.md PR3.
+# ===========================================================================
+
+_JUDGE_SYSTEM = (
+    "You are a strict evaluator of a real-time voice assistant that shares one audio "
+    "channel with a user. The assistant also privately received a HELD RESULT (a "
+    "background fact) at a known moment and may speak it, defer it, or stay silent. "
+    "Given the user's speech and the assistant's per-chunk spoken text, decide whether "
+    "and how the assistant DELIVERED the held result's information.\n\n"
+    "Rules:\n"
+    "- 'Delivered' = the assistant conveyed the HELD RESULT's actual information to the "
+    "user (paraphrase counts).\n"
+    "- The assistant merely repeating or continuing the USER's own words is NOT a "
+    "delivery — set echo_only=true if its speech is just parroting the user.\n"
+    "- first_delivery_chunk = the integer t of the first assistant chunk that conveys "
+    "the held result, or null.\n"
+    "- form = 'BRIEF' (a single short sentence/phrase) or 'FULL' (multi-sentence / "
+    "verbose) for the delivery, else null.\n"
+    "Return ONLY a JSON object with keys: delivered (bool), first_delivery_chunk "
+    "(int|null), form ('BRIEF'|'FULL'|null), echo_only (bool), rationale (string, "
+    "<=25 words)."
+)
+
+
+def _pending_label(reason: str = "judge unavailable (no OPENAI_API_KEY)") -> dict:
+    """Label used when the judge cannot run — metrics treat delivered=None as PENDING."""
+    return {
+        "delivered": None,
+        "first_delivery_chunk": None,
+        "form": None,
+        "echo_only": None,
+        "rationale": reason,
+    }
+
+
+@dataclass
+class DeliveryJudge:
+    """LLM delivery judge behind the Examiner seam (Mode-B native gate scoring).
+
+    Satisfies the Examiner Protocol (``respond``); the runner may also call
+    ``label()`` directly with a trajectory. Skips cleanly (PENDING label) when no
+    client is available, and caches verdicts by (trajectory, item, user_script) so
+    re-scoring is deterministic and free.
+    """
+
+    model: str = "gpt-4o"
+    client_factory: object | None = None  # () -> OpenAI-like client; injectable for tests
+    name: str = "tact_delivery_judge"
+
+    def __post_init__(self) -> None:
+        self._client: object | None = None
+        self._client_resolved = False
+        self._cache: dict[str, dict] = {}
+
+    def _client_or_none(self) -> object | None:
+        if not self._client_resolved:
+            if self.client_factory is not None:
+                self._client = self.client_factory()
+            elif os.environ.get("OPENAI_API_KEY"):
+                from openai import OpenAI  # noqa: WPS433 — optional dep, lazy
+
+                self._client = OpenAI()
+            else:
+                self._client = None
+            self._client_resolved = True
+        return self._client
+
+    async def respond(self, event: Event) -> object:
+        """Examiner seam: label from an event carrying trajectory/item/user_script."""
+        payload = getattr(event, "payload_inline", None) or {}
+        return self.label(
+            payload.get("trajectory") or [],
+            payload.get("item") or {},
+            payload.get("user_script"),
+        )
+
+    def label(self, trajectory: list[dict], item: dict, user_script: list | None = None) -> dict:
+        key = self._cache_key(trajectory, item, user_script)
+        if key in self._cache:
+            return self._cache[key]
+        client = self._client_or_none()
+        label = _pending_label() if client is None else self._call(client, trajectory, item, user_script)
+        self._cache[key] = label
+        return label
+
+    @staticmethod
+    def _cache_key(trajectory: list[dict], item: dict, user_script: list | None) -> str:
+        blob = json.dumps({"t": trajectory, "i": item, "u": user_script or []}, sort_keys=True)
+        return hashlib.sha256(blob.encode()).hexdigest()
+
+    def _call(self, client: object, trajectory: list[dict], item: dict, user_script: list | None) -> dict:
+        payload = item.get("payload", "")
+        urgency = (item.get("labels") or {}).get("urgency", "low")
+        t_avail = int(item.get("t_available", -1))
+        user_lines = [
+            f"  t={e['t']}: {e['text']}"
+            for e in (user_script or [])
+            if e.get("speaker") == "user" and e.get("text")
+        ] or ["  (none provided)"]
+        spoke = [(c["t"], c["text"].strip()) for c in trajectory if not c["is_listen"] and c["text"].strip()]
+        spoke_lines = [f"  t={t}: {txt}" for t, txt in spoke] or ["  (the assistant never spoke)"]
+        user_msg = (
+            f"HELD RESULT (urgency={urgency}): {payload}\n"
+            f"The held result became available at chunk t={t_avail}.\n\n"
+            "USER said:\n" + "\n".join(user_lines) + "\n\n"
+            "ASSISTANT spoke (only chunks where it spoke):\n" + "\n".join(spoke_lines) + "\n\n"
+            "Did the assistant deliver the held result? Respond as specified."
+        )
+        resp = client.chat.completions.create(  # type: ignore[attr-defined]
+            model=self.model,
+            temperature=0,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": _JUDGE_SYSTEM},
+                {"role": "user", "content": user_msg},
+            ],
+        )
+        data = json.loads(resp.choices[0].message.content)
+        fdc = data.get("first_delivery_chunk")
+        return {
+            "delivered": bool(data.get("delivered", False)),
+            "first_delivery_chunk": fdc if isinstance(fdc, int) else None,
+            "form": data.get("form") if data.get("form") in ("BRIEF", "FULL") else None,
+            "echo_only": bool(data.get("echo_only", False)),
+            "rationale": str(data.get("rationale", ""))[:200],
+        }
+
+    @staticmethod
+    def dump_labels(labels: dict, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(labels, indent=2))
