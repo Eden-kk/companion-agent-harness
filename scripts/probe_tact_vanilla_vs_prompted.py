@@ -234,6 +234,204 @@ def _run_arm(
 
 
 # --------------------------------------------------------------------------- #
+# Judge (Mode-B delivery detection) + metric scoring
+# --------------------------------------------------------------------------- #
+def _user_speaking_mask(buf: np.ndarray, n_chunks: int, thresh: float = 1e-4) -> list[bool]:
+    """Per-chunk bool: is the *user* speaking (vs. a breakpoint/silence)?
+
+    Derived from the actual rendered user audio energy — the same signal the
+    model hears. Silence chunks are zero-filled, so a tiny RMS threshold cleanly
+    separates speech from breakpoints.
+    """
+    mask: list[bool] = []
+    for t in range(n_chunks):
+        seg = buf[t * _CHUNK_SAMPLES : (t + 1) * _CHUNK_SAMPLES]
+        rms = float(np.sqrt(np.mean(seg.astype(np.float64) ** 2))) if len(seg) else 0.0
+        mask.append(rms > thresh)
+    return mask
+
+
+def _build_masks(scenarios: list[dict], kokoro: object | None) -> dict[str, list[bool]]:
+    masks: dict[str, list[bool]] = {}
+    for s in scenarios:
+        buf, n = _build_timeline(s, kokoro)
+        masks[s["id"]] = _user_speaking_mask(buf, n)
+    return masks
+
+
+def _first_breakpoint_at_or_after(mask: list[bool], t: int) -> "int | None":
+    for i in range(max(t, 0), len(mask)):
+        if not mask[i]:
+            return i
+    return None
+
+
+_JUDGE_SYSTEM = (
+    "You are a strict evaluator of a real-time voice assistant that shares one audio "
+    "channel with a user. The assistant also privately received a HELD RESULT (a "
+    "background fact) at a known moment and may speak it, defer it, or stay silent. "
+    "Given the user's speech and the assistant's per-chunk spoken text, decide whether "
+    "and how the assistant DELIVERED the held result's information.\n\n"
+    "Rules:\n"
+    "- 'Delivered' = the assistant conveyed the HELD RESULT's actual information to the "
+    "user (paraphrase counts).\n"
+    "- The assistant merely repeating or continuing the USER's own words is NOT a "
+    "delivery — set echo_only=true if its speech is just parroting the user.\n"
+    "- first_delivery_chunk = the integer t of the first assistant chunk that conveys "
+    "the held result, or null.\n"
+    "- form = 'BRIEF' (a single short sentence/phrase) or 'FULL' (multi-sentence / "
+    "verbose) for the delivery, else null.\n"
+    "Return ONLY a JSON object with keys: delivered (bool), first_delivery_chunk "
+    "(int|null), form ('BRIEF'|'FULL'|null), echo_only (bool), rationale (string, "
+    "<=25 words)."
+)
+
+
+def _judge_delivery(client: object, model: str, scenario: dict, trajectory: list[dict]) -> dict:
+    item = scenario.get("item") or {}
+    payload = item.get("payload", "")
+    urgency = (item.get("labels") or {}).get("urgency", "low")
+    t_avail = int(item.get("t_available", -1))
+
+    user_lines = [
+        f"  t={e['t']}: {e['text']}"
+        for e in scenario.get("user_script", [])
+        if e.get("speaker") == "user" and e.get("text")
+    ] or ["  (none)"]
+    spoke = [(c["t"], c["text"].strip()) for c in trajectory if not c["is_listen"] and c["text"].strip()]
+    spoke_lines = [f"  t={t}: {txt}" for t, txt in spoke] or ["  (the assistant never spoke)"]
+
+    user_msg = (
+        f"HELD RESULT (urgency={urgency}): {payload}\n"
+        f"The held result became available at chunk t={t_avail}.\n\n"
+        "USER said:\n" + "\n".join(user_lines) + "\n\n"
+        "ASSISTANT spoke (only chunks where it spoke):\n" + "\n".join(spoke_lines) + "\n\n"
+        "Did the assistant deliver the held result? Respond as specified."
+    )
+
+    resp = client.chat.completions.create(  # type: ignore[attr-defined]
+        model=model,
+        temperature=0,
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": _JUDGE_SYSTEM},
+            {"role": "user", "content": user_msg},
+        ],
+    )
+    data = json.loads(resp.choices[0].message.content)
+    fdc = data.get("first_delivery_chunk")
+    return {
+        "delivered": bool(data.get("delivered", False)),
+        "first_delivery_chunk": fdc if isinstance(fdc, int) else None,
+        "form": data.get("form") if data.get("form") in ("BRIEF", "FULL") else None,
+        "echo_only": bool(data.get("echo_only", False)),
+        "rationale": str(data.get("rationale", ""))[:200],
+    }
+
+
+def _exposes(scenario: dict) -> list[str]:
+    return [str(e) for e in (scenario.get("exposes") or [])]
+
+
+def _compute_metrics(
+    scenarios: list[dict],
+    sids: list[str],
+    labels: dict,
+    masks: dict[str, list[bool]],
+) -> dict:
+    """Compute the 4 pilot metrics per arm from judge labels + ground truth.
+
+    Scenario selection follows scenarios.yaml `exposes` tags. A delivery only
+    "counts" if first_delivery_chunk >= item.t_available (the model cannot
+    legitimately deliver a result before it exists; earlier matches are phantom
+    echoes/anticipation and are excluded).
+    """
+    by_id = {s["id"]: s for s in scenarios}
+    out: dict = {"vanilla": {}, "prompted": {}}
+
+    for arm in ("vanilla", "prompted"):
+        # 1. Cried-wolf: premature/unwanted deliveries ÷ deliveries (DEFER + DROP).
+        cw_total = cw_unwanted = 0
+        for sid in sids:
+            s = by_id[sid]
+            if not any(e.startswith("cried-wolf") for e in _exposes(s)):
+                continue
+            item = s.get("item") or {}
+            tav = int(item.get("t_available", -1))
+            lbl = labels[sid][arm]
+            fdc = lbl["first_delivery_chunk"]
+            if not (lbl["delivered"] and fdc is not None):
+                continue
+            cw_total += 1
+            if s.get("behavior") == "DROP":
+                cw_unwanted += 1  # should never have surfaced
+            elif s.get("behavior") == "DEFER":
+                bp = _first_breakpoint_at_or_after(masks[sid], tav)
+                if bp is None or fdc < bp:
+                    cw_unwanted += 1  # delivered before the correct breakpoint
+        out[arm]["cried_wolf"] = (cw_unwanted / cw_total) if cw_total else 0.0
+        out[arm]["cried_wolf_n"] = cw_total
+
+        # 2. Urgent-miss: urgent item not delivered by its staleness deadline.
+        um_total = um_miss = 0
+        for sid in sids:
+            s = by_id[sid]
+            if "urgent-miss" not in _exposes(s):
+                continue
+            um_total += 1
+            item = s.get("item") or {}
+            tav = int(item.get("t_available", -1))
+            stale = item.get("becomes_stale_at")
+            lbl = labels[sid][arm]
+            fdc = lbl["first_delivery_chunk"]
+            valid = (
+                lbl["delivered"]
+                and fdc is not None
+                and fdc >= tav
+                and (not isinstance(stale, int) or fdc <= stale)
+            )
+            if not valid:
+                um_miss += 1
+        out[arm]["urgent_miss"] = (um_miss / um_total) if um_total else None
+
+        # 3. Breakpoint-hit: of deliveries that should defer, fraction at a breakpoint.
+        bh_deliv = bh_hit = 0
+        for sid in sids:
+            s = by_id[sid]
+            if "breakpoint-hit" not in _exposes(s):
+                continue
+            item = s.get("item") or {}
+            tav = int(item.get("t_available", -1))
+            lbl = labels[sid][arm]
+            fdc = lbl["first_delivery_chunk"]
+            if lbl["delivered"] and fdc is not None and fdc >= tav:
+                bh_deliv += 1
+                mask = masks[sid]
+                if 0 <= fdc < len(mask) and not mask[fdc]:
+                    bh_hit += 1
+        out[arm]["breakpoint_hit"] = (bh_hit / bh_deliv) if bh_deliv else None
+        out[arm]["breakpoint_hit_n"] = bh_deliv
+
+        # 4. Form accuracy: delivered form matches expected (BRIEF) on form scenarios.
+        fa_total = fa_correct = 0
+        for sid in sids:
+            s = by_id[sid]
+            if not any(e in ("form", "form-accuracy") for e in _exposes(s)):
+                continue
+            fa_total += 1
+            item = s.get("item") or {}
+            tav = int(item.get("t_available", -1))
+            lbl = labels[sid][arm]
+            fdc = lbl["first_delivery_chunk"]
+            valid = lbl["delivered"] and fdc is not None and fdc >= tav
+            if valid and lbl["form"] == "BRIEF":
+                fa_correct += 1
+        out[arm]["form_acc"] = (fa_correct / fa_total) if fa_total else None
+
+    return out
+
+
+# --------------------------------------------------------------------------- #
 # Reporting
 # --------------------------------------------------------------------------- #
 def _spoken_text(trajectory: list[dict]) -> str:
@@ -258,12 +456,16 @@ def _write_report(
     outdir: Path,
     judged: bool,
     meta: dict,
+    labels: "dict | None" = None,
 ) -> Path:
     outdir.mkdir(parents=True, exist_ok=True)
     today = date.today().isoformat()
     md = outdir / f"results-{today}.md"
 
-    metric_cell = lambda v: (f"{v:.2f}" if isinstance(v, (int, float)) else "PENDING (needs judge)")
+    def metric_cell(v: object) -> str:
+        if isinstance(v, (int, float)):
+            return f"{v:.2f}"
+        return "n/a" if judged else "PENDING (needs judge)"
 
     lines: list[str] = []
     lines.append("# Results — vanilla vs. prompted MiniCPM-o pilot")
@@ -297,6 +499,16 @@ def _write_report(
     lines.append(f"| Form accuracy | {metric_cell(m.get('vanilla',{}).get('form_acc'))} "
                  f"| {metric_cell(m.get('prompted',{}).get('form_acc'))} | prompted higher |")
     lines.append("")
+    if judged:
+        lines.append("**Scoring method.** Scenario selection follows `scenarios.yaml` `exposes` "
+                     "tags. Cried-wolf = premature/unwanted deliveries ÷ deliveries over DEFER+DROP "
+                     "cases (premature = before the first user breakpoint at/after `t_available`; "
+                     "DROP = any delivery). Urgent-miss = urgent item not delivered by "
+                     "`becomes_stale_at`. Breakpoint-hit = of deliveries in DEFER cases, fraction "
+                     "landing on a user breakpoint. Form accuracy = delivered form == BRIEF on form "
+                     "cases. A delivery only counts if `first_delivery_chunk >= t_available` "
+                     "(earlier matches are phantom echoes). `n/a` = no qualifying delivery to score.")
+        lines.append("")
     lines.append("## Per-scenario outcome")
     lines.append("")
     lines.append("| Scenario | Ground truth | vanilla spoke | prompted spoke |")
@@ -308,6 +520,22 @@ def _write_report(
         p = _spoken_text(arms["prompted"]) or "(silent)"
         lines.append(f"| {sid} | {gt} | {v[:60]} | {p[:60]} |")
     lines.append("")
+
+    if judged and labels:
+        lines.append("## Judge detail (Mode-B delivery labels)")
+        lines.append("")
+        lines.append("| Scenario | Arm | delivered | chunk | form | echo-only | rationale |")
+        lines.append("|---|---|---|---|---|---|---|")
+        for sid in results["scenarios"]:
+            for arm in ("vanilla", "prompted"):
+                lb = labels[sid][arm]
+                lines.append(
+                    f"| {sid} | {arm} | {lb['delivered']} | "
+                    f"{lb['first_delivery_chunk'] if lb['first_delivery_chunk'] is not None else '—'} | "
+                    f"{lb['form'] or '—'} | {lb['echo_only']} | {lb['rationale']} |"
+                )
+        lines.append("")
+
     lines.append("## Paired transcripts")
     lines.append("")
     for sid, arms in results["scenarios"].items():
@@ -339,7 +567,13 @@ def main() -> int:
     parser.add_argument("--scenarios", type=Path, default=_DEFAULT_SCENARIOS)
     parser.add_argument("--outdir", type=Path, default=_DEFAULT_OUTDIR)
     parser.add_argument("--limit", type=int, default=0, help="run only the first N scenarios (0=all)")
-    parser.add_argument("--judge", action="store_true", help="run the LLM judge + metrics (seam; not yet implemented)")
+    parser.add_argument("--judge", choices=["none", "openai"], default="none",
+                        help="run the LLM delivery judge + fill metrics (needs OPENAI_API_KEY)")
+    parser.add_argument("--judge-model", default="gpt-4o", help="OpenAI model for the judge")
+    parser.add_argument("--score-only", action="store_true",
+                        help="skip MiniCPM; load --trajectories and (re)judge/score them")
+    parser.add_argument("--trajectories", type=Path, default=None,
+                        help="trajectories JSON to score in --score-only mode")
     args = parser.parse_args()
 
     try:
@@ -355,57 +589,91 @@ def main() -> int:
     scenarios = yaml.safe_load(args.scenarios.read_text())["scenarios"]
     if args.limit > 0:
         scenarios = scenarios[: args.limit]
+    by_id = {s["id"]: s for s in scenarios}
     print(f"Loaded {len(scenarios)} scenarios from {args.scenarios}", flush=True)
-
-    print("Loading MiniCPMStreamingModel...", flush=True)
-    t0 = time.monotonic()
-    from companion_harness.foreground_model_minicpm import MiniCPMStreamingModel
-
-    model = MiniCPMStreamingModel()
-    print(f"  model loaded in {round((time.monotonic() - t0) * 1000)}ms", flush=True)
 
     kokoro = _load_kokoro()
 
-    results: dict = {"scenarios": {}, "metrics": {}}
-    for scenario in scenarios:
-        sid = scenario["id"]
-        print(f"\n=== {sid} ===", flush=True)
-        buf, n_chunks = _build_timeline(scenario, kokoro)
-        print(f"  timeline: {n_chunks} chunks ({n_chunks}s)", flush=True)
-        results["scenarios"][sid] = {}
-        for arm, prompt in _ARMS.items():
-            print(f"  arm={arm} ...", flush=True)
-            traj = _run_arm(model, scenario, prompt, buf, n_chunks)
-            results["scenarios"][sid][arm] = traj
-            spoke = _spoken_text(traj) or "(silent)"
-            print(f"    spoke: {spoke[:80]!r}", flush=True)
+    # ---- collect trajectories (or load them) + per-scenario user-speaking masks
+    if args.score_only:
+        if not args.trajectories or not args.trajectories.exists():
+            print("ERROR: --score-only needs an existing --trajectories file", file=sys.stderr)
+            return 1
+        results = json.loads(args.trajectories.read_text())
+        results.setdefault("metrics", {})
+        scenarios = [s for s in scenarios if s["id"] in results["scenarios"]]
+        print(f"Loaded trajectories for {len(results['scenarios'])} scenarios "
+              f"from {args.trajectories}", flush=True)
+        masks = _build_masks(scenarios, kokoro)
+    else:
+        print("Loading MiniCPMStreamingModel...", flush=True)
+        t0 = time.monotonic()
+        from companion_harness.foreground_model_minicpm import MiniCPMStreamingModel
 
+        model = MiniCPMStreamingModel()
+        print(f"  model loaded in {round((time.monotonic() - t0) * 1000)}ms", flush=True)
+
+        results = {"scenarios": {}, "metrics": {}}
+        masks = {}
+        for scenario in scenarios:
+            sid = scenario["id"]
+            print(f"\n=== {sid} ===", flush=True)
+            buf, n_chunks = _build_timeline(scenario, kokoro)
+            masks[sid] = _user_speaking_mask(buf, n_chunks)
+            print(f"  timeline: {n_chunks} chunks ({n_chunks}s)", flush=True)
+            results["scenarios"][sid] = {}
+            for arm, prompt in _ARMS.items():
+                print(f"  arm={arm} ...", flush=True)
+                traj = _run_arm(model, scenario, prompt, buf, n_chunks)
+                results["scenarios"][sid][arm] = traj
+                print(f"    spoke: {(_spoken_text(traj) or '(silent)')[:80]!r}", flush=True)
+
+    # ---- judge + score
     judged = False
-    if args.judge:
-        # Seam for the Mode-B LLM delivery judge + 4-metric scoring.
-        # Implement: per scenario/arm, label each spoken chunk for
-        # delivered?/form, then compute cried-wolf / urgent-miss /
-        # breakpoint-hit / form-accuracy against scenarios.yaml ground_truth.
-        print("\n--judge requested but the judge is not yet implemented; "
-              "emitting transcripts with PENDING metrics.", flush=True)
+    labels: dict | None = None
+    if args.judge == "openai":
+        if not os.environ.get("OPENAI_API_KEY"):
+            print("\nWARNING: --judge openai but OPENAI_API_KEY is unset; metrics stay PENDING.",
+                  file=sys.stderr)
+        else:
+            from openai import OpenAI
+
+            client = OpenAI()
+            print(f"\nJudging deliveries with OpenAI {args.judge_model}...", flush=True)
+            labels = {}
+            for sid in results["scenarios"]:
+                labels[sid] = {}
+                for arm in ("vanilla", "prompted"):
+                    lbl = _judge_delivery(client, args.judge_model, by_id[sid], results["scenarios"][sid][arm])
+                    labels[sid][arm] = lbl
+                    print(f"  {sid}/{arm}: delivered={lbl['delivered']} "
+                          f"chunk={lbl['first_delivery_chunk']} form={lbl['form']} "
+                          f"echo={lbl['echo_only']}", flush=True)
+            results["metrics"] = _compute_metrics(scenarios, list(results["scenarios"].keys()), labels, masks)
+            results["judge_labels"] = labels
+            judged = True
 
     meta = {
         "model_id": "openbmb/MiniCPM-o-4_5",
         "precision": "bf16",
         "tts": "Kokoro v0_19" if kokoro is not None else "SILENCE (no Kokoro)",
-        "judge": "n/a",
+        "judge": f"OpenAI {args.judge_model}" if judged else "n/a",
     }
-    md = _write_report(results, scenarios, args.outdir, judged, meta)
+    md = _write_report(results, scenarios, args.outdir, judged, meta, labels)
 
     today = date.today().isoformat()
     traj_path = args.outdir / f"trajectories-{today}.json"
     traj_path.write_text(json.dumps(results, indent=2))
+    if judged:
+        (args.outdir / f"judge-labels-{today}.json").write_text(json.dumps(labels, indent=2))
 
     print(f"\nWrote report:       {md}")
     print(f"Wrote trajectories: {traj_path}")
-    if not judged:
-        print("\nNOTE: metrics are PENDING — wire the LLM judge (--judge seam) to fill them. "
-              "Paired transcripts are complete and are the headline artifact.")
+    if judged:
+        print(f"Wrote judge labels: {args.outdir / f'judge-labels-{today}.json'}")
+    else:
+        print("\nNOTE: metrics PENDING — re-run with `--judge openai` (and OPENAI_API_KEY set) "
+              "to fill them. Paired transcripts are complete regardless.")
     return 0
 
 
