@@ -1,0 +1,272 @@
+# Scenarios for the vanilla-vs-prompted pilot.
+# 12 cases, 3 per delivery behavior (defer / drop / urgent / form), so each metric
+# has a real denominator (cried-wolf: 6 = defer+drop; breakpoint-hit: 3 = defer;
+# urgent-miss: 3 = urgent; form: 6 = urgent+form). Still small — refine +
+# human-validate before any headline claim (see docs/tact-bench-design.md §4).
+#
+# Timing convention: t is in 1-second chunks. user_script renders to audio via TTS
+# (audio mode) or is fed as text turns on a 1s silence clock (text mode);
+# `pause` entries create the silences that become breakpoints.
+# Payload convention: payloads are PLAIN facts — do NOT prefix "URGENT:"; the runner
+# adds the urgency framing from labels.urgency (REVISIONS R2).
+# Ground-truth policy (design §3 + §3.2):
+#   urgent              -> NOW (any relevance/standing-order)
+#   standing/relevant, not urgent -> WAIT to next breakpoint
+#   not urgent, not relevant, no standing-order -> DROP
+#   past becomes_stale_at / superseded -> DROP
+
+scenarios:
+
+  - id: TC1-defer
+    behavior: DEFER
+    current_topic:
+      descriptor: "user telling a story about their weekend hike"
+      anchors: ["weekend", "hike", "deer", "ridge"]
+    standing_instruction: "[earlier] user asked: what's tomorrow's weather?"
+    user_script:
+      - {t: 0, speaker: user, text: "So this weekend I finally hiked up the ridge trail."}
+      - {t: 4, speaker: user, text: "Halfway up we ran into a whole family of deer, it was unreal."}
+      - {t: 9, type: pause, dur: 2}        # breakpoint at chunks 9-10
+      - {t: 11, speaker: user, text: "Then we stopped for lunch right at the summit."}
+    item:
+      id: weather
+      source: tool
+      payload: "weather tomorrow = 24C, clear"
+      t_available: 3                        # arrives mid-story
+      labels: {urgency: low, relevance: low, standing_order: yes}
+      becomes_stale_at: null
+    ground_truth: "WAIT through chunks 3-8 (user mid-utterance); DELIVER at the breakpoint (chunk 9-10), SPEAK_BRIEF, re-anchored ('that weather you asked about - 24 and clear'). Delivering before chunk 9 = cried-wolf."
+    exposes: [cried-wolf, breakpoint-hit]
+
+  - id: TC2-drop
+    behavior: DROP
+    current_topic:
+      descriptor: "user deciding whether to go to the cafe"
+      anchors: ["cafe", "open", "coffee"]
+    standing_instruction: "[earlier] user asked: is the cafe open?"
+    user_script:
+      - {t: 0, speaker: user, text: "Is the cafe down the street still open this late?"}
+      - {t: 3, type: pause, dur: 1}
+      - {t: 4, speaker: user, text: "Eh, never mind, I'll just walk over and check myself."}
+      - {t: 8, type: pause, dur: 2}        # breakpoint, but item should already be dropped
+    item:
+      id: cafe_hours
+      source: tool
+      payload: "cafe hours = open till 6pm"
+      t_available: 5                        # arrives right after user self-resolves
+      labels: {urgency: low, relevance: high, standing_order: yes}
+      becomes_stale_at: 4                   # user said "never mind" at chunk 4
+    ground_truth: "DROP - the user self-resolved at chunk 4, before the result arrived (t_available=5 > becomes_stale_at=4). Announcing the hours at all = cried-wolf."
+    exposes: [cried-wolf-drop]
+
+  - id: TC3-urgent
+    behavior: DELIVER_NOW
+    current_topic:
+      descriptor: "user chatting casually about a TV show"
+      anchors: ["tv-show", "casual"]
+    standing_instruction: null
+    user_script:
+      - {t: 0, speaker: user, text: "Did you catch the season finale last night? That ending was wild."}
+      - {t: 5, speaker: user, text: "I did not see that twist coming at all, honestly."}
+      - {t: 10, speaker: user, text: "Anyway I might rewatch the whole thing this weekend."}
+    item:
+      id: meeting_moved
+      source: scheduled
+      payload: "your 3pm meeting was just moved to now"
+      t_available: 6                        # arrives mid-conversation
+      labels: {urgency: high, relevance: low, standing_order: no}
+      becomes_stale_at: 8                   # useless after the meeting starts
+    ground_truth: "DELIVER NOW at chunk 6 (urgency dominates relevance/standing-order); interrupt is acceptable; SPEAK_BRIEF. Waiting past chunk 8 = urgent-miss."
+    exposes: [urgent-miss, form]
+
+  - id: TC4-form
+    behavior: FORM
+    current_topic:
+      descriptor: "user working quietly, waiting on a deploy"
+      anchors: ["deploy", "build", "waiting"]
+    standing_instruction: "user said: just give me a quick yes/no when the deploy is done."
+    user_script:
+      - {t: 0, speaker: user, text: "Just give me a quick yes/no when the deploy finishes, I'm heads-down."}
+      - {t: 4, type: pause, dur: 6}        # user working silently; breakpoints throughout
+    item:
+      id: deploy_done
+      source: async_task
+      payload: "deploy succeeded"
+      t_available: 7                        # finishes while user is quiet
+      labels: {urgency: low, relevance: low, standing_order: yes}
+      becomes_stale_at: null
+    ground_truth: "DELIVER (user explicitly asked to be told), at chunk 7 (user is idle = low interruption cost), form = SPEAK_BRIEF ('done - deploy succeeded'). A verbose multi-sentence status report = wrong form."
+    exposes: [form-accuracy]
+
+  # ---- additional DEFER cases (relevant/standing, not urgent -> wait for breakpoint) ----
+
+  - id: TC5-defer
+    behavior: DEFER
+    current_topic:
+      descriptor: "user recounting a bug they fixed at work"
+      anchors: ["bug", "race condition", "scheduler", "lock"]
+    standing_instruction: "[earlier] user asked: what's the score of the game?"
+    user_script:
+      - {t: 0, speaker: user, text: "I spent all morning chasing this gnarly race condition in the scheduler."}
+      - {t: 4, speaker: user, text: "Turns out it was a missing lock around the queue, classic mistake."}
+      - {t: 9, type: pause, dur: 2}        # breakpoint at chunks 9-10
+      - {t: 11, speaker: user, text: "Anyway, finally got it green and shipped the fix."}
+    item:
+      id: game_score
+      source: tool
+      payload: "your team won 3 to 1"
+      t_available: 3                        # arrives mid-story
+      labels: {urgency: low, relevance: low, standing_order: yes}
+      becomes_stale_at: null
+    ground_truth: "WAIT through chunks 3-8 (user mid-utterance); DELIVER at the breakpoint (chunk 9-10), SPEAK_BRIEF, re-anchored ('that game you asked about - your team won 3-1'). Delivering before chunk 9 = cried-wolf."
+    exposes: [cried-wolf, breakpoint-hit]
+
+  - id: TC6-defer
+    behavior: DEFER
+    current_topic:
+      descriptor: "user planning a dinner party"
+      anchors: ["dinner", "party", "menu", "guests"]
+    standing_instruction: "[earlier] user asked: tell me when my Amazon package is out for delivery."
+    user_script:
+      - {t: 0, speaker: user, text: "I'm thinking of doing a little dinner party this Saturday for six people."}
+      - {t: 5, speaker: user, text: "Maybe a roast chicken, some roasted vegetables, and a simple green salad."}
+      - {t: 10, type: pause, dur: 2}       # breakpoint at chunks 10-11
+      - {t: 12, speaker: user, text: "I still need to figure out what to do for dessert though."}
+    item:
+      id: package_out
+      source: tool
+      payload: "your Amazon package is out for delivery"
+      t_available: 4                        # arrives mid-utterance
+      labels: {urgency: low, relevance: low, standing_order: yes}
+      becomes_stale_at: null
+    ground_truth: "WAIT through chunks 4-9 (user mid-utterance); DELIVER at the breakpoint (chunk 10-11), SPEAK_BRIEF, re-anchored ('that package you asked about - it's out for delivery'). Delivering before chunk 10 = cried-wolf."
+    exposes: [cried-wolf, breakpoint-hit]
+
+  # ---- additional DROP cases (stale / self-resolved / irrelevant -> never deliver) ----
+
+  - id: TC7-drop
+    behavior: DROP
+    current_topic:
+      descriptor: "user trying to recall an actor's name"
+      anchors: ["actor", "movie", "dad"]
+    standing_instruction: "[earlier] user asked: who played the dad in that movie?"
+    user_script:
+      - {t: 0, speaker: user, text: "Ugh, who played the dad in that movie we watched last night?"}
+      - {t: 3, type: pause, dur: 1}
+      - {t: 4, speaker: user, text: "Oh wait, never mind - it's Bryan Cranston, I just remembered."}
+      - {t: 8, type: pause, dur: 2}        # breakpoint, but item should already be dropped
+    item:
+      id: actor_name
+      source: tool
+      payload: "the dad was played by Bryan Cranston"
+      t_available: 5                        # arrives right after user self-resolves
+      labels: {urgency: low, relevance: high, standing_order: yes}
+      becomes_stale_at: 4                   # user self-resolved at chunk 4
+    ground_truth: "DROP - the user self-resolved at chunk 4, before the result arrived (t_available=5 > becomes_stale_at=4). Stating the name at all = cried-wolf."
+    exposes: [cried-wolf-drop]
+
+  - id: TC8-drop
+    behavior: DROP
+    current_topic:
+      descriptor: "user talking about low-key weekend plans"
+      anchors: ["weekend", "relax", "movie"]
+    standing_instruction: null
+    user_script:
+      - {t: 0, speaker: user, text: "I think we're just going to relax this weekend, maybe catch a movie."}
+      - {t: 5, speaker: user, text: "Haven't decided what to see yet though, we'll figure it out."}
+      - {t: 9, type: pause, dur: 2}        # breakpoint, but item is irrelevant -> drop
+    item:
+      id: stock_move
+      source: background
+      payload: "a stock you don't own, TSLA, is up 2 percent today"
+      t_available: 4
+      labels: {urgency: low, relevance: low, standing_order: no}
+      becomes_stale_at: null
+    ground_truth: "DROP - not urgent, not relevant to the current topic, and no standing order. Mentioning it at all = cried-wolf."
+    exposes: [cried-wolf-drop]
+
+  # ---- additional URGENT cases (deliver now, brief) ----
+
+  - id: TC9-urgent
+    behavior: DELIVER_NOW
+    current_topic:
+      descriptor: "user chatting about baking sourdough"
+      anchors: ["sourdough", "baking", "starter"]
+    standing_instruction: null
+    user_script:
+      - {t: 0, speaker: user, text: "I'm finally going to try making that sourdough recipe today."}
+      - {t: 5, speaker: user, text: "I've got the starter all bubbly and ready to go."}
+      - {t: 10, speaker: user, text: "Might take all afternoon but it'll be worth it."}
+    item:
+      id: smoke_alarm
+      source: sensor
+      payload: "the smoke detector in the kitchen is going off"
+      t_available: 6                        # arrives mid-conversation
+      labels: {urgency: high, relevance: low, standing_order: no}
+      becomes_stale_at: 9                   # must be raised promptly
+    ground_truth: "DELIVER NOW at chunk 6 (urgency dominates); interrupt is acceptable; SPEAK_BRIEF. Waiting past chunk 9 = urgent-miss."
+    exposes: [urgent-miss, form]
+
+  - id: TC10-urgent
+    behavior: DELIVER_NOW
+    current_topic:
+      descriptor: "user chatting casually about a TV series"
+      anchors: ["tv-series", "detective", "casual"]
+    standing_instruction: null
+    user_script:
+      - {t: 0, speaker: user, text: "I started that new detective series everyone's talking about."}
+      - {t: 5, speaker: user, text: "Three episodes in and I'm hooked, the writing is great."}
+      - {t: 10, speaker: user, text: "I'll probably binge the rest of it tonight."}
+    item:
+      id: school_pickup
+      source: scheduled
+      payload: "your kid's school just called for an early pickup in 15 minutes"
+      t_available: 6
+      labels: {urgency: high, relevance: low, standing_order: no}
+      becomes_stale_at: 9
+    ground_truth: "DELIVER NOW at chunk 6 (urgency dominates); interrupt is acceptable; SPEAK_BRIEF. Waiting past chunk 9 = urgent-miss."
+    exposes: [urgent-miss, form]
+
+  # ---- additional FORM cases (deliver, but BRIEF because the user asked for terse) ----
+
+  - id: TC11-form
+    behavior: FORM
+    current_topic:
+      descriptor: "user working quietly, waiting on a test run"
+      anchors: ["tests", "suite", "waiting"]
+    standing_instruction: "user said: just give me a one-word pass or fail when the tests finish."
+    user_script:
+      - {t: 0, speaker: user, text: "Just give me a one-word pass or fail when the test suite finishes, I'm focused."}
+      - {t: 4, type: pause, dur: 6}        # user working silently
+    item:
+      id: tests_done
+      source: async_task
+      payload: "the test suite passed"
+      t_available: 7                        # finishes while user is quiet
+      labels: {urgency: low, relevance: low, standing_order: yes}
+      becomes_stale_at: null
+    ground_truth: "DELIVER (user explicitly asked), at chunk 7 (user idle = low interruption cost), form = SPEAK_BRIEF ('pass'). A verbose multi-sentence report = wrong form."
+    exposes: [form-accuracy]
+
+  - id: TC12-form
+    behavior: FORM
+    current_topic:
+      descriptor: "user waiting on a large file upload"
+      anchors: ["upload", "file", "waiting"]
+    standing_instruction: "user said: ping me with just 'done' when the upload finishes, don't read the whole log."
+    user_script:
+      - {t: 0, speaker: user, text: "Ping me with just 'done' when the big upload finishes, don't read me the whole log."}
+      - {t: 4, type: pause, dur: 6}        # user working silently
+    item:
+      id: upload_done
+      source: async_task
+      payload: "the upload finished successfully"
+      t_available: 7
+      labels: {urgency: low, relevance: low, standing_order: yes}
+      becomes_stale_at: null
+    ground_truth: "DELIVER (user explicitly asked), at chunk 7 (user idle), form = SPEAK_BRIEF ('done'). A verbose multi-sentence status report = wrong form."
+    exposes: [form-accuracy]
+
+  # Optional arbitration case — add only after TC1-12 run cleanly:
+  # inject TC3-urgent (meeting) and TC1-weather at the same chunk; correct = deliver
+  # urgent FIRST, defer/re-anchor weather. Tests priority ordering on one channel.
