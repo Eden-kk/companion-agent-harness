@@ -144,10 +144,14 @@ whether deferral is elicitable.
 *Success:* `ConditionalForm` separates a brief-correct from a verbose-wrong case;
 Mode-A emits per-decision-point labels on the DEFER cases.
 
-**PR7 (optional) — audio-mode parity + cross-check.**
-`TactMiniCPMDriver(input_mode="audio")` parity; `docs/results-tact-crosscheck.md`
-comparing text vs audio and probe-vs-adapter numbers within tolerance.
-*Success:* adapter text-mode metrics match the standalone probe within stated tolerance.
+**PR7 — audio-mode parity + cross-check. DONE.**
+`TactMiniCPMDriver(input_mode="audio")` shipped (worker-thread Kokoro synth; fixed a
+nested-event-loop bug). Cross-check at
+`tact-bench/experiments/vanilla-vs-prompted/results/results-tact-crosscheck.md`: same
+14 cases, prompted arm, both modes — audio reproduces the echo confound (spurious
+deliveries in DROP/DEFER → cried_wolf 0.50, urgent_miss 1.0) while text is
+correct-shaped (urgent_miss 0.00). Confirms text/silence-clock is the valid surface.
+Adapter text path is a direct port of the standalone probe (parity by construction).
 
 ## 5. Invariants & compliance (non-negotiable, from CLAUDE.md)
 
