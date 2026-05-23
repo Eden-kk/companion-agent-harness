@@ -41,6 +41,7 @@ import asyncio
 import json
 import math
 import os
+import re
 import sys
 import time
 from datetime import date
@@ -186,9 +187,15 @@ def _held_result_turn(item: dict) -> str:
     role-delimiter convention, recognized by the tokenizer) marks it as private
     context, and the inline note reinforces "do not read aloud verbatim".
     """
-    payload = item.get("payload", "")
+    payload = (item.get("payload") or "").strip()
     urgent = (item.get("labels") or {}).get("urgency") == "high"
-    result = f"URGENT: {payload}" if urgent else payload
+    if urgent:
+        # REVISIONS R2: the urgency framing is added here from labels; strip any
+        # redundant "URGENT" already in the payload so it isn't doubled in speech.
+        payload = re.sub(r"^urgent[:\s\-]*", "", payload, flags=re.IGNORECASE).strip()
+        result = f"URGENT: {payload}"
+    else:
+        result = payload
     note = (
         "Background result now available (private system note — not user speech; "
         "do not read this note aloud verbatim). "
