@@ -110,8 +110,9 @@ for consistency; fixing the shared yaml is out of scope for this branch.
 *Resolved (plan-critic B3):* `streaming_prefill(text_list=...)` is verified in the model
 source (modeling_minicpmo.py L2759/L3094) and at runtime by
 `scripts/probe_tact_pending_injection.py` + the text-mode runs — not an open assumption.
-*Mechanism:* in-memory `event_sink` list + `_make_event`, matching `fixture.py` (NOT the
-realtime EventLogger).
+*Mechanism:* emit via the async, non-blocking `EventLogger` (invariant #10), collected
+through an async sink and serialized to the jsonl — per this plan (not the `event_sink`
+shortcut some other drivers use).
 
 **PR3 — `DeliveryJudge` Examiner (model-agnostic).**
 Port the OpenAI Mode-B judge behind the `Examiner` seam; persist `judge-labels.json`;

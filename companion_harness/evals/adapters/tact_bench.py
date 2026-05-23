@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
+from companion_harness.event_logger import EventLogger
 from companion_harness.schemas import EvaluationCase, Event, ReplayRun
 
 _DATA_DIR = Path(__file__).parent / "tact_bench_data"
@@ -270,72 +271,77 @@ class TactMiniCPMDriver:
         started_wall = datetime.now(timezone.utc).isoformat()
         started_ms = int(time.monotonic() * 1000)
         run_id = f"tact-{case.case_id}-{started_ms}"
-        events: list[Event] = []
 
-        start_evt = _make_event(
-            event_id=f"{session_id}-start", event_type="benchmark_case_started",
-            caused_by=[], session_id=session_id, seq_no=self._next_seq(), mono_ms=started_ms,
-        )
-        events.append(start_evt)
+        # Invariant #10: emit through the async, non-blocking EventLogger.
+        collected: list[Event] = []
 
-        text_turns, n_chunks, mask = _build_text_plan(inputs)
-        note = _held_result_turn(item)
+        async def _sink(evt: Event) -> None:
+            collected.append(evt)
 
-        duplex = self._model_or_load()._duplex  # noqa: SLF001
-        duplex.model.reset_session(reset_token2wav_cache=False)
-        duplex.prepare(prefix_system_prompt=_ARMS[self.arm])
-        silence = np.zeros(_CHUNK_SAMPLES, dtype=np.float32)
+        logger = EventLogger(sink=_sink)
+        await logger.start()
 
         trajectory: list[dict] = []
         injected_evt_id: str | None = None
         final_status = "completed"
+        failures: list[dict] = []
         try:
-            for t in range(n_chunks):
-                texts: list[str] = []
-                if t in text_turns:
-                    texts.append(text_turns[t])
-                injected = t == t_avail
-                if injected:
-                    texts.append(note)
-                    injected_evt_id = f"{session_id}-inject-{t}"
-                    events.append(_make_event(
-                        event_id=injected_evt_id, event_type="held_result_injected",
-                        caused_by=[start_evt.event_id], session_id=session_id,
-                        seq_no=self._next_seq(), mono_ms=int(time.monotonic() * 1000),
-                        payload_kind="transcript", sensitivity="sensitive",
-                        extra_hash=note,  # only the hash is stored, never the raw note
-                    ))
-                if texts:
-                    duplex.streaming_prefill(audio_waveform=silence, text_list=["".join(texts)])
-                else:
-                    duplex.streaming_prefill(audio_waveform=silence)
-                result = _generate(duplex)
-                trajectory.append({
-                    "t": t,
-                    "injected": injected,
-                    "is_listen": bool(result.get("is_listen", True)),
-                    "text": result.get("text", ""),
-                })
-        except Exception as exc:  # noqa: BLE001 — record a failed run, don't crash the suite
-            final_status = "error"
-            done_caused = [start_evt.event_id] + ([injected_evt_id] if injected_evt_id else [])
-            events.append(_make_event(
+            start_id = f"{session_id}-start"
+            logger.log(_make_event(
+                event_id=start_id, event_type="benchmark_case_started",
+                caused_by=[], session_id=session_id, seq_no=self._next_seq(), mono_ms=started_ms,
+            ))
+
+            text_turns, n_chunks, mask = _build_text_plan(inputs)
+            note = _held_result_turn(item)
+
+            duplex = self._model_or_load()._duplex  # noqa: SLF001
+            duplex.model.reset_session(reset_token2wav_cache=False)
+            duplex.prepare(prefix_system_prompt=_ARMS[self.arm])
+            silence = np.zeros(_CHUNK_SAMPLES, dtype=np.float32)
+
+            try:
+                for t in range(n_chunks):
+                    texts: list[str] = []
+                    if t in text_turns:
+                        texts.append(text_turns[t])
+                    injected = t == t_avail
+                    if injected:
+                        texts.append(note)
+                        injected_evt_id = f"{session_id}-inject-{t}"
+                        logger.log(_make_event(
+                            event_id=injected_evt_id, event_type="held_result_injected",
+                            caused_by=[start_id], session_id=session_id,
+                            seq_no=self._next_seq(), mono_ms=int(time.monotonic() * 1000),
+                            payload_kind="transcript", sensitivity="sensitive",
+                            extra_hash=note,  # only the hash is stored, never the raw note
+                        ))
+                    if texts:
+                        duplex.streaming_prefill(audio_waveform=silence, text_list=["".join(texts)])
+                    else:
+                        duplex.streaming_prefill(audio_waveform=silence)
+                    result = _generate(duplex)
+                    trajectory.append({
+                        "t": t,
+                        "injected": injected,
+                        "is_listen": bool(result.get("is_listen", True)),
+                        "text": result.get("text", ""),
+                    })
+            except Exception as exc:  # noqa: BLE001 — record a failed run, don't crash the suite
+                final_status = "error"
+                failures = [{"error": f"{type(exc).__name__}: {exc}"}]
+
+            done_caused = [start_id] + ([injected_evt_id] if injected_evt_id else [])
+            logger.log(_make_event(
                 event_id=f"{session_id}-done", event_type="benchmark_case_completed",
                 caused_by=done_caused, session_id=session_id,
                 seq_no=self._next_seq(), mono_ms=int(time.monotonic() * 1000),
             ))
-            return self._finish(case, run_id, session_id, started_wall, started_ms, events,
-                                trajectory, mask, run_config, final_status,
-                                failures=[{"error": f"{type(exc).__name__}: {exc}"}])
+        finally:
+            await logger.stop()  # drains the queue into `collected`
 
-        done_caused = [start_evt.event_id] + ([injected_evt_id] if injected_evt_id else [])
-        events.append(_make_event(
-            event_id=f"{session_id}-done", event_type="benchmark_case_completed",
-            caused_by=done_caused, session_id=session_id,
-            seq_no=self._next_seq(), mono_ms=int(time.monotonic() * 1000),
-        ))
-        return self._finish(case, run_id, session_id, started_wall, started_ms, events,
-                            trajectory, mask, run_config, final_status, failures=[])
+        return self._finish(case, run_id, session_id, started_wall, started_ms, collected,
+                            trajectory, mask, run_config, final_status, failures=failures)
 
     def _finish(self, case, run_id, session_id, started_wall, started_ms, events, trajectory,
                 mask, run_config, final_status, failures) -> ReplayRun:

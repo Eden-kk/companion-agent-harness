@@ -4,10 +4,11 @@ Design brief for the only MiniCPM-coupled piece. Keep all model-SDK imports here
 
 ## Decisions (grounded in the actual framework, correcting the master plan)
 
-1. **Event mechanism = in-memory event list + `_make_event`, NOT the realtime
-   EventLogger.** The canonical eval driver (`evals/scenarios/fixture.py`) uses an
-   `event_sink: list[Event]` + a `_make_event` helper. Match it (CLAUDE.md: match
-   existing style). The realtime EventLogger is for the live path, not eval drivers.
+1. **Event mechanism = the async `EventLogger`** (per the master plan, invariant #10):
+   build Events with a local `_make_event` helper, route them through
+   `EventLogger.log()`, collect via an async sink, then serialize to the jsonl. (We do
+   NOT use the `event_sink` list shortcut that `fixture.py` takes — the plan calls for
+   the real EventLogger and is not self-contradictory, so we follow it.)
 
 2. **The model decision is data, not events.** Like `fixture.py` (whose events are
    bookkeeping, not the orchestrator's behavior), the per-chunk `is_listen`/`text`
