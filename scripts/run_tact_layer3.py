@@ -170,7 +170,7 @@ scorer: companion_harness/evals/adapters/tact_bench_layer3.py</footer>
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--arms", nargs="+", default=["vanilla", "prompted", "prompted_terse"])
+    p.add_argument("--arms", nargs="+", default=["vanilla", "prompted", "monitor_stream"])
     p.add_argument("--output", default="reports/tact-layer3")
     args = p.parse_args()
 
