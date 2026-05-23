@@ -25,7 +25,8 @@ from types import SimpleNamespace
 from typing import Iterable
 
 from companion_harness.event_logger import EventLogger
-from companion_harness.evals.schemas import MetricValue
+from companion_harness.evals.protocols import BenchmarkAdapter
+from companion_harness.evals.schemas import BenchmarkResult, FailureSlice, MetricValue
 from companion_harness.schemas import EvaluationCase, Event, ReplayRun
 
 _DATA_DIR = Path(__file__).parent / "tact_bench_data"
@@ -688,3 +689,130 @@ ConditionalForm = _make_metric("conditional_form")
 def tact_metrics() -> list:
     """The five per-case Metric instances, in report order."""
     return [CriedWolf(), UrgentMiss(), BreakpointHit(), DeliveryRate(), ConditionalForm()]
+
+
+# ===========================================================================
+# FailureSliceExtractor + adapter assembly + suite runner — PR5
+# ===========================================================================
+
+@dataclass
+class TactFailureSliceExtractor:
+    def extract(self, case: EvaluationCase, replay_run: ReplayRun, result: BenchmarkResult) -> list[FailureSlice]:
+        if (replay_run.final_status or "") != "error":
+            return []
+        return [FailureSlice(
+            case_id=case.case_id,
+            causal_event_ids=tuple(),
+            suspected_adapter="tact_minicpm_driver",
+            relevant_policy_inputs={},
+            suggested_fix="see ReplayRun.failures",
+        )]
+
+
+def build_tact_bench(
+    input_mode: str = "text",
+    arm: str = "prompted",
+    judge_model: str = "gpt-4o",
+    with_judge: bool = True,
+    model_factory: object | None = None,
+    judge_client_factory: object | None = None,
+) -> BenchmarkAdapter:
+    """Compose the six protocols into the runnable TACT-Bench adapter.
+
+    Factories are injectable so the suite can run hermetically in tests (fake
+    model + fake judge client). In production both are None → real MiniCPM-o +
+    real OpenAI (the judge self-skips to PENDING without OPENAI_API_KEY).
+    """
+    judge = DeliveryJudge(model=judge_model, client_factory=judge_client_factory) if with_judge else None
+    return BenchmarkAdapter(
+        name=_BENCH_NAME,
+        version=_BENCH_VERSION,
+        case_source=TactCaseSource(input_mode=input_mode),
+        scenario_driver=TactMiniCPMDriver(arm=arm, input_mode=input_mode, model_factory=model_factory),
+        examiner=judge,
+        metrics=tact_metrics(),
+        failure_slicer=TactFailureSliceExtractor(),
+        reporters=[],
+    )
+
+
+def _render_tact_report(adapter: BenchmarkAdapter, runs: list[ReplayRun], agg: dict) -> str:
+    arm = getattr(adapter.scenario_driver, "arm", "?")
+    input_mode = getattr(adapter.scenario_driver, "input_mode", "?")
+    judged = adapter.examiner is not None and any(
+        (r.results or {}).get("judge_label") and (r.results["judge_label"].get("delivered") is not None)
+        for r in runs
+    )
+
+    def cell(v: object) -> str:
+        if isinstance(v, (int, float)):
+            return f"{v:.2f}"
+        return "n/a" if judged else "PENDING (no judge)"
+
+    lines = [
+        f"# TACT-Bench report — arm={arm}, input_mode={input_mode}",
+        "",
+        f"Cases: {len(runs)} | judge: {'OpenAI ' + adapter.examiner.model if adapter.examiner else 'none'}",
+        "",
+        "## Metrics",
+        "",
+        "| Metric | value | direction |",
+        "|---|---|---|",
+        f"| cried_wolf | {cell(agg.get('cried_wolf'))} | lower better |",
+        f"| urgent_miss | {cell(agg.get('urgent_miss'))} | lower better |",
+        f"| breakpoint_hit | {cell(agg.get('breakpoint_hit'))} | higher better |",
+        f"| delivery_rate | {cell(agg.get('delivery_rate'))} | diagnostic |",
+        f"| conditional_form | {cell(agg.get('conditional_form'))} | higher better |",
+        "",
+        "## Per-case delivery labels",
+        "",
+        "| case | behavior | delivered | chunk | form |",
+        "|---|---|---|---|---|",
+    ]
+    for r in runs:
+        res = r.results or {}
+        eb = res.get("expected_behavior") or {}
+        lbl = res.get("judge_label") or {}
+        lines.append(
+            f"| {r.case_id} | {eb.get('behavior')} | {lbl.get('delivered')} | "
+            f"{lbl.get('first_delivery_chunk')} | {lbl.get('form')} |"
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+async def run_tact_suite(adapter: BenchmarkAdapter, output_dir: "str | Path", split: str = "all") -> dict:
+    """Drive all cases → judge → metrics → write run.json/metrics.json/report.md.
+
+    The cross-protocol orchestration the generic runner doesn't do (it only runs
+    drivers). Per-case event logs are written by the driver into event_logs/.
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    run_config = SimpleNamespace(output_dir=output_dir)
+
+    runs: list[ReplayRun] = []
+    case_rows: list[dict] = []
+    for case in adapter.case_source.iter_cases(split):
+        replay_run = await adapter.scenario_driver.run(case, None, run_config)
+        if adapter.examiner is not None and (replay_run.results or {}).get("trajectory") is not None:
+            label = adapter.examiner.label(
+                replay_run.results["trajectory"],
+                replay_run.results.get("item") or {},
+                (case.inputs or {}).get("user_script"),
+            )
+            replay_run.results["judge_label"] = label
+        runs.append(replay_run)
+        case_rows.append({
+            "case_id": case.case_id,
+            "final_status": replay_run.final_status,
+            "event_log_path": str(replay_run.event_log_path) if replay_run.event_log_path else None,
+        })
+
+    agg = aggregate_tact_metrics(runs)
+    arm = getattr(adapter.scenario_driver, "arm", None)
+    (output_dir / "run.json").write_text(json.dumps(
+        {"adapter": adapter.name, "version": adapter.version, "arm": arm, "cases": case_rows}, indent=2))
+    (output_dir / "metrics.json").write_text(json.dumps(agg, indent=2))
+    (output_dir / "report.md").write_text(_render_tact_report(adapter, runs, agg))
+    return {"metrics": agg, "n_cases": len(runs), "output_dir": str(output_dir)}

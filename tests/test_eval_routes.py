@@ -24,7 +24,7 @@ def _make_app(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_get_eval_adapters_returns_six_entries(tmp_path: Path) -> None:
+async def test_get_eval_adapters_returns_all_entries(tmp_path: Path) -> None:
     app = _make_app(tmp_path)
     server = TestServer(app)
     await server.start_server()
@@ -33,11 +33,11 @@ async def test_get_eval_adapters_returns_six_entries(tmp_path: Path) -> None:
             resp = await client.get("/eval/adapters")
             assert resp.status == 200
             data = await resp.json()
-            assert len(data) == 6
+            assert len(data) == 7
             names = {a["name"] for a in data}
             assert names == {
                 "harness_native", "vocalbench", "voicebench",
-                "humdial_fdbench", "candor", "full_duplex_bench",
+                "humdial_fdbench", "candor", "full_duplex_bench", "tact_bench",
             }
     finally:
         await server.close()
@@ -249,14 +249,18 @@ async def test_get_eval_static_css(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_post_eval_runs_all_six_adapters_dispatch(tmp_path: Path) -> None:
+async def test_post_eval_runs_all_adapters_dispatch(tmp_path: Path) -> None:
     from companion_harness.evals.registry import ADAPTERS
+    # tact_bench's generic dispatch loads the real MiniCPM-o model (it has no
+    # synthetic mode); this HTTP-plumbing test only checks that dispatch returns
+    # "started", so skip the GPU-requiring adapter here.
+    dispatchable = [n for n in ADAPTERS if n != "tact_bench"]
     app = _make_app(tmp_path)
     server = TestServer(app)
     await server.start_server()
     try:
         async with TestClient(server) as client:
-            for name in ADAPTERS:
+            for name in dispatchable:
                 resp = await client.post(
                     "/eval/runs",
                     data=json.dumps({"adapter": name}),

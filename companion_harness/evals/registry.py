@@ -50,6 +50,11 @@ def _build_full_duplex_bench_v1() -> BenchmarkAdapter:
     return build_v1()
 
 
+def _build_tact_bench() -> BenchmarkAdapter:
+    from companion_harness.evals.adapters.tact_bench import build_tact_bench
+    return build_tact_bench()
+
+
 ADAPTERS: dict[str, AdapterInfo] = {
     "harness_native":    AdapterInfo("harness_native", "v1", "ready",          None, True,  False, _build_harness_native),
     "vocalbench":        AdapterInfo("vocalbench", "synthetic-v1", "synthetic_only", None, False, True, _build_vocalbench,       notes="real ingestion requires datasets extra"),
@@ -57,4 +62,5 @@ ADAPTERS: dict[str, AdapterInfo] = {
     "humdial_fdbench":   AdapterInfo("humdial_fdbench", "synthetic-v1", "synthetic_only", None, False, True, _build_humdial_fdbench, notes="real ingestion deferred"),
     "candor":            AdapterInfo("candor", "synthetic-v1", "synthetic_only", None, False, True, _build_candor,             notes="real CANDOR data deferred"),
     "full_duplex_bench": AdapterInfo("full_duplex_bench", "v1", "synthetic_only", None, False, True, _build_full_duplex_bench_v1, notes="real FDB data deferred"),
+    "tact_bench":        AdapterInfo("tact_bench", "v1", "ready", 12, True, False, _build_tact_bench, notes="text/silence-clock; needs MiniCPM-o (+OPENAI_API_KEY for judge). CLI: --input-mode/--arm/--judge"),
 }
