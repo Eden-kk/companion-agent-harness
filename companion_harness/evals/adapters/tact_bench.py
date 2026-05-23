@@ -167,6 +167,9 @@ _ARMS = {
     "prompted": _PROMPTED_SYSTEM_PROMPT,
     "prompted_terse": _PROMPTED_TERSE_SYSTEM_PROMPT,
     "monitor_stream": _MONITOR_STREAM_SYSTEM_PROMPT,
+    # `audio` reuses the prompted policy verbatim; the only difference is that the
+    # Layer-3 per-tick probe is fed through the model's audio path (text output).
+    "audio": _PROMPTED_SYSTEM_PROMPT,
 }
 
 

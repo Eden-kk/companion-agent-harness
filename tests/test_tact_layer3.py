@@ -26,7 +26,7 @@ def test_load_layer3_has_28_cases_with_expanded_state():
     cases = load_layer3()
     assert len(cases) == 28
     ids = {c.id for c in cases}
-    assert "TC1" in ids and "TC29" in ids and "TC5" not in ids
+    assert "TC1" in ids and "TC28" in ids  # renumbered to TC1–28 contiguous (master 5986d40)
     tc1 = next(c for c in cases if c.id == "TC1")
     assert len(tc1.user_state) == tc1.ticks == 11
     # "m:0-8","b:9-10" → mid through 8, breakpoint 9-10
@@ -39,17 +39,17 @@ def test_load_layer3_has_28_cases_with_expanded_state():
 
 def test_multi_item_and_third_party_parse():
     cases = {c.id: c for c in load_layer3()}
-    tc20 = cases["TC20"]  # 4 items incl supersession + a drop + an urgent NOW
-    assert len(tc20.items) == 4
-    smoke = next(i for i in tc20.items if i.id == "smoke")
+    tc19 = cases["TC19"]  # 4 items incl supersession + a drop + an urgent NOW (was TC20)
+    assert len(tc19.items) == 4
+    smoke = next(i for i in tc19.items if i.id == "smoke")
     assert smoke.expected.kind == "NOW" and smoke.expected.interrupt
-    eta_old = next(i for i in tc20.items if i.id == "eta_old")
+    eta_old = next(i for i in tc19.items if i.id == "eta_old")
     assert eta_old.expected.kind == "DROP"
-    eta_new = next(i for i in tc20.items if i.id == "eta_new")
+    eta_new = next(i for i in tc19.items if i.id == "eta_new")
     assert eta_new.extra.get("supersedes") == "eta_old"
-    tc22 = cases["TC22"]  # third_party present throughout; privacy → SILENT_NOTIFY
-    assert all(tc22.third_party)
-    meds = tc22.items[0]
+    tc21 = cases["TC21"]  # third_party present throughout; privacy → SILENT_NOTIFY (was TC22)
+    assert all(tc21.third_party)
+    meds = tc21.items[0]
     assert meds.expected == Action("NOW", "SILENT_NOTIFY")
 
 

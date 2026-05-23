@@ -63,7 +63,9 @@ def _load_layer2_context(path: Path = _LAYER2) -> dict:
 def _parse_token(raw: str) -> str:
     up = (raw or "").upper()
     for tok, action in _TOKEN_TO_ACTION:
-        if tok in up:
+        # accept both "NOW_BRIEF" and the spoken "NOW BRIEF" (audio arm answers
+        # in natural speech, where Kokoro renders the underscore as a pause)
+        if tok in up or tok.replace("_", " ") in up:
             return action
     if "NOW" in up:
         return "NOW:SPEAK_BRIEF"  # bare NOW → default form
@@ -75,8 +77,13 @@ def _payload_for(item: Layer3Item, ctx_case: dict) -> str:
     return p or f"a {item.id.replace('_', ' ')} update"
 
 
-def _probe_prompt(case: Layer3Case, item: Layer3Item, t: int, arm_prompt: str, ctx_case: dict) -> str:
-    lines = [arm_prompt, ""]
+def _situational_probe(case: Layer3Case, item: Layer3Item, t: int, ctx_case: dict) -> str:
+    """The dynamic, per-tick situational body of the probe (no system prompt).
+
+    The text arms prepend the arm's system prompt to this; the audio arm renders
+    this body to speech and passes the system prompt separately.
+    """
+    lines = []
     lines.append(f"Conversation topic: {ctx_case.get('topic', '?')}.")
     lines.append(f"Right now (second {t}) the user is {_STATE_WORD.get(case.user_state[t], '?')}.")
     if ctx_case.get("standing"):
@@ -103,6 +110,10 @@ def _probe_prompt(case: Layer3Case, item: Layer3Item, t: int, arm_prompt: str, c
         "WAIT, DROP, NOW_BRIEF, NOW_FULL, NOW_SILENT, or NOW_CHIME."
     )
     return "\n".join(lines)
+
+
+def _probe_prompt(case: Layer3Case, item: Layer3Item, t: int, arm_prompt: str, ctx_case: dict) -> str:
+    return arm_prompt + "\n\n" + _situational_probe(case, item, t, ctx_case)
 
 
 def _priority(item: Layer3Item) -> tuple:
@@ -229,9 +240,53 @@ def elicit_decisions_monitor(case: Layer3Case, model: object, ctx_case: dict) ->
     return resolved
 
 
-def run_arm(cases: list[Layer3Case], model: object, arm: str, ctx: dict) -> dict:
+# --------------------------------------------------------------------------- #
+# Audio arm — prompted policy, but the per-tick probe is fed as AUDIO.
+# "Replace the input with audio": the situational probe is rendered to 16 kHz
+# speech and sent through the model's audio path; the system prompt stays text
+# and the output stays text (parsed mechanically). Isolates the text->audio
+# modality penalty against the `prompted` text arm.
+# --------------------------------------------------------------------------- #
+def _default_audio_tts():
+    """Lazy Kokoro TTS callable (text -> 16 kHz float32). Raises if TTS absent."""
+    from companion_harness.evals.adapters.tact_bench import _load_kokoro, _synthesize_16k
+
+    kokoro = _load_kokoro()
+    if kokoro is None:
+        raise RuntimeError(
+            "audio arm requires Kokoro TTS; set KOKORO_MODEL_PATH/KOKORO_VOICES_PATH"
+        )
+    return lambda text: _synthesize_16k(kokoro, text)
+
+
+def elicit_decisions_audio(case: Layer3Case, model: object, ctx_case: dict, tts, system_prompt: str | None = None) -> dict:
+    """Like elicit_decisions, but each per-item probe is spoken (audio in, text out)."""
+    sys_prompt = system_prompt if system_prompt is not None else _ARMS["audio"]
+    resolved: dict[str, dict] = {}
+    for t in range(case.ticks):
+        pending = [it for it in case.items if it.t_avail <= t and it.id not in resolved]
+        now_bids: list[tuple] = []
+        for item in pending:
+            audio = tts(_situational_probe(case, item, t, ctx_case))
+            raw = model.chat_audio(audio, system_prompt=sys_prompt, max_new_tokens=6)  # type: ignore[attr-defined]
+            action = _parse_token(raw)
+            if action == "DROP":
+                resolved[item.id] = {"tick": t, "action": "DROP"}
+            elif action.startswith("NOW"):
+                now_bids.append((item, action))
+        if now_bids:
+            now_bids.sort(key=lambda x: _priority(x[0]))
+            item, action = now_bids[0]
+            resolved[item.id] = {"tick": t, "action": action}
+    return resolved
+
+
+def run_arm(cases: list[Layer3Case], model: object, arm: str, ctx: dict, tts=None) -> dict:
     if arm == "monitor_stream":
         return {c.id: elicit_decisions_monitor(c, model, ctx.get(c.id, {})) for c in cases}
+    if arm == "audio":
+        tts = tts if tts is not None else _default_audio_tts()
+        return {c.id: elicit_decisions_audio(c, model, ctx.get(c.id, {}), tts) for c in cases}
     arm_prompt = _ARMS[arm]
     return {c.id: elicit_decisions(c, model, arm_prompt, ctx.get(c.id, {})) for c in cases}
 

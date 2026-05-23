@@ -224,6 +224,29 @@ class MiniCPMStreamingModel:
                 enable_thinking=False,
             )
 
+    def chat_audio(self, audio: np.ndarray, system_prompt: str = "", max_new_tokens: int = 8) -> str:
+        """One-shot audio question -> text answer (mirrors chat(), input via audio).
+
+        Same stateless base-model path as chat(), but the user turn carries a
+        16 kHz float32 waveform instead of text. generate_audio=False, so the
+        output is still text (parsed by the caller). Used by the TACT Layer-3
+        ``audio`` arm to feed the per-tick probe through the audio modality while
+        keeping the decision output textual.
+        """
+        msgs: list[dict] = []
+        if system_prompt:
+            msgs.append({"role": "system", "content": system_prompt})
+        msgs.append({"role": "user", "content": [audio]})
+        with torch.no_grad():
+            return self._base.chat(
+                msgs=msgs,
+                tokenizer=self._tokenizer,
+                sampling_rate=_SAMPLE_RATE,
+                max_new_tokens=max_new_tokens,
+                generate_audio=False,
+                enable_thinking=False,
+            )
+
     def classify_yes_no(self, prompt: str) -> tuple[bool, float]:
         """Logprob-based binary classification.
 
