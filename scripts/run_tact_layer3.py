@@ -22,6 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from companion_harness.evals.adapters.tact_bench import _ARMS  # noqa: E402
 from companion_harness.evals.adapters.tact_bench_layer3 import (  # noqa: E402
     load_layer3,
     perfect_decisions,
@@ -59,6 +60,57 @@ def _shared_model_factory():
 
 def _fmt(v) -> str:
     return f"{v:.2f}" if isinstance(v, (int, float)) else "n/a"
+
+
+_BACKGROUND = (
+    "**What this measures.** TACT-Bench scores *when an always-on assistant should surface "
+    "a result it already holds* on its single audio channel — deliver now / defer to a pause "
+    "/ drop, and in what form — with **staying silent a first-class correct action**. Layer 3 "
+    "is the formal per-tick ground truth, scored **mechanically (no LLM judge)**, so results "
+    "are deterministic and reproducible.\n\n"
+    "**Cases.** 28 model-agnostic scenarios (TC1–TC29, no TC5; "
+    "`cases/layer3-formal-trajectories.yaml`). Each is a tick grid (1s ticks) with a "
+    "run-length user state (m=mid-utterance, b=breakpoint/pause, i=idle), a queue of held "
+    "items (urgency / relevance / standing-order + §3.3 fields: supersedes, stale, privacy, "
+    "retryable, condition, third_party, modality), and a per-tick ground-truth action.\n\n"
+    "**Per tick** the model is shown the topic, the user's state, and the pending item(s), and "
+    "emits a `NOW / WAIT / DROP` decision (+form `BRIEF|FULL|SILENT|CHIME` if NOW). The "
+    "`monitor_stream` arm does this via an explicit silent `<monitor>` block (intervention 2b, "
+    "docs/multi-stream-simulation-and-tact-bench.md). **Single-channel rule:** at most one NOW "
+    "per tick — simultaneous NOWs serialize (higher urgency first).\n\n"
+    "**Scoring.** The sparse gt expands deterministically: an item is WAIT from `t_avail` until "
+    "its decisive tick, then its action, then DONE. Per-item outcome ∈ {correct, wrong_form, "
+    "miss, cried_wolf}. Metrics — **action_accuracy** (deliver/suppress + timing right, form "
+    "aside), **form_accuracy** (of on-time deliveries, form matches), **cried_wolf** (premature "
+    "or should-drop ÷ deliveries; lower better), **urgent_miss** (high-urgency NOW not delivered "
+    "by deadline; lower better). Reference columns: **oracle** = gt ceiling, **never** = "
+    "always-silent floor."
+)
+
+
+def _repro_line(arms: list[str]) -> str:
+    return (
+        "**Reproduce.** `PYTHONPATH=. python scripts/run_tact_layer3.py --arms "
+        + " ".join(arms) + "` (re-render from saved decisions: add `--render-only`). "
+        "Scorer: `companion_harness/evals/adapters/tact_bench_layer3.py`; elicitation: "
+        "`..._layer3_run.py`."
+    )
+
+
+def _setup_md(arms: list[str]) -> str:
+    L = ["## Setup & background", "", _BACKGROUND, "",
+         "**The arms** (the only thing that varies — same cases, same per-tick state, "
+         "differ only by system prompt):", ""]
+    for a in arms:
+        L.append(f"<details><summary><b>{a}</b> system prompt</summary>")
+        L.append("")
+        L.append("```")
+        L.append(_ARMS.get(a, "(unknown arm)"))
+        L.append("```")
+        L.append("</details>")
+        L.append("")
+    L += [_repro_line(arms), ""]
+    return "\n".join(L)
 
 
 def _outcome_str(case, item_id, decisions) -> str:
@@ -99,6 +151,7 @@ def _md(cols, scores, cases, arms, decisions, meta) -> str:
          f"- Model: `{meta['model']}` | cases: {len(cases)} | arms: {', '.join(arms)} | date: {meta['date']}",
          "- Scoring is deterministic (per-tick gt); columns include the gt **oracle** (ceiling) "
          "and **never-deliver** (floor) for reference.", "",
+         _setup_md(arms),
          "## Metrics", "", "| metric | direction | " + " | ".join(cols) + " |",
          "|---|---|" + "---|" * len(cols)]
     for n, d in _METRICS:
@@ -144,6 +197,31 @@ def _html(cols, scores, cases, arms, decisions, meta) -> str:
                 f"gt <b>{exp}@{it.decisive_tick}</b></p><ul class='arms'>{arms_li}</ul>"
             )
         blocks.append(f"<div class='case'><h3>{c.id} — {c.ticks} ticks</h3>{''.join(items_html)}</div>")
+    setup = (
+        "<h2>Setup &amp; background</h2>"
+        "<p>TACT-Bench scores <i>when an always-on assistant should surface a result it already "
+        "holds</i> on its single audio channel (deliver / defer / drop, and in what form), with "
+        "staying silent a first-class correct action. <b>Layer 3</b> is the formal per-tick ground "
+        "truth, scored <b>mechanically (no LLM judge)</b> — deterministic and reproducible.</p>"
+        "<p><b>Cases:</b> 28 model-agnostic scenarios (TC1–TC29, no TC5). Each is a 1s tick grid "
+        "with a user state (m=mid-utterance, b=pause, i=idle), a queue of held items "
+        "(urgency/relevance/standing + §3.3: supersedes, stale, privacy, retryable, condition, "
+        "third_party, modality), and a per-tick gt action. Per tick the model emits NOW/WAIT/DROP "
+        "(+form BRIEF|FULL|SILENT|CHIME); the <code>monitor_stream</code> arm uses an explicit "
+        "silent &lt;monitor&gt; block (intervention 2b). Single-channel rule: ≤1 NOW per tick.</p>"
+        "<p><b>Metrics:</b> action_accuracy (deliver/suppress + timing right, form aside); "
+        "form_accuracy (of on-time deliveries); cried_wolf (premature/should-drop ÷ deliveries; "
+        "lower better); urgent_miss (high-urgency NOW missed; lower better). <b>oracle</b> = gt "
+        "ceiling, <b>never</b> = silence floor.</p>"
+        "<p><b>The arms</b> (same cases, differ only by system prompt):</p>"
+        + "".join(
+            f"<details><summary><b>{a}</b> system prompt</summary>"
+            f"<pre class='prompt'>{html.escape(_ARMS.get(a, '?'))}</pre></details>"
+            for a in arms
+        )
+        + f"<p><b>Reproduce:</b> <code>PYTHONPATH=. python scripts/run_tact_layer3.py --arms "
+        f"{' '.join(arms)}</code> (re-render: <code>--render-only</code>).</p>"
+    )
     return f"""<!doctype html><html><head><meta charset="utf-8"><title>TACT-Bench Layer-3</title>
 <style>
  body{{font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;max-width:960px;margin:2rem auto;color:#1a1a1a}}
@@ -153,10 +231,13 @@ def _html(cols, scores, cases, arms, decisions, meta) -> str:
  .meta{{color:#555;font-size:.9rem}} img{{max-width:100%;border:1px solid #eee}}
  .case{{margin:.7rem 0;padding:.4rem .8rem;border:1px solid #eee;border-radius:6px}} .case h3{{font-size:1rem;margin:.2rem 0}}
  .desc{{margin:.3rem 0 .1rem;color:#333}} .arms{{margin:.1rem 0 .4rem 1rem}} code{{font-size:.85em}}
+ pre.prompt{{background:#f7f7f8;border:1px solid #eee;padding:.5rem .7rem;white-space:pre-wrap;font-size:.82rem;border-radius:4px}}
+ details{{margin:.3rem 0}} summary{{cursor:pointer}}
 </style></head><body>
 <h1>TACT-Bench Layer-3 — mechanical scorer (no LLM judge)</h1>
 <p class="meta">Model <code>{meta['model']}</code> · {len(cases)} cases · arms: {', '.join(arms)} · {meta['date']}<br>
 Deterministic per-tick scoring; <b>oracle</b> = gt ceiling, <b>never</b> = silence floor.</p>
+{setup}
 <h2>Metrics</h2>
 <table><thead><tr><th>metric</th><th>direction</th>{head}</tr></thead><tbody>{mrows}</tbody></table>
 <img src="data:image/png;base64,{chart}">
@@ -172,11 +253,26 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--arms", nargs="+", default=["vanilla", "prompted", "monitor_stream"])
     p.add_argument("--output", default="reports/tact-layer3")
+    p.add_argument("--render-only", action="store_true", dest="render_only",
+                   help="re-render report.md/html from saved decisions.json (no model run)")
     args = p.parse_args()
 
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=True)
     cases = load_layer3()
+
+    if args.render_only:
+        decisions = json.loads((out / "decisions.json").read_text())
+        cols = list(decisions.keys())
+        arms = [c for c in cols if c not in ("oracle", "never")]
+        scores = {c: score_all(cases, decisions[c]) for c in cols}
+        meta = {"model": "openbmb/MiniCPM-o-4_5", "date": date.today().isoformat()}
+        (out / "report.md").write_text(_md(cols, scores, cases, arms, decisions, meta))
+        (out / "report.html").write_text(_html(cols, scores, cases, arms, decisions, meta))
+        (out / "scores.json").write_text(json.dumps(scores, indent=2))
+        print(f"re-rendered {out}/report.md, report.html, scores.json (no model)")
+        return 0
+
     ctx = load_context()
     model_factory = _shared_model_factory()
 
