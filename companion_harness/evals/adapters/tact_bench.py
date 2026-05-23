@@ -279,6 +279,7 @@ def _synthesize_16k(kokoro: object | None, text: str) -> np.ndarray:
     if kokoro is None:
         return np.zeros(0, dtype=np.float32)
     import asyncio  # noqa: WPS433
+    import concurrent.futures  # noqa: WPS433
 
     async def _collect() -> np.ndarray:
         out: list[np.ndarray] = []
@@ -286,7 +287,11 @@ def _synthesize_16k(kokoro: object | None, text: str) -> np.ndarray:
             out.append(np.frombuffer(pcm16, dtype=np.int16).astype(np.float32) / 32768.0)
         return np.concatenate(out) if out else np.zeros(0, dtype=np.float32)
 
-    raw_24k = asyncio.new_event_loop().run_until_complete(_collect())
+    # Run Kokoro's async synth in a worker thread with its own loop — the driver's
+    # run() is already inside an event loop, so a nested run_until_complete here
+    # would raise "Cannot run the event loop while another loop is running".
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+        raw_24k = ex.submit(lambda: asyncio.run(_collect())).result()
     if len(raw_24k) == 0:
         return np.zeros(0, dtype=np.float32)
     ratio = _SAMPLE_RATE / 24000.0  # nearest-neighbour 24k -> 16k

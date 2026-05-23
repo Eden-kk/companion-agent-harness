@@ -64,6 +64,28 @@ def test_audio_mode_runs_and_feeds_audio_chunks(tmp_path):
     assert {"benchmark_case_started", "held_result_injected", "benchmark_case_completed"} <= types
 
 
+class _FakeKokoro:
+    """Async TTS stub: yields a fixed PCM16 chunk so the synth path (worker-thread
+    event loop) is exercised under the driver's running loop."""
+
+    async def synthesize(self, text, prosody):
+        import numpy as np
+
+        yield (np.ones(2400, dtype=np.int16) * 1000).tobytes()  # ~0.1s of tone @24k
+
+
+def test_audio_mode_with_async_tts_does_not_nest_event_loops(tmp_path):
+    case = _case("TC1-defer")
+    fake = _FakeModel()
+    driver = TactMiniCPMDriver(
+        input_mode="audio", model_factory=lambda: fake, kokoro_factory=lambda: _FakeKokoro(),
+    )
+    rr = asyncio.run(driver.run(case, None, _RC(tmp_path)))  # must not raise nested-loop error
+    assert rr.final_status == "completed"
+    # rendered tone makes at least one chunk non-silent in the speaking mask
+    assert any(rr.results["speaking_mask"])
+
+
 def test_unknown_input_mode_rejected(tmp_path):
     import pytest
 
