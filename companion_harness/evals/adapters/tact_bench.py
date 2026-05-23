@@ -21,9 +21,11 @@ import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Iterable
 
 from companion_harness.event_logger import EventLogger
+from companion_harness.evals.schemas import MetricValue
 from companion_harness.schemas import EvaluationCase, Event, ReplayRun
 
 _DATA_DIR = Path(__file__).parent / "tact_bench_data"
@@ -518,3 +520,171 @@ class DeliveryJudge:
     def dump_labels(labels: dict, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(labels, indent=2))
+
+
+# ===========================================================================
+# Metrics  (model-agnostic) — plan-tact-bench-minicpm-adapter.md PR4
+#
+# Each Metric implements the per-case Metric.compute(replay_run) -> MetricValue
+# seam, emitting its per-case contribution (in_scope + num/den or pending).
+# aggregate_tact_metrics() combines those contributions across all cases of one
+# arm into the headline rates — the cross-case aggregation point the framework
+# defers to the reporter (PR5 calls it). A delivery only counts if
+# first_delivery_chunk >= t_available (pre-availability matches are phantom).
+# ===========================================================================
+
+_PENDING = ("pending",)
+
+
+def _first_breakpoint_at_or_after(mask: list[bool], t: int) -> "int | None":
+    for i in range(max(t, 0), len(mask)):
+        if not mask[i]:
+            return i
+    return None
+
+
+def _case_facts(replay_run: ReplayRun) -> SimpleNamespace:
+    r = replay_run.results or {}
+    eb = r.get("expected_behavior") or {}
+    label = r.get("judge_label")
+    mask = r.get("speaking_mask") or []
+    t_avail = eb.get("t_available")
+    t_avail = int(t_avail) if t_avail is not None else -1
+    pending = label is None or label.get("delivered") is None
+    fdc = None if pending else label.get("first_delivery_chunk")
+    delivered = (not pending) and bool(label.get("delivered")) and fdc is not None
+    valid = bool(delivered and fdc is not None and fdc >= t_avail)
+    return SimpleNamespace(
+        exposes=[str(e) for e in (eb.get("exposes") or [])],
+        behavior=eb.get("behavior"),
+        t_avail=t_avail,
+        stale=eb.get("becomes_stale_at"),
+        mask=mask,
+        pending=pending,
+        fdc=fdc,
+        delivered=delivered,
+        valid=valid,
+        form=(None if pending else label.get("form")),
+    )
+
+
+# --- per-case contribution functions: None=out-of-scope, _PENDING, or (num, den) ---
+
+def _cried_wolf_contrib(f: SimpleNamespace):
+    if not any(e.startswith("cried-wolf") for e in f.exposes):
+        return None
+    if f.pending:
+        return _PENDING
+    if not f.delivered:
+        return (0, 0)  # no delivery → not an interrupt
+    if f.behavior == "DROP":
+        unwanted = 1
+    elif f.behavior == "DEFER":
+        bp = _first_breakpoint_at_or_after(f.mask, f.t_avail)
+        unwanted = 1 if (bp is None or f.fdc < bp) else 0
+    else:
+        unwanted = 0
+    return (unwanted, 1)
+
+
+def _urgent_miss_contrib(f: SimpleNamespace):
+    if "urgent-miss" not in f.exposes:
+        return None
+    if f.pending:
+        return _PENDING
+    on_time = f.valid and (not isinstance(f.stale, int) or f.fdc <= f.stale)
+    return (0 if on_time else 1, 1)
+
+
+def _breakpoint_hit_contrib(f: SimpleNamespace):
+    if "breakpoint-hit" not in f.exposes:
+        return None
+    if f.pending:
+        return _PENDING
+    if not f.valid:
+        return (0, 0)  # only actual deliveries are placed
+    hit = 1 if (0 <= f.fdc < len(f.mask) and not f.mask[f.fdc]) else 0
+    return (hit, 1)
+
+
+def _delivery_rate_contrib(f: SimpleNamespace):
+    if f.behavior == "DROP":
+        return None  # delivery is never correct for DROP cases
+    if f.pending:
+        return _PENDING
+    return (1 if f.valid else 0, 1)
+
+
+def _conditional_form_contrib(f: SimpleNamespace):
+    if not any(e in ("form", "form-accuracy") for e in f.exposes):
+        return None
+    if f.pending:
+        return _PENDING
+    if not f.valid:
+        return (0, 0)  # form is conditioned on an actual valid delivery
+    return (1 if f.form == "BRIEF" else 0, 1)
+
+
+_METRIC_FNS = {
+    "cried_wolf": (_cried_wolf_contrib, True),       # zero-when-no-deliveries
+    "urgent_miss": (_urgent_miss_contrib, False),
+    "breakpoint_hit": (_breakpoint_hit_contrib, False),
+    "delivery_rate": (_delivery_rate_contrib, False),
+    "conditional_form": (_conditional_form_contrib, False),
+}
+
+
+def _contrib_to_value(contrib) -> dict:
+    if contrib is None:
+        return {"in_scope": False}
+    if contrib == _PENDING:
+        return {"in_scope": True, "pending": True}
+    return {"in_scope": True, "num": contrib[0], "den": contrib[1]}
+
+
+def aggregate_tact_metrics(replay_runs: list[ReplayRun]) -> dict:
+    """Combine per-case contributions into the headline rates for one arm.
+
+    `None` = n/a (no qualifying delivery, or judge PENDING). cried_wolf is 0.0
+    when there were no deliveries to cry wolf with.
+    """
+    facts = [_case_facts(r) for r in replay_runs]
+    out: dict[str, float | None] = {}
+    for name, (fn, zero_when_empty) in _METRIC_FNS.items():
+        contribs = [c for c in (fn(f) for f in facts) if c is not None]  # in-scope only
+        if any(c == _PENDING for c in contribs):
+            out[name] = None
+            continue
+        num = sum(c[0] for c in contribs)
+        den = sum(c[1] for c in contribs)
+        if den == 0:
+            out[name] = 0.0 if zero_when_empty else None
+        else:
+            out[name] = num / den
+    return out
+
+
+def _make_metric(metric_name: str):
+    fn = _METRIC_FNS[metric_name][0]
+
+    class _TactMetric:
+        name = metric_name
+
+        def compute(self, replay_run: ReplayRun) -> MetricValue:
+            value = _contrib_to_value(fn(_case_facts(replay_run)))
+            return MetricValue(name=metric_name, value=value, unit=None, aggregation="distribution")
+
+    _TactMetric.__name__ = "".join(p.capitalize() for p in metric_name.split("_")) + "Metric"
+    return _TactMetric
+
+
+CriedWolf = _make_metric("cried_wolf")
+UrgentMiss = _make_metric("urgent_miss")
+BreakpointHit = _make_metric("breakpoint_hit")
+DeliveryRate = _make_metric("delivery_rate")
+ConditionalForm = _make_metric("conditional_form")
+
+
+def tact_metrics() -> list:
+    """The five per-case Metric instances, in report order."""
+    return [CriedWolf(), UrgentMiss(), BreakpointHit(), DeliveryRate(), ConditionalForm()]
