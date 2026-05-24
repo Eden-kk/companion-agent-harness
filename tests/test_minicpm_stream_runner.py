@@ -137,6 +137,52 @@ def test_unknown_modality_raises():
         run_case("TC1", "prompted", "video", model)  # type: ignore[arg-type]
 
 
+def test_give_user_state_true_injects_label():
+    """give_user_state=True: every prefill call's text_list contains '[user state: ...'."""
+    model = _FakeModel(_tc1_responses())
+    emissions = run_case("TC1", "prompted", "text", model, give_user_state=True)  # type: ignore[arg-type]
+
+    duplex = model._duplex
+    for call in duplex._prefill_calls:
+        tl = call["text_list"]
+        assert tl is not None, "text_list must be present when give_user_state=True"
+        combined = " ".join(tl)
+        assert "[user state:" in combined, f"label missing from text_list: {tl!r}"
+
+
+def test_give_user_state_false_no_label():
+    """give_user_state=False (default): text_list never contains '[user state:'."""
+    model = _FakeModel(_tc1_responses())
+    emissions = run_case("TC1", "prompted", "text", model, give_user_state=False)  # type: ignore[arg-type]
+
+    duplex = model._duplex
+    for call in duplex._prefill_calls:
+        tl = call["text_list"] or []
+        combined = " ".join(tl)
+        assert "[user state:" not in combined, f"unexpected label in text_list: {tl!r}"
+
+
+def test_give_user_state_label_values():
+    """Labels map m/h/b/i to expected tier2 phrasing (not raw single-letter keys)."""
+    from companion_harness.evals.adapters.tact_bench import load_tier2
+    expected_labels = set(load_tier2()["user_state_labels"].values())
+
+    model = _FakeModel(_tc1_responses())
+    run_case("TC1", "prompted", "text", model, give_user_state=True)  # type: ignore[arg-type]
+
+    duplex = model._duplex
+    seen_labels = set()
+    for call in duplex._prefill_calls:
+        for part in (call["text_list"] or []):
+            if "[user state:" in part:
+                # extract the label value after "[user state: "
+                val = part.split("[user state:", 1)[1].rstrip("]").strip()
+                seen_labels.add(val)
+    # every seen label must be a known tier2 label
+    assert seen_labels, "no user-state labels found"
+    assert seen_labels.issubset(expected_labels), f"unknown labels: {seen_labels - expected_labels}"
+
+
 def test_audio_modality_calls_audio_view(monkeypatch):
     """audio modality uses audio_view(); each tick gets real float32 audio."""
     import companion_harness.evals.adapters.minicpm_stream_runner as mod

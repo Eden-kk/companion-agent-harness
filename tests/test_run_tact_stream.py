@@ -61,12 +61,12 @@ def patched_runners(monkeypatch, tmp_path):
 
     call_log: list[tuple] = []
 
-    def fake_minicpm_run_case(case_id, arm, input_modality, model):
-        call_log.append(("minicpm", case_id, arm, input_modality))
+    def fake_minicpm_run_case(case_id, arm, input_modality, model, *, give_user_state=False):
+        call_log.append(("minicpm", case_id, arm, input_modality, give_user_state))
         return _ok_emission(case_id)
 
-    def fake_gpt_run_case(case_id, arm, *, realtime=True, **kw):
-        call_log.append(("gpt", case_id, arm))
+    def fake_gpt_run_case(case_id, arm, *, realtime=True, give_user_state=False, **kw):
+        call_log.append(("gpt", case_id, arm, give_user_state))
         return _ok_emission(case_id)
 
     def fake_monitor_run_case(case_id, model_obj, model_kind):
@@ -248,6 +248,79 @@ def test_limit_flag(patched_runners):
     # should have called run_case exactly 2 times (limit=2, k=1)
     minicpm_calls = [c for c in calls if c[0] == "minicpm"]
     assert len(minicpm_calls) == 2
+
+
+def test_prompted_audio_state_dispatches_give_user_state_true(patched_runners):
+    """prompted_audio_state condition dispatches with give_user_state=True."""
+    tmp, calls = patched_runners
+    _run([
+        "--model", "minicpm",
+        "--arms", "prompted_audio_state",
+        "--cases", "TC1",
+        "--k", "1",
+        "--out", str(tmp),
+    ])
+    minicpm_calls = [c for c in calls if c[0] == "minicpm"]
+    assert len(minicpm_calls) == 1
+    # give_user_state is the 5th element of the tuple
+    assert minicpm_calls[0][4] is True, f"expected give_user_state=True, got: {minicpm_calls[0]}"
+
+
+def test_prompted_audio_dispatches_give_user_state_false(patched_runners):
+    """prompted_audio condition dispatches with give_user_state=False."""
+    tmp, calls = patched_runners
+    _run([
+        "--model", "minicpm",
+        "--arms", "prompted_audio",
+        "--cases", "TC1",
+        "--k", "1",
+        "--out", str(tmp),
+    ])
+    minicpm_calls = [c for c in calls if c[0] == "minicpm"]
+    assert len(minicpm_calls) == 1
+    assert minicpm_calls[0][4] is False, f"expected give_user_state=False, got: {minicpm_calls[0]}"
+
+
+def test_gpt_prompted_audio_state_dispatches_give_user_state_true(patched_runners):
+    """gpt prompted_audio_state dispatches with give_user_state=True."""
+    tmp, calls = patched_runners
+    _run([
+        "--model", "gpt-realtime-2",
+        "--arms", "prompted_audio_state",
+        "--cases", "TC1",
+        "--k", "1",
+        "--out", str(tmp),
+    ])
+    gpt_calls = [c for c in calls if c[0] == "gpt"]
+    assert len(gpt_calls) == 1
+    assert gpt_calls[0][3] is True, f"expected give_user_state=True, got: {gpt_calls[0]}"
+
+
+def test_default_arms_include_prompted_audio_state_when_tier2_applies(patched_runners, monkeypatch):
+    """Default arm list includes prompted_audio_state when tier2 apply_to has prompted_audio."""
+    import scripts.run_tact_stream as orch
+    from companion_harness.evals.adapters import tact_bench
+
+    monkeypatch.setattr(tact_bench, "load_tier2", lambda: {
+        "apply_to": ["prompted_audio"],
+        "user_state_labels": {},
+    })
+
+    tmp, calls = patched_runners
+    _run([
+        "--model", "minicpm",
+        "--cases", "TC1",
+        "--k", "1",
+        "--out", str(tmp),
+    ])
+    conditions_run = {c[2] for c in calls if c[0] == "minicpm"}
+    assert "prompted" in conditions_run or any(
+        c[1] == "TC1" and c[4] is True for c in calls if c[0] == "minicpm"
+    ), f"prompted_audio_state not dispatched; calls={calls}"
+    # More directly: check output directory exists
+    assert (tmp / "minicpm" / "prompted_audio_state").is_dir(), (
+        "prompted_audio_state condition directory missing"
+    )
 
 
 def test_render_only_skips_model_load(tmp_path, monkeypatch):

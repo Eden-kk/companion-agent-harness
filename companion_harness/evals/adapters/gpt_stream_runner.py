@@ -29,7 +29,7 @@ from companion_harness.evals.adapters.scenario_timeline import (
     _normalize_items,
     build_timeline,
 )
-from companion_harness.evals.adapters.tact_bench import _ARMS
+from companion_harness.evals.adapters.tact_bench import _ARMS, load_tier2
 from companion_harness.evals.adapters.tact_bench_layer3 import load_layer3
 from companion_harness.evals.adapters.tact_bench_stream_types import Emission
 from companion_harness.foreground_model_gpt_realtime import _pcm16_24k_b64
@@ -165,6 +165,7 @@ def run_case(
     transport_factory: Callable[[], ContinuousTransport] | None = None,
     max_response_tokens: int = 40,
     k: int = 1,
+    give_user_state: bool = False,
 ) -> list[Emission]:
     """Stream *case_id* through gpt-realtime-2 and return annotated Emissions.
 
@@ -186,6 +187,9 @@ def run_case(
     k
         Number of independent runs; returns the last run's emissions (caller
         aggregates across k if needed; run_tact_stream handles repetition).
+    give_user_state
+        When True, inject the per-tick user-state label as a text line in the
+        response prompt at each seam tick (Tier-2 signal ON).
     """
     if arm not in _ARMS:
         raise ValueError(f"unknown arm {arm!r}; expected one of {sorted(_ARMS)}")
@@ -210,6 +214,8 @@ def run_case(
     l3_obj = next((c for c in l3_cases if c.id == case_id), None)
     user_state: list[str] = l3_obj.user_state if l3_obj is not None else ["i"] * len(timeline.ticks)
 
+    tier2_labels: dict[str, str] = load_tier2()["user_state_labels"] if give_user_state else {}
+
     factory = transport_factory or _RealtimeContinuousTransport
 
     last_emissions: list[Emission] = []
@@ -227,6 +233,8 @@ def run_case(
                 transport_factory=factory,
                 max_response_tokens=max_response_tokens,
                 user_state=user_state,
+                give_user_state=give_user_state,
+                tier2_labels=tier2_labels,
             )
         )
     return last_emissions
@@ -245,6 +253,8 @@ async def _run_once(
     transport_factory,
     max_response_tokens: int,
     user_state: list[str],
+    give_user_state: bool = False,
+    tier2_labels: dict[str, str] | None = None,
 ) -> list[Emission]:
     transport = transport_factory()
     await transport.connect(instructions)
@@ -274,6 +284,10 @@ async def _run_once(
                 continue
             if not any(it["t_avail"] <= t for it in items):
                 continue
+
+            if give_user_state and tier2_labels:
+                label = tier2_labels.get(floor, floor)
+                await transport.inject_note(f"[user state: {label}]")
 
             try:
                 resp_text, onset_evt, onset_ts = await transport.commit_and_respond(max_tok)

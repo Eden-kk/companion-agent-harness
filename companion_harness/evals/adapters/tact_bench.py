@@ -189,6 +189,30 @@ def _load_arms() -> dict[str, str]:
 
 _ARMS = _load_arms()
 
+_TIER2_DEFAULTS = {
+    "apply_to": [],
+    "user_state_labels": {
+        "m": "the user is speaking (mid-utterance)",
+        "h": "the user paused to think — still their turn",
+        "b": "the user is at a natural pause (turn yielded)",
+        "i": "the user is idle / not engaged",
+    },
+}
+
+
+def load_tier2() -> dict:
+    _arms_yaml = _DATA_DIR / "cases" / "arms.yaml"
+    try:
+        import yaml  # noqa: WPS433
+        data = yaml.safe_load(_arms_yaml.read_text())
+        t2 = data.get("tier2") or {}
+        return {
+            "apply_to": list(t2.get("apply_to") or []),
+            "user_state_labels": dict(t2.get("user_state_labels") or _TIER2_DEFAULTS["user_state_labels"]),
+        }
+    except Exception:  # noqa: BLE001
+        return dict(_TIER2_DEFAULTS)
+
 
 def _held_result_turn(item: dict) -> str:
     """Held result as a private ChatML system turn (tact-bench REVISIONS R1+R2)."""

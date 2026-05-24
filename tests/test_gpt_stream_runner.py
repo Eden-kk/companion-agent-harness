@@ -315,6 +315,85 @@ def test_no_trigger_before_first_t_avail():
     assert len(commit_ticks) >= 1, "expected at least one trigger at t>=4"
 
 
+def test_give_user_state_true_injects_label_at_seam():
+    """give_user_state=True: inject_note is called with '[user state:' at each seam tick."""
+    # ticks 0,1 are 'm' (no seam); ticks 2,3 are 'b'/'i' (seams); t_avail=1
+    user_state = ["m", "m", "b", "i"]
+    injected = []
+
+    class CaptureTransport(ContinuousTransport):
+        async def connect(self, instructions): pass
+        async def append_audio(self, b64): pass
+        async def inject_note(self, text):
+            injected.append(text)
+        async def commit_and_respond(self, max_output_tokens):
+            return "", "", 0.0
+        async def close(self): pass
+
+    fake_timeline = _fake_build_timeline("TC1", ticks=4, t_avail=1)
+    l3_case = _fake_l3_case("TC1", ticks=4, t_avail=1)
+    items = _fake_items(t_avail=1)
+    l3_obj = _fake_l3_obj("TC1", 4, user_state=user_state)
+
+    with (
+        patch("companion_harness.evals.adapters.gpt_stream_runner.build_timeline",
+              return_value=fake_timeline),
+        patch("companion_harness.evals.adapters.gpt_stream_runner.yaml") as mock_yaml,
+        patch("companion_harness.evals.adapters.gpt_stream_runner._find_l3",
+              return_value=l3_case),
+        patch("companion_harness.evals.adapters.gpt_stream_runner._normalize_items",
+              return_value=items),
+        patch("companion_harness.evals.adapters.gpt_stream_runner.load_layer3",
+              return_value=[l3_obj]),
+    ):
+        mock_yaml.safe_load.return_value = {"cases": [], "scenarios": []}
+        run_case("TC1", "prompted", realtime=False,
+                 transport_factory=CaptureTransport, give_user_state=True)
+
+    # pending note + 2 user-state labels (one per seam tick) should be in injected
+    state_labels = [m for m in injected if "[user state:" in m]
+    assert len(state_labels) == 2, f"expected 2 state labels, got: {injected}"
+
+
+def test_give_user_state_false_no_label_in_inject():
+    """give_user_state=False (default): inject_note never carries '[user state:'."""
+    user_state = ["m", "m", "b", "i"]
+    injected = []
+
+    class CaptureTransport(ContinuousTransport):
+        async def connect(self, instructions): pass
+        async def append_audio(self, b64): pass
+        async def inject_note(self, text):
+            injected.append(text)
+        async def commit_and_respond(self, max_output_tokens):
+            return "", "", 0.0
+        async def close(self): pass
+
+    fake_timeline = _fake_build_timeline("TC1", ticks=4, t_avail=1)
+    l3_case = _fake_l3_case("TC1", ticks=4, t_avail=1)
+    items = _fake_items(t_avail=1)
+    l3_obj = _fake_l3_obj("TC1", 4, user_state=user_state)
+
+    with (
+        patch("companion_harness.evals.adapters.gpt_stream_runner.build_timeline",
+              return_value=fake_timeline),
+        patch("companion_harness.evals.adapters.gpt_stream_runner.yaml") as mock_yaml,
+        patch("companion_harness.evals.adapters.gpt_stream_runner._find_l3",
+              return_value=l3_case),
+        patch("companion_harness.evals.adapters.gpt_stream_runner._normalize_items",
+              return_value=items),
+        patch("companion_harness.evals.adapters.gpt_stream_runner.load_layer3",
+              return_value=[l3_obj]),
+    ):
+        mock_yaml.safe_load.return_value = {"cases": [], "scenarios": []}
+        run_case("TC1", "prompted", realtime=False,
+                 transport_factory=CaptureTransport, give_user_state=False)
+
+    assert not any("[user state:" in m for m in injected), (
+        f"unexpected user-state label in injected: {injected}"
+    )
+
+
 def test_unknown_arm_raises():
     with pytest.raises(ValueError, match="unknown arm"):
         run_case("TC1", "nonexistent_arm",

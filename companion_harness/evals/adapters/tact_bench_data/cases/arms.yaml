@@ -58,3 +58,31 @@ arms:
     <speak>   # the ONLY thing the user hears; empty if everything is WAIT/DROP. Re-anchor a
       deferred item on delivery ('that X you asked about — ...').
     </speak>
+
+# --- Tier-2 (perception) setting --------------------------------------------------
+# Measures each model's OWN floor-reading ability by comparing its performance WITH
+# vs WITHOUT an explicit user-state (floor) signal. The bigger the gap, the weaker
+# the model's own perception of when the user has yielded the floor.
+#
+# Scope: applied ONLY to the prompted_audio arm. The comparison is:
+#   prompted_audio        — signal OFF: no explicit label; the model infers the floor
+#                           from the stream itself (MiniCPM via is_listen on the audio;
+#                           gpt via the oracle-floor-timed seam it is given).
+#   prompted_audio_state  — signal ON: the per-tick user-state label below is given to
+#                           the model on top of everything else.
+#
+# The per-tick label is DERIVED from each case's layer3 `user_state` (m/h/b/i) using
+# the phrasing map below (same text for every case; review/edit the wording here).
+#
+# Label delivery when signal is ON (REVIEW — gpt vs MiniCPM differ by input path):
+#   gpt:     the user-state label is emitted as a text line in the prompt at each
+#            response opportunity (gpt's input is the realtime audio session + text).
+#   minicpm: the user-state label is injected as a text line alongside the audio each
+#            tick (via streaming_prefill text_list).
+tier2:
+  apply_to: [prompted_audio]
+  user_state_labels:
+    m: "the user is speaking (mid-utterance)"
+    h: "the user paused to think — still their turn"
+    b: "the user is at a natural pause (turn yielded)"
+    i: "the user is idle / not engaged"

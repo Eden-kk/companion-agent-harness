@@ -39,9 +39,13 @@ _DEFAULT_ARMS = {
 _CONDITION_PARAMS: dict[str, tuple[str, str]] = {
     "vanilla_audio": ("vanilla", "audio"),
     "prompted_audio": ("prompted", "audio"),
+    "prompted_audio_state": ("prompted", "audio"),  # Tier-2: same arm+modality, signal ON
     "vanilla_text": ("vanilla", "text"),
     "prompted_text": ("prompted", "text"),
 }
+
+# Conditions that have give_user_state=True (Tier-2 signal ON)
+_GIVE_USER_STATE: frozenset[str] = frozenset({"prompted_audio_state"})
 
 
 def _parse_args(argv=None) -> argparse.Namespace:
@@ -84,6 +88,7 @@ def _run_condition_minicpm(condition: str, case_ids: list[str], k: int, model) -
     from companion_harness.evals.adapters import minicpm_stream_runner
     from companion_harness.evals.adapters import monitor_stream_runner  # built in parallel
 
+    give_user_state = condition in _GIVE_USER_STATE
     results: dict[str, list[list]] = {}
     for cid in case_ids:
         runs: list[list] = []
@@ -92,7 +97,9 @@ def _run_condition_minicpm(condition: str, case_ids: list[str], k: int, model) -
                 emissions = monitor_stream_runner.run_case(cid, model, "minicpm")
             else:
                 arm, modality = _CONDITION_PARAMS[condition]
-                emissions = minicpm_stream_runner.run_case(cid, arm, modality, model)
+                emissions = minicpm_stream_runner.run_case(
+                    cid, arm, modality, model, give_user_state=give_user_state
+                )
             runs.append(emissions)
         results[cid] = runs
     return results
@@ -103,6 +110,7 @@ def _run_condition_gpt(condition: str, case_ids: list[str], k: int, realtime: bo
     from companion_harness.evals.adapters import gpt_stream_runner
     from companion_harness.evals.adapters import monitor_stream_runner  # built in parallel
 
+    give_user_state = condition in _GIVE_USER_STATE
     gpt_model = None
     if condition == "monitor_stream":
         from companion_harness.foreground_model_gpt_realtime import GptRealtimeModel
@@ -116,7 +124,9 @@ def _run_condition_gpt(condition: str, case_ids: list[str], k: int, realtime: bo
                 emissions = monitor_stream_runner.run_case(cid, gpt_model, "gpt")
             else:
                 arm, _ = _CONDITION_PARAMS[condition]
-                emissions = gpt_stream_runner.run_case(cid, arm, realtime=realtime)
+                emissions = gpt_stream_runner.run_case(
+                    cid, arm, realtime=realtime, give_user_state=give_user_state
+                )
             runs.append(emissions)
         results[cid] = runs
     return results
@@ -187,11 +197,15 @@ def main(argv=None) -> None:
     if args.limit:
         all_case_ids = all_case_ids[: args.limit]
 
-    arms = (
-        [a.strip() for a in args.arms.split(",")]
-        if args.arms
-        else _DEFAULT_ARMS[args.model]
-    )
+    from companion_harness.evals.adapters.tact_bench import load_tier2
+    tier2 = load_tier2()
+
+    if args.arms:
+        arms = [a.strip() for a in args.arms.split(",")]
+    else:
+        arms = list(_DEFAULT_ARMS[args.model])
+        if "prompted_audio" in tier2["apply_to"] and "prompted_audio_state" not in arms:
+            arms.append("prompted_audio_state")
 
     out_root = Path(args.out)
     model_out = out_root / args.model

@@ -16,7 +16,7 @@ import numpy as np
 
 from companion_harness.evals.adapters.delivery_detector import annotate_emissions
 from companion_harness.evals.adapters.scenario_timeline import build_timeline
-from companion_harness.evals.adapters.tact_bench import _ARMS
+from companion_harness.evals.adapters.tact_bench import _ARMS, load_tier2
 from companion_harness.evals.adapters.tact_bench_layer3_run import _load_layer2_context
 from companion_harness.evals.adapters.tact_bench_stream_types import Emission
 
@@ -52,6 +52,8 @@ def run_case(
     arm: str,
     input_modality: str,
     model: "MiniCPMStreamingModel",
+    *,
+    give_user_state: bool = False,
 ) -> list[Emission]:
     """Run one TACT case through MiniCPM in a gate-relaxed duplex session.
 
@@ -65,6 +67,8 @@ def run_case(
         "audio" (per-tick TTS PCM) or "text" (per-tick text_list with silence audio).
     model
         A loaded MiniCPMStreamingModel instance.
+    give_user_state
+        When True, inject the per-tick user-state label into text_list (Tier-2 signal ON).
 
     Returns
     -------
@@ -94,6 +98,16 @@ def run_case(
     standing = ctx_case.get("standing")
     earlier_asks: dict[str, str] = {iid: standing for iid in pending_payloads} if standing else {}
 
+    # Tier-2: load user_state and label map once (only needed when give_user_state=True)
+    user_state: list[str] = []
+    tier2_labels: dict[str, str] = {}
+    if give_user_state:
+        from companion_harness.evals.adapters.tact_bench_layer3 import load_layer3
+        l3_cases = load_layer3()
+        l3_obj = next((c for c in l3_cases if c.id == case_id), None)
+        user_state = l3_obj.user_state if l3_obj is not None else ["i"] * n_ticks
+        tier2_labels = load_tier2()["user_state_labels"]
+
     duplex = model._duplex  # noqa: SLF001
     orig_cls = type(duplex)
     relaxed_cls = type(
@@ -114,6 +128,10 @@ def run_case(
             # pending note injection at t_avail (validated S0a mechanism)
             if tick.pending_note is not None:
                 text_parts.append(tick.pending_note)
+
+            if give_user_state:
+                state = user_state[t] if t < len(user_state) else "i"
+                text_parts.append(f"[user state: {tier2_labels.get(state, state)}]")
 
             if input_modality == "audio":
                 audio = audio_frames[t]  # type: ignore[index]
