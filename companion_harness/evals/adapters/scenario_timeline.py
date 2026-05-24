@@ -21,7 +21,17 @@ _LAYER2_PATH = _CASES_DIR / "layer2-semistructured.yaml"
 _SCENARIOS_PATH = _CASES_DIR / "scenarios.yaml"
 
 # --- PREREGISTERED (§4.2) ---
-PENDING_TEMPLATE = "[PENDING — from {source}: {payload}]"
+def _load_pending_template() -> str:
+    try:
+        data = yaml.safe_load((_CASES_DIR / "arms.yaml").read_text())
+        return data["pending_template"]
+    except Exception:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning("arms.yaml unreadable; falling back to hardcoded PENDING_TEMPLATE")
+        return "[PENDING — from {source}: {payload}]"
+
+
+PENDING_TEMPLATE = _load_pending_template()
 # ----------------------------
 
 _CHUNK_SAMPLES = 16000  # 1s @ 16 kHz

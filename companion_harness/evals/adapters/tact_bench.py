@@ -162,15 +162,32 @@ _MONITOR_STREAM_SYSTEM_PROMPT = (
     "</speak>"
 )
 
-_ARMS = {
-    "vanilla": _VANILLA_SYSTEM_PROMPT,
-    "prompted": _PROMPTED_SYSTEM_PROMPT,
-    "prompted_terse": _PROMPTED_TERSE_SYSTEM_PROMPT,
-    "monitor_stream": _MONITOR_STREAM_SYSTEM_PROMPT,
-    # `audio` reuses the prompted policy verbatim; the only difference is that the
-    # Layer-3 per-tick probe is fed through the model's audio path (text output).
-    "audio": _PROMPTED_SYSTEM_PROMPT,
-}
+def _load_arms() -> dict[str, str]:
+    _arms_yaml = _DATA_DIR / "cases" / "arms.yaml"
+    try:
+        import yaml  # noqa: WPS433
+        data = yaml.safe_load(_arms_yaml.read_text())
+        arms = data["arms"]
+        return {
+            "vanilla": arms["vanilla"],
+            "prompted": arms["prompted"],
+            "prompted_terse": arms["prompted_terse"],
+            "monitor_stream": arms["monitor_stream"],
+            "audio": arms["prompted"],
+        }
+    except Exception:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning("arms.yaml unreadable; falling back to hardcoded prompts")
+        return {
+            "vanilla": _VANILLA_SYSTEM_PROMPT,
+            "prompted": _PROMPTED_SYSTEM_PROMPT,
+            "prompted_terse": _PROMPTED_TERSE_SYSTEM_PROMPT,
+            "monitor_stream": _MONITOR_STREAM_SYSTEM_PROMPT,
+            "audio": _PROMPTED_SYSTEM_PROMPT,
+        }
+
+
+_ARMS = _load_arms()
 
 
 def _held_result_turn(item: dict) -> str:

@@ -57,11 +57,7 @@ def patched_runners(monkeypatch, tmp_path):
     # patch the runners at import time via monkeypatch on the modules themselves
     import companion_harness.evals.adapters.minicpm_stream_runner as msr
     import companion_harness.evals.adapters.gpt_stream_runner as gsr
-
-    # create a fake monitor_stream_runner module
-    import types
-    fake_monitor = types.ModuleType("companion_harness.evals.adapters.monitor_stream_runner")
-    sys.modules["companion_harness.evals.adapters.monitor_stream_runner"] = fake_monitor
+    import companion_harness.evals.adapters.monitor_stream_runner as mon
 
     call_log: list[tuple] = []
 
@@ -79,7 +75,7 @@ def patched_runners(monkeypatch, tmp_path):
 
     monkeypatch.setattr(msr, "run_case", fake_minicpm_run_case)
     monkeypatch.setattr(gsr, "run_case", fake_gpt_run_case)
-    fake_monitor.run_case = fake_monitor_run_case
+    monkeypatch.setattr(mon, "run_case", fake_monitor_run_case)
 
     return tmp_path, call_log
 
