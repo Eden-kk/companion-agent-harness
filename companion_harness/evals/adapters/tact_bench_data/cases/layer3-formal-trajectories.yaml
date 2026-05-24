@@ -1,5 +1,5 @@
 # TACT-Bench cases — Layer 3 (formal, machine-scorable)
-# Same 28 cases as layer1/layer2, with per-tick ground truth a scorer can grade automatically.
+# Same 32 cases (TC1–TC32, ability-tiered, contrast pairs adjacent: TC2↔TC3, TC4↔TC5, TC10↔TC11, TC20↔TC21, TC23↔TC24, TC26↔TC27) as layer1/layer2, with per-tick ground truth a scorer can grade automatically.
 # v1 — trajectories pending human validation (design §4c).
 #
 # ---- FORMAT ----
@@ -20,140 +20,166 @@
 
 cases:
 
-  # ----- Group A -----
-  - {id: TC1, ticks: 11, user_state: ["m:0-8","b:9-10"], third_party: false,
-     items: [{id: weather, t_avail: 3, stale: null, u: low, r: low, s: yes}],
-     gt: {weather: {9: "NOW:SPEAK_BRIEF+RA"}}}
+  # ----- Tier 1 — Eligibility / suppression (deliver vs drop) -----
 
-  - {id: TC2, ticks: 9, user_state: ["m:0-2","b:3","m:4-5","b:6-8"], third_party: false,
-     items: [{id: cafe, t_avail: 5, stale: 4, u: low, r: high, s: yes}],
-     gt: {cafe: {5: DROP}}}   # arrives after its stale tick → never deliver
-
-  - {id: TC3, ticks: 11, user_state: ["m:0-10"], third_party: false,
+  - {id: TC1, ticks: 11, user_state: ["m:0-10"], third_party: false,
      items: [{id: meeting, t_avail: 6, stale: 8, u: high, r: low, s: no}],
      gt: {meeting: {6: "NOW:SPEAK_BRIEF+INT"}}}
+
+  - {id: TC2, ticks: 9, user_state: ["m:0","i:1-8"], third_party: false,
+     items: [{id: cpu, t_avail: 3, stale: 5, u: low, r: low, s: no}],
+     gt: {cpu: {3: DROP}}}
+
+  - {id: TC3, ticks: 9, user_state: ["m:0","i:1-8"], third_party: false,
+     items: [{id: disk, t_avail: 3, stale: null, u: high, r: low, s: no}],
+     gt: {disk: {3: "NOW:SPEAK_BRIEF+INT"}},
+     note: "TWIN of TC2: SAME monitor source, but a live ongoing failure ('disk full — writes failing now'), not a settled blip → flips DROP→NOW. Isolates urgency-from-content over the source prior."}
 
   - {id: TC4, ticks: 11, user_state: ["m:0","i:1-10"], third_party: false,
      items: [{id: deploy, t_avail: 7, stale: null, u: low, r: low, s: yes}],
      gt: {deploy: {7: "NOW:SPEAK_BRIEF"}}}
 
-  # ----- Group B -----
-  - {id: TC5, ticks: 11, user_state: ["m:0-10"], third_party: false,
-     items: [{id: bus, t_avail: 2, stale: 6, u: high, r: low, s: no}],
-     gt: {bus: {2: "NOW:SPEAK_BRIEF+INT"}},
-     note: "alt-valid: if not delivered by stale t6, DROP from t7 on (stale delivery scores below silence)"}
+  - {id: TC5, ticks: 11, user_state: ["m:0","i:1-10"], third_party: false,
+     items: [{id: deploy, t_avail: 7, stale: null, u: low, r: low, s: no}],
+     gt: {deploy: {7: DROP}},
+     note: "TWIN of TC4: same 'deploy succeeded', but NO standing request + off-topic (s:no) → flips NOW→DROP. Isolates standing_order."}
 
-  - {id: TC6, ticks: 12, user_state: ["m:0","i:1-9","b:10-11"], third_party: false,
-     items: [{id: eta_old, t_avail: 3, stale: null, u: low, r: high, s: no},
-             {id: eta_new, t_avail: 8, stale: null, u: low, r: high, s: no, supersedes: eta_old}],
-     gt: {eta_old: {8: DROP}, eta_new: {10: "NOW:SPEAK_BRIEF+RA"}}}
-
-  - {id: TC7, ticks: 11, user_state: ["m:0","i:1-10"], third_party: false,
-     items: [{id: sync, t_avail: 4, stale: 9, u: low, r: high, s: yes, retryable: yes}],
-     gt: {sync: {4: DROP}}}   # retryable:yes (transient) → suppress as noise
-
-  # ----- Group C -----
-  - {id: TC8, ticks: 11, user_state: ["m:0-10"], third_party: false,
-     items: [{id: cooker, t_avail: 5, stale: 9, u: high, r: low, s: yes}],
-     gt: {cooker: {5: "NOW:SPEAK_BRIEF+INT"}}}
-
-  - {id: TC9, ticks: 11, user_state: ["m:0-6","b:7-10"], third_party: false,
-     items: [{id: report, t_avail: 4, stale: null, u: low, r: low, s: yes}],
-     gt: {report: {7: "NOW:SPEAK_BRIEF+RA"}}}
-
-  - {id: TC10, ticks: 9, user_state: ["m:0-8"], third_party: false,
-     items: [{id: labs, t_avail: 6, stale: null, u: low, r: low, s: yes, cond: no}],
-     gt: {labs: {6: DROP}},
-     note: "variant: cond:yes + u:high → {6: NOW:SPEAK_BRIEF+INT}"}
-
-  # ----- Group D -----
-  - {id: TC11, ticks: 11, user_state: ["i:0-10"], third_party: false,
-     items: [{id: gate, t_avail: 2, stale: 8, u: high, r: low, s: no}],
-     gt: {gate: {2: "NOW:SPEAK_BRIEF"}}}
-
-  - {id: TC12, ticks: 23, user_state: ["m:0-21","b:22"], third_party: false,
-     items: [{id: answer, t_avail: 4, stale: null, u: low, r: low, s: yes}],
-     gt: {answer: {22: "NOW:SPEAK_BRIEF+RA"}},
-     note: "RA is required here (long delay) — bare delivery without re-anchor = partial fail"}
-
-  - {id: TC13, ticks: 8, modality_gated: audio, user_state: ["m:0-5","b:6-7"], third_party: false,
-     items: [{id: note, t_avail: 3, stale: null, u: low, r: high, s: no}],
-     gt: {note: {6: "NOW:SPEAK_BRIEF"}},
-     note: "discriminating cue (mid-word vs sentence-end seam) is audio-only"}
-
-  # ----- Group E -----
-  - {id: TC14, ticks: 9, user_state: ["m:0","i:1-8"], third_party: false,
-     items: [{id: cpu, t_avail: 3, stale: 5, u: low, r: low, s: no}],
-     gt: {cpu: {3: DROP}}}
-
-  - {id: TC15, ticks: 11, user_state: ["m:0-5","b:6-7","m:8-10"], third_party: false,
-     items: [{id: break, t_avail: 4, stale: null, u: low, r: high, s: yes}],
-     gt: {break: {6: "NOW:SPEAK_BRIEF"}}}
-
-  - {id: TC16, ticks: 7, modality_gated: video, user_state: ["m:0-6"], third_party: false,
+  - {id: TC6, ticks: 7, modality_gated: video, user_state: ["m:0-6"], third_party: false,
      items: [{id: allergy, t_avail: 2, stale: 4, u: high, r: high, s: no}],
      gt: {allergy: {2: "NOW:SPEAK_BRIEF+INT"}}}
 
-  # ----- Group F (arbitration; single-channel rule applies) -----
-  - {id: TC17, ticks: 14, user_state: ["m:0-5","b:6","m:7-11","b:12-13"], third_party: false,
-     items: [{id: meeting, t_avail: 6, stale: 8, u: high, r: low, s: no},
-             {id: weather, t_avail: 6, stale: null, u: low, r: low, s: yes}],
-     gt: {meeting: {6: "NOW:SPEAK_BRIEF+INT"}, weather: {7: "NOW:SPEAK_BRIEF+RA"}},
-     note: "only ORDER scored; weather at t7 (next tick after meeting) or later t12 both pass"}
+  - {id: TC7, ticks: 11, user_state: ["m:0-5","b:6-7","m:8-10"], third_party: false,
+     items: [{id: break, t_avail: 4, stale: null, u: low, r: high, s: yes}],
+     gt: {break: {6: "NOW:SPEAK_BRIEF"}}}
 
-  - {id: TC18, ticks: 11, user_state: ["m:0-6","b:7-9","m:10"], third_party: false,
-     items: [{id: flight, t_avail: 3, stale: null, u: low, r: high, s: yes},
-             {id: hotel, t_avail: 5, stale: null, u: low, r: high, s: yes}],
-     gt: {flight: {7: "NOW:SPEAK_BRIEF"}, hotel: {8: "NOW:SPEAK_BRIEF"}},
-     note: "consecutive NOWs at one seam (channel serializes); two SEPARATED interruptions = cried-wolf"}
+  # ----- Tier 2 — State / temporal validity -----
 
-  - {id: TC19, ticks: 11, user_state: ["m:0-5","b:6-7","i:8-10"], third_party: false,
-     items: [{id: eta_old, t_avail: 2, stale: null, u: low, r: high, s: no},
-             {id: eta_new, t_avail: 5, stale: null, u: low, r: high, s: no, supersedes: eta_old},
-             {id: smoke, t_avail: 5, stale: 9, u: high, r: low, s: no},
-             {id: tip, t_avail: 6, stale: null, u: low, r: low, s: no}],
-     gt: {eta_old: {5: DROP}, smoke: {5: "NOW:SPEAK_BRIEF+INT"}, eta_new: {6: "NOW:SPEAK_BRIEF+RA"}, tip: {6: DROP}}}
+  - {id: TC8, ticks: 12, user_state: ["m:0-9","b:10-11"], third_party: false,
+     items: [{id: eta_old, t_avail: 3, stale: null, u: low, r: high, s: no},
+             {id: eta_new, t_avail: 8, stale: null, u: low, r: high, s: no, supersedes: eta_old}],
+     gt: {eta_old: {8: DROP}, eta_new: {10: "NOW:SPEAK_BRIEF+RA"}},
+     note: "user is ENGAGED (mid-utterance) through t9 so both ETAs are correctly held — eta_old is superseded at t8 (DROP), eta_new delivers at the t10 seam. (An idle floor would make delivering eta_old early correct, defeating the supersession test — GT-review fix.)"}
 
-  # ----- Group G (modality-rich) -----
-  - {id: TC20, ticks: 9, modality_gated: video, user_state: ["m:0-8"], third_party: false,
-     items: [{id: stove, t_avail: 4, stale: null, u: high, r: low, s: no}],
-     gt: {stove: {4: "NOW:SPEAK_BRIEF+INT"}}}
-
-  - {id: TC21, ticks: 9, modality_gated: video, user_state: ["i:0-8"], third_party: ["yes:0-8"],
-     items: [{id: meds, t_avail: 5, stale: null, u: low, r: high, s: yes, privacy: sensitive, allowed_forms: [SILENT_NOTIFY]}],
-     gt: {meds: {5: "NOW:SILENT_NOTIFY"}}}
-
-  - {id: TC22, ticks: 11, modality_gated: audio, user_state: ["m:0-10"], third_party: false,
-     items: [{id: gas, t_avail: 5, stale: 9, u: high, r: low, s: no}],
-     gt: {gas: {5: "NOW:SPEAK_BRIEF+INT"}}}
-
-  # ----- Group H (§3.3) -----
-  - {id: TC23, ticks: 11, user_state: ["m:0-5","b:6-10"], third_party: false,
+  - {id: TC9, ticks: 11, user_state: ["m:0-5","b:6-10"], third_party: false,
      items: [{id: table, t_avail: 3, stale: 6, u: low, r: high, s: yes}],
      gt: {table: {6: DROP}},
      note: "valid on arrival t3; user cancels at stale t6 → DROP (in-queue invalidation)"}
 
-  - {id: TC24, ticks: 9, modality_gated: false, user_state: ["i:0-8"], third_party: false,
+  - {id: TC10, ticks: 11, user_state: ["m:0","i:1-10"], third_party: false,
+     items: [{id: sync, t_avail: 4, stale: 9, u: low, r: high, s: yes, retryable: yes}],
+     gt: {sync: {4: DROP}}}   # retryable:yes (transient) → suppress as noise
+
+  - {id: TC11, ticks: 11, user_state: ["m:0","i:1-10"], third_party: false,
+     items: [{id: payment, t_avail: 4, stale: null, u: low, r: high, s: yes, retryable: no}],
+     gt: {payment: {4: "NOW:SPEAK_BRIEF"}},
+     note: "TWIN of TC10 — identical idle 'awaiting a background job' floor, differs ONLY in retryable: a terminal failure (retryable:no) must SURFACE (NOW@4) vs TC10's transient (retryable:yes) → DROP. Pair now isolates retryable alone (GT-review: floor harmonized to TC10; was mid-utterance→breakpoint)."}
+
+  # ----- Tier 3 — Temporal scheduling (when) -----
+
+  - {id: TC12, ticks: 11, user_state: ["m:0-8","b:9-10"], third_party: false,
+     items: [{id: weather, t_avail: 3, stale: null, u: low, r: low, s: yes}],
+     gt: {weather: {9: "NOW:SPEAK_BRIEF+RA"}}}
+
+  - {id: TC13, ticks: 11, user_state: ["i:0-10"], third_party: false,
+     items: [{id: gate, t_avail: 2, stale: 8, u: high, r: low, s: no}],
+     gt: {gate: {2: "NOW:SPEAK_BRIEF"}}}
+
+  - {id: TC14, ticks: 23, user_state: ["m:0-21","b:22"], third_party: false,
+     items: [{id: answer, t_avail: 4, stale: null, u: low, r: low, s: yes}],
+     gt: {answer: {22: "NOW:SPEAK_BRIEF+RA"}},
+     note: "RA is required here (long delay) — bare delivery without re-anchor = partial fail"}
+
+  - {id: TC15, ticks: 11, user_state: ["m:0-10"], third_party: false,
+     items: [{id: cooker, t_avail: 5, stale: 9, u: high, r: low, s: yes}],
+     gt: {cooker: {5: "NOW:SPEAK_BRIEF+INT"}}}
+
+  - {id: TC16, ticks: 11, user_state: ["m:0-6","b:7-10"], third_party: false,
+     items: [{id: clarify, t_avail: 4, stale: null, u: low, r: high, s: yes}],
+     gt: {clarify: {7: "NOW:SPEAK_BRIEF"}},
+     note: "source=clarification (the previously-uninstantiated source): a question the agent needs answered to finish a requested task — relevant, non-urgent → defer to the t7 seam, then ask briefly."}
+
+  - {id: TC17, ticks: 9, user_state: ["m:0-3","h:4-5","m:6","b:7-8"], third_party: false,
+     items: [{id: note, t_avail: 2, stale: null, u: low, r: high, s: no}],
+     gt: {note: {7: "NOW:SPEAK_BRIEF"}},
+     note: "held-pause (h) coverage: the user pauses to THINK mid-explanation (h:4-5) — a held pause is NOT a yielded seam. The relevant non-urgent note must WAIT through the h AND the resumed speech, delivering at the real breakpoint b:7. Delivering into h:4-5 treats a hesitation as a seam (wrong). Tier-1 GIVES the h/b labels; Tier-2 makes the model infer them (floor-reading)."}
+
+  # ----- Tier 4 — Delivery form / channel / instruction -----
+
+  - {id: TC18, ticks: 21, user_state: ["m:0-18","b:19-20"], third_party: false,
+     items: [{id: digest, t_avail: 18, stale: null, u: low, r: low, s: yes}],
+     gt: {digest: {19: "NOW:SPEAK_FULL"}},
+     note: "instruction asked for the FULL rundown → form is SPEAK_FULL"}
+
+  - {id: TC19, ticks: 11, user_state: ["m:0","i:1-10"], third_party: false,
+     items: [{id: timer, t_avail: 6, stale: null, u: low, r: low, s: yes}],
+     gt: {timer: {6: "NOW:CHIME"}},
+     note: "form coverage: a requested 10-min timer fires — the user wants to know, but an earcon/CHIME is the right MINIMAL form; spoken words = wrong (overkill) form. Only case where CHIME is the canonical GT."}
+
+  - {id: TC20, ticks: 9, user_state: ["m:0-8"], third_party: false,
+     items: [{id: labs, t_avail: 6, stale: null, u: low, r: low, s: yes, cond: no}],
+     gt: {labs: {6: DROP}},
+     note: "variant: cond:yes + u:high → {6: NOW:SPEAK_BRIEF+INT}"}
+
+  - {id: TC21, ticks: 9, user_state: ["m:0-8"], third_party: false,
+     items: [{id: labs, t_avail: 6, stale: null, u: high, r: high, s: yes, cond: yes}],
+     gt: {labs: {6: "NOW:SPEAK_BRIEF+INT"}},
+     note: "TWIN of TC20 (conditional standing order): condition_satisfied:YES (labs ABNORMAL) restores label-driven behavior and abnormal is time-sensitive → NOW. Flips TC20 DROP (condition unmet) to NOW. Isolates condition_satisfied."}
+
+  - {id: TC22, ticks: 9, modality_gated: false, user_state: ["i:0-8"], third_party: false,
      items: [{id: results, t_avail: 5, stale: null, u: low, r: high, s: yes, allowed_forms: [SILENT_NOTIFY]}],
      gt: {results: {5: "NOW:SILENT_NOTIFY"}}}
 
-  - {id: TC25, ticks: 13, user_state: ["m:0-12"], third_party: false,
-     items: [{id: pump, t_avail: 4, stale: 12, u: high, r: low, s: no, sev: 3},
-             {id: ride, t_avail: 4, stale: 10, u: high, r: low, s: no, sev: 1}],
-     gt: {pump: {4: "NOW:SPEAK_BRIEF+INT"}, ride: {5: "NOW:SPEAK_BRIEF"}},
-     note: "severity decides order (pump sev3 before ride sev1), not arrival; channel serializes → ride at t5"}
+  - {id: TC23, ticks: 9, modality_gated: video, user_state: ["i:0-8"], third_party: ["yes:0-8"],
+     items: [{id: meds, t_avail: 5, stale: null, u: low, r: high, s: yes, privacy: sensitive, allowed_forms: [SILENT_NOTIFY]}],
+     gt: {meds: {5: "NOW:SILENT_NOTIFY"}}}
 
-  - {id: TC26, ticks: 11, user_state: ["m:0-6","b:7-10"], third_party: false,
-     items: [{id: payment, t_avail: 4, stale: null, u: low, r: high, s: yes, retryable: no}],
-     gt: {payment: {7: "NOW:SPEAK_BRIEF"}}}
+  - {id: TC24, ticks: 9, user_state: ["i:0-8"], third_party: false,
+     items: [{id: meds, t_avail: 5, stale: null, u: low, r: high, s: yes, privacy: sensitive}],
+     gt: {meds: {5: "NOW:SPEAK_BRIEF"}},
+     note: "TWIN of TC23: same sensitive meds reminder, but user ALONE (no bystander) → flips SILENT_NOTIFY→SPEAK_BRIEF. privacy:sensitive alone does NOT force silent; a bystander does. Isolates social context (form axis)."}
 
-  - {id: TC27, ticks: 22, suppress_until: {event: end_presentation, tick: 20},
+  - {id: TC25, ticks: 9, user_state: ["i:0-8"], third_party: ["yes:0-8"],
+     items: [{id: package, t_avail: 5, stale: null, u: low, r: high, s: no}],
+     gt: {package: {5: "NOW:SPEAK_BRIEF"}},
+     note: "CONTROL for the privacy pair TC23/TC24: a bystander is present but the content is NOT sensitive (a delivery notice) → SPEAK_BRIEF aloud is fine. A bystander ALONE does not force SILENT_NOTIFY; only privacy:sensitive + bystander does (TC23)."}
+
+  - {id: TC26, ticks: 22, suppress_until: {event: end_presentation, tick: 20},
      user_state: ["m:0-5","b:6","m:7-12","b:13","m:14-19","b:20-21"], third_party: false,
      items: [{id: research, t_avail: 6, stale: null, u: low, r: high, s: yes, suppress_until: end_presentation}],
      gt: {research: {20: "NOW:SPEAK_BRIEF"}},
      note: "intermediate breakpoints t6/t13 are NOT delivery points while suppressed; deliver only after the talk (t20)"}
 
-  - {id: TC28, ticks: 21, user_state: ["m:0-18","b:19-20"], third_party: false,
-     items: [{id: digest, t_avail: 18, stale: null, u: low, r: low, s: yes}],
-     gt: {digest: {19: "NOW:SPEAK_FULL"}},
-     note: "instruction asked for the FULL rundown → form is SPEAK_FULL"}
+  - {id: TC27, ticks: 22, suppress_until: {event: end_presentation, tick: 20},
+     user_state: ["m:0-5","b:6","m:7-12","b:13","m:14-19","b:20-21"], third_party: false,
+     items: [{id: fire, t_avail: 6, stale: null, u: high, r: low, s: no}],
+     gt: {fire: {6: "NOW:SPEAK_BRIEF"}},
+     note: "TWIN of TC26: SAME do-not-disturb ('hold non-critical until I finish'), but the item is an URGENT safety alert ('fire alarm — evacuate now') → flips hold-till-t20→NOW@6. At t6 (a pause) it delivers WITHOUT interrupt (no +INT) — the contrast with TC26 is that research WAITS through the t6/t13 pauses while the urgent fire takes the first one. Isolates urgency OVERRIDES suppress_until."}
+
+  - {id: TC28, ticks: 9, modality_gated: video, user_state: ["m:0-8"], third_party: false,
+     items: [{id: stove, t_avail: 4, stale: null, u: high, r: low, s: no}],
+     gt: {stove: {4: "NOW:SPEAK_BRIEF+INT"}}}
+
+  - {id: TC29, ticks: 11, modality_gated: audio, user_state: ["m:0-10"], third_party: false,
+     items: [{id: gas, t_avail: 5, stale: 9, u: high, r: low, s: no}],
+     gt: {gas: {5: "NOW:SPEAK_BRIEF+INT"}}}
+
+  # ----- Tier 5 — Queue arbitration (multi-item) -----
+
+  - {id: TC30, ticks: 11, user_state: ["m:0-6","b:7-9","m:10"], third_party: false,
+     items: [{id: flight, t_avail: 3, stale: null, u: low, r: high, s: yes},
+             {id: hotel, t_avail: 5, stale: null, u: low, r: high, s: yes}],
+     gt: {flight: {7: "NOW:SPEAK_BRIEF"}, hotel: {8: "NOW:SPEAK_BRIEF"}},
+     note: "consecutive NOWs at one seam (channel serializes); two SEPARATED interruptions = cried-wolf"}
+
+  - {id: TC31, ticks: 13, user_state: ["m:0-12"], third_party: false,
+     items: [{id: pump, t_avail: 4, stale: 12, u: high, r: low, s: no, sev: 3},
+             {id: ride, t_avail: 4, stale: 10, u: high, r: low, s: no, sev: 1}],
+     gt: {pump: {4: "NOW:SPEAK_BRIEF+INT"}, ride: {5: "NOW:SPEAK_BRIEF+INT"}},
+     note: "severity decides order (pump sev3 before ride sev1), not arrival; channel serializes → ride at t5. BOTH carry +INT: the user is mid-utterance throughout and both are urgent, so each delivery interrupts (GT-review fix: ride was missing +INT). VARIANT (equal severity): if both were sev2, the tie falls back to arrival time (earlier t_avail first), then who-waited-longest — i.e. severity is the PRIMARY key, arrival the tiebreaker."}
+
+  - {id: TC32, ticks: 11, user_state: ["m:0-5","b:6-7","i:8-10"], third_party: false,
+     items: [{id: eta_old, t_avail: 2, stale: null, u: low, r: high, s: no},
+             {id: eta_new, t_avail: 5, stale: null, u: low, r: high, s: no, supersedes: eta_old},
+             {id: smoke, t_avail: 5, stale: 9, u: high, r: low, s: no},
+             {id: tip, t_avail: 6, stale: null, u: low, r: low, s: no}],
+     gt: {eta_old: {5: DROP}, smoke: {5: "NOW:SPEAK_BRIEF+INT"}, eta_new: {6: "NOW:SPEAK_BRIEF+RA"}, tip: {6: DROP}}}
