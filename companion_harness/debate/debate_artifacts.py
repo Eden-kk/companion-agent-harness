@@ -34,21 +34,24 @@ def render_audio_from_transcript(
     SR = 24000
     GAP = np.zeros(int(0.3 * SR), dtype=np.float32)
 
-    # collect speak-runs: maximal contiguous ticks where exactly one speaker is audible
-    runs: list[tuple[str, list[str]]] = []  # (speaker, [text_chunks])
+    # Collect every speaker's emitted text in tick order. Collision ticks contribute
+    # one chunk per audible speaker; a "run" is a maximal contiguous sequence of
+    # emissions by the same speaker. This preserves all text from the transcript —
+    # including chunks emitted during collisions — at the cost of sequentialising
+    # overlap in the rendered audio.
+    speak_runs: list[tuple[str, list[str]]] = []
     for tick in trace.ticks:
-        if len(tick.audible) != 1:
-            runs.append(("", []))  # sentinel for boundary
-            continue
-        speaker = tick.audible[0]
-        text = tick.per_speaker[speaker]["text"]
-        if runs and runs[-1][0] == speaker:
-            runs[-1][1].append(text)
-        else:
-            runs.append((speaker, [text]))
-
-    # filter out sentinels and empty runs
-    speak_runs = [(sp, chunks) for sp, chunks in runs if sp and any(chunks)]
+        for name in sorted(tick.per_speaker):
+            sp = tick.per_speaker[name]
+            if sp["is_listen"]:
+                continue
+            text = sp["text"]
+            if not text:
+                continue
+            if speak_runs and speak_runs[-1][0] == name:
+                speak_runs[-1][1].append(text)
+            else:
+                speak_runs.append((name, [text]))
 
     if not speak_runs:
         pcm = np.zeros(SR, dtype=np.int16)
