@@ -21,7 +21,7 @@ def test_livelock():
         n_deadlock=8,
         silence_terminate_ticks=5,
         t_max=0,
-        max_ticks=3,
+        max_ticks=4,
         moderator_seed_audio=np.zeros(CHUNK_SAMPLES, np.float32),
         moderator_nudge_audio=np.full(CHUNK_SAMPLES, 0.7, np.float32),
         rng_seed=0,
@@ -37,9 +37,11 @@ def test_livelock():
     assert trace.metrics.rollbacks_performed >= 1
     assert trace.metrics.barge_text_signals_sent >= 1
 
-    # t=1: break fires on incumbent (forced listen)
+    # t=1: break fires on incumbent (forced listen). The barge text is HELD
+    # (incumbent's prefill is no-op'd by the break_event prefill guard).
     assert incumbent in trace.ticks[1].break_fired_this_tick
-
-    # Barge text was injected into the incumbent's prefill at t=1
     incumbent_fake = fake_a if incumbent == "A" else fake_b
-    assert incumbent_fake.prefill_text_history[1] == [_SPEAK.text]
+    assert incumbent_fake.prefill_text_history[1] is None
+
+    # t=2: incumbent is free; barge text is delivered into its prefill.
+    assert incumbent_fake.prefill_text_history[2] == [_SPEAK.text]

@@ -222,9 +222,15 @@ class DebateOrchestrator:
 
     def _tick(self, t: int) -> None:
         # PHASE 1: PERCEIVE
+        # A break-armed session no-ops its prefill internally (modeling_minicpmo.py
+        # :2816), so DO NOT consume pending_barge_text on the break-fire tick or
+        # both the audio AND the text_list would be silently discarded. Carry it
+        # over to the next tick when the break has cleared and prefill will
+        # actually ingest the input.
         for name, sess in self._sessions.items():
             barge_text = self._pending_barge_text.get(name)
-            if barge_text is not None:
+            is_break_firing = name in self._break_armed
+            if barge_text is not None and not is_break_firing:
                 self._pending_barge_text[name] = None
                 sess.prefill(self._inbox[name], text_list=[barge_text])
             elif self._plan_b_text_supplier is not None:
