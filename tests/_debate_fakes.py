@@ -28,12 +28,15 @@ class ScriptedDuplexSession:
         self._ticks = list(ticks)
         self._idx = 0
         self._break_set = False
+        self._snapshot_saved = False
         self.name = name
         self.prefill_history: list[np.ndarray] = []
+        self.prefill_text_history: list[list[str] | None] = []
         self.set_break_calls: list[int] = []
 
     def prefill(self, audio_1s: np.ndarray, *, text_list: list[str] | None = None) -> None:
         self.prefill_history.append(np.asarray(audio_1s, np.float32).copy())
+        self.prefill_text_history.append(text_list)
 
     def generate(self, *, listen_prob_scale: float) -> DuplexTickResult:
         import time
@@ -48,6 +51,7 @@ class ScriptedDuplexSession:
                 end_of_turn=True,
                 current_time=time.monotonic(),
             )
+        self._snapshot_saved = True
         tick = self._ticks[self._idx % len(self._ticks)]
         self._idx += 1
         wf = tick.audio_waveform if tick.audio_waveform is not None else np.zeros(CHUNK_SAMPLES, dtype=np.float32)
@@ -58,6 +62,15 @@ class ScriptedDuplexSession:
             end_of_turn=tick.end_of_turn,
             current_time=time.monotonic(),
         )
+
+    def restore_snapshot(self) -> bool:
+        if self._snapshot_saved:
+            self._snapshot_saved = False
+            return True
+        return False
+
+    def has_snapshot(self) -> bool:
+        return self._snapshot_saved
 
     def set_break(self) -> None:
         self._break_set = True

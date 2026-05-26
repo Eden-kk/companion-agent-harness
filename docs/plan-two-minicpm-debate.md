@@ -220,3 +220,14 @@ Recording these so reviewers don't ask:
 
 - 2026-05-26 — initial draft.
 - 2026-05-26 — Stage 0 probe verdict: load_mode=single, plan_b_engaged=false, ref_audio_path=prepare_kwarg.
+- 2026-05-26 — V2 behavioral rework (post-first-run user feedback):
+  - **k_grace=0 default** (was 1) — zero-tolerance: any collision tick immediately arms break + KV rollback on the incumbent the SAME tick.
+  - **KV rollback on barge-in** — `MiniCPMDuplexSession.generate()` now passes `enable_speculative_snapshot=True` to `streaming_generate()` so MiniCPM auto-saves the pre-generate snapshot. On a collision, the orchestrator calls `incumbent.restore_snapshot()` to undo the incumbent's just-generated tick. Requires **dual-load** (each session needs its own `MiniCPMO` base because `_speculative_snapshot` is a single slot per base; single-load shares it). VRAM ~2×9 GB; B200 has 80 GB.
+  - **Text barge signal** — on the tick after a barge-in, the broken incumbent's `streaming_prefill` is called with `text_list=[challenger_text]` so the model knows what interrupted it (in addition to the audio crossfeed).
+  - **Silence termination** — replaced the moderator-nudge "deadlock recovery" with `silence_terminate_ticks=5` (default): when both silent for 5 consecutive ticks, the run loop exits early.
+  - **Asymmetric opening** — CLI `--force-listen-b 3` (default) sets B's `force_listen_count=3` so A opens alone for the first ~3 ticks without colliding. A's `force_listen_count=0`.
+  - **CLI default `--load-mode dual`** — orchestrator needs per-session snapshot isolation, so dual-load is the default regardless of the Stage 0 `load_mode=single` verdict.
+  - **Removed CLI args / fields**: `--n-deadlock` still accepted but ignored; `moderator_nudge_audio` accepted but unused.
+  - **New `DebateMetrics` fields**: `silence_terminated: bool`, `rollbacks_performed: int`, `barge_text_signals_sent: int`.
+  - **New `TickRecord` field**: `rolled_back_this_tick: list[str]`.
+  - Snapshot API probe verdict: see `artifacts/snapshot_api_verdict.json`. Detailed analysis in research note from 2026-05-26.

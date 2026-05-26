@@ -29,11 +29,14 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--motion", required=True)
     p.add_argument("--side-a-stance", required=True)
     p.add_argument("--side-b-stance", required=True)
-    p.add_argument("--max-ticks", type=int, default=30)
-    p.add_argument("--k-grace", type=int, default=1)
-    p.add_argument("--n-deadlock", type=int, default=4)
+    p.add_argument("--max-ticks", type=int, default=40)
+    p.add_argument("--k-grace", type=int, default=0)
+    p.add_argument("--n-deadlock", type=int, default=4, help="ignored; kept for CLI compat")
+    p.add_argument("--silence-terminate-ticks", type=int, default=5)
     p.add_argument("--t-max", type=int, default=30)
-    p.add_argument("--load-mode", choices=["single", "dual"], default=None)
+    p.add_argument("--load-mode", choices=["single", "dual"], default="dual")
+    p.add_argument("--force-listen-a", type=int, default=0)
+    p.add_argument("--force-listen-b", type=int, default=3)
     p.add_argument("--listen-prob-scale-a", type=float, default=0.9)
     p.add_argument("--listen-prob-scale-b", type=float, default=0.9)
     p.add_argument("--ref-voice-a", default="af_bella")
@@ -46,12 +49,7 @@ def _parse_args() -> argparse.Namespace:
 def _load_stage0_verdict(root: Path) -> dict:
     verdict_path = root / "artifacts" / "stage0_verdict.json"
     if not verdict_path.exists():
-        print(
-            "ERROR: Stage 0 has not been run; pass --load-mode explicitly or run "
-            "scripts/probe_minicpm_dual_duplex.py first.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+        return {}
     with verdict_path.open() as f:
         return json.load(f)
 
@@ -91,7 +89,6 @@ def _run_debate(
     session_a,
     session_b,
     seed_audio: np.ndarray,
-    nudge_audio: np.ndarray,
     args: argparse.Namespace,
     listen_prob_scale: dict[str, float],
 ) -> "DebateTrace":
@@ -103,10 +100,10 @@ def _run_debate(
         listen_prob_scale=listen_prob_scale,
         k_grace=args.k_grace,
         n_deadlock=args.n_deadlock,
+        silence_terminate_ticks=args.silence_terminate_ticks,
         t_max=args.t_max,
         max_ticks=args.max_ticks,
         moderator_seed_audio=seed_audio,
-        moderator_nudge_audio=nudge_audio,
         rng_seed=args.rng_seed,
     )
     return orch.run()
@@ -142,9 +139,8 @@ def main() -> None:
 
     # Step 1: resolve load_mode, create out_dir, configure logging
     verdict = _load_stage0_verdict(_ROOT)
-    if args.load_mode is None:
-        args.load_mode = verdict["load_mode"]
     plan_b_engaged = verdict.get("plan_b_engaged", False)
+    # dual is the forced default; rollback requires separate base model per session
 
     if args.out_dir is None:
         ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
@@ -152,7 +148,10 @@ def main() -> None:
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
     log = _setup_logging(args.out_dir)
-    log.info("load_mode=%s plan_b_engaged=%s out_dir=%s", args.load_mode, plan_b_engaged, args.out_dir)
+    log.info(
+        "load_mode=%s (dual required for KV rollback) plan_b_engaged=%s out_dir=%s",
+        args.load_mode, plan_b_engaged, args.out_dir,
+    )
 
     # Step 2: load Kokoro
     log.info("Loading Kokoro TTS pipeline …")
@@ -202,19 +201,17 @@ def main() -> None:
     except Exception:
         pass
 
-    # Step 4: render moderator seed audio via Kokoro
-    log.info("Rendering moderator audio …")
+    # Step 4: render moderator seed audio via Kokoro (nudge audio not used in v2)
+    log.info("Rendering moderator seed audio …")
     from companion_harness.debate.minicpm_duplex_session import CHUNK_SAMPLES
     from companion_harness.debate.prompts import (
-        MODERATOR_NUDGE,
         MODERATOR_OPENING,
         build_system_prompt,
     )
 
     opening_text = MODERATOR_OPENING.format(motion=args.motion)
     seed_audio = _render_moderator_audio(kokoro, opening_text, chunk_samples=CHUNK_SAMPLES)
-    nudge_audio = _render_moderator_audio(kokoro, MODERATOR_NUDGE, chunk_samples=CHUNK_SAMPLES)
-    log.info("Moderator audio rendered.")
+    log.info("Moderator seed audio rendered.")
 
     # Step 5: build MiniCPMDuplexSession instances
     from companion_harness.debate.minicpm_duplex_session import MiniCPMDuplexSession
@@ -226,19 +223,22 @@ def main() -> None:
         name="B", opp_name="A", motion=args.motion, side="Opposition", stance=args.side_b_stance
     )
 
-    log.info("Preparing duplex sessions …")
+    log.info(
+        "Preparing duplex sessions (force_listen_a=%d force_listen_b=%d) …",
+        args.force_listen_a, args.force_listen_b,
+    )
     session_a = MiniCPMDuplexSession(
         base_model_a,
         prefix_system_prompt=sys_a,
         ref_audio=None,
-        force_listen_count=0,
+        force_listen_count=args.force_listen_a,
         name="A",
     )
     session_b = MiniCPMDuplexSession(
         base_model_b,
         prefix_system_prompt=sys_b,
         ref_audio=None,
-        force_listen_count=0,
+        force_listen_count=args.force_listen_b,
         name="B",
     )
     log.info("Sessions ready.")
@@ -254,7 +254,6 @@ def main() -> None:
         session_a=session_a,
         session_b=session_b,
         seed_audio=seed_audio,
-        nudge_audio=nudge_audio,
         args=args,
         listen_prob_scale=listen_scale,
     )
@@ -289,7 +288,6 @@ def main() -> None:
             session_a=session_a,
             session_b=session_b,
             seed_audio=seed_audio,
-            nudge_audio=nudge_audio,
             args=args,
             listen_prob_scale=retry_scale,
         )
@@ -311,23 +309,26 @@ def main() -> None:
     # Step 11: final summary
     m = trace.metrics
     log.info(
-        "FINAL METRICS: total_ticks=%d collision_count=%d barge_in_successes=%d "
-        "harness_forced_breaks=%d self_yields=%d deadlocks=%d moderator_nudges=%d",
-        m.total_ticks, m.collision_count, m.barge_in_successes,
-        m.harness_forced_breaks, m.self_yields, m.deadlocks_detected,
-        m.moderator_nudges_fired,
+        "FINAL METRICS: total_ticks=%d silence_terminated=%s collision_count=%d "
+        "barge_in_successes=%d rollbacks_performed=%d barge_text_signals_sent=%d "
+        "harness_forced_breaks=%d self_yields=%d",
+        m.total_ticks, m.silence_terminated, m.collision_count,
+        m.barge_in_successes, m.rollbacks_performed, m.barge_text_signals_sent,
+        m.harness_forced_breaks, m.self_yields,
     )
     print("\n=== Debate complete ===")
-    print(f"  transcript : {args.out_dir / 'transcript.json'}")
-    print(f"  audio      : {args.out_dir / 'debate.wav'}")
-    print(f"  log        : {args.out_dir / 'run.log'}")
-    print(f"  total_ticks            : {m.total_ticks}")
-    print(f"  collision_count        : {m.collision_count}")
-    print(f"  barge_in_successes     : {m.barge_in_successes}")
-    print(f"  harness_forced_breaks  : {m.harness_forced_breaks}")
-    print(f"  self_yields            : {m.self_yields}")
-    print(f"  deadlocks_detected     : {m.deadlocks_detected}")
-    print(f"  load_mode              : {args.load_mode}")
+    print(f"  transcript              : {args.out_dir / 'transcript.json'}")
+    print(f"  audio                   : {args.out_dir / 'debate.wav'}")
+    print(f"  log                     : {args.out_dir / 'run.log'}")
+    print(f"  total_ticks             : {m.total_ticks}")
+    print(f"  silence_terminated      : {m.silence_terminated}")
+    print(f"  collision_count         : {m.collision_count}")
+    print(f"  barge_in_successes      : {m.barge_in_successes}")
+    print(f"  rollbacks_performed     : {m.rollbacks_performed}")
+    print(f"  barge_text_signals_sent : {m.barge_text_signals_sent}")
+    print(f"  harness_forced_breaks   : {m.harness_forced_breaks}")
+    print(f"  self_yields             : {m.self_yields}")
+    print(f"  load_mode               : {args.load_mode}")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,14 @@
+{
+  "snapshot_methods_found": [
+    "base._drop_round (method)",
+    "base._truncate_llm_cache (method)",
+    "base.clear_speculative_snapshot (method)",
+    "base.has_speculative_snapshot (method)",
+    "base.restore_speculative_snapshot (method)",
+    "base.save_speculative_snapshot (method)"
+  ],
+  "save_works": false,
+  "restore_works": false,
+  "per_session_isolated": false,
+  "notes": "save/restore live on MiniCPMO (base model, lines 1586/1688), NOT on MiniCPMODuplex. Both dup_a and dup_b share the same base.model reference (MiniCPMODuplex.from_existing_model stores it as instance.model). save_speculative_snapshot() is only auto-called by streaming_generate when enable_speculative_snapshot=True (line 1984), which is False by default — so has_speculative_snapshot() returns False in normal duplex flow. Even if called manually on base, _speculative_snapshot is a single slot on base: session A save overwrites session B save. Per-session rollback in single-load mode is structurally impossible. Dual-load (separate base model per session) is required for per-session snapshot isolation."
+}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import time
 from dataclasses import dataclass
 
@@ -45,7 +46,14 @@ class MiniCPMDuplexSession:
             self._duplex.streaming_prefill(audio_waveform=audio_1s)
 
     def generate(self, *, listen_prob_scale: float) -> DuplexTickResult:
-        result = self._duplex.streaming_generate(listen_prob_scale=listen_prob_scale)
+        sg_params = inspect.signature(self._duplex.streaming_generate).parameters
+        if "enable_speculative_snapshot" in sg_params:
+            result = self._duplex.streaming_generate(
+                listen_prob_scale=listen_prob_scale, enable_speculative_snapshot=True
+            )
+        else:
+            self._duplex.model.save_speculative_snapshot()
+            result = self._duplex.streaming_generate(listen_prob_scale=listen_prob_scale)
         current_time = time.monotonic()
         raw = result.get("audio_waveform") if isinstance(result, dict) else getattr(result, "audio_waveform", None)
         if raw is None:
@@ -66,6 +74,16 @@ class MiniCPMDuplexSession:
             end_of_turn=end_of_turn,
             current_time=current_time,
         )
+
+    def restore_snapshot(self) -> bool:
+        base = self._duplex.model
+        if base.has_speculative_snapshot():
+            base.restore_speculative_snapshot()
+            return True
+        return False
+
+    def has_snapshot(self) -> bool:
+        return bool(self._duplex.model.has_speculative_snapshot())
 
     def set_break(self) -> None:
         self._duplex.set_break_event()

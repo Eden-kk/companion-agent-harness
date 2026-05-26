@@ -1,4 +1,17 @@
-"""DebateOrchestrator — lockstep two-session debate loop."""
+"""DebateOrchestrator — lockstep two-session debate loop.
+
+KV rollback on barge-in is wired through `MiniCPMDuplexSession.restore_snapshot()`,
+which delegates to `base.restore_speculative_snapshot()`. On the real model the
+snapshot path is currently a no-op for our externally-driven duplex flow because
+`MiniCPMODuplex.streaming_generate` strips the `enable_speculative_snapshot`
+kwarg, and manual `base.save_speculative_snapshot()` calls leave
+`has_speculative_snapshot()` False (the save is internally gated by VAD-driven
+speculation state we can't trigger from outside). Effect: `rollbacks_performed`
+will be 0 on real-model runs; barge-in still resolves correctly because the
+break_event fires and the text signal is injected on the next prefill. Fake
+sessions in tests honor the save/restore semantics and exercise the rollback
+path. See artifacts/snapshot_api_verdict.json for the probe details.
+"""
 
 from __future__ import annotations
 
@@ -23,6 +36,7 @@ class TickRecord:
     silence_run: int
     moderator_nudge_fired: bool
     per_speaker: dict[str, dict]
+    rolled_back_this_tick: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -38,6 +52,9 @@ class DebateMetrics:
     barge_in_successes: int = 0
     turn_count_per_speaker: dict[str, int] = field(default_factory=dict)
     t_max_hits: int = 0
+    silence_terminated: bool = False
+    rollbacks_performed: int = 0
+    barge_text_signals_sent: int = 0
 
 
 @dataclass
@@ -50,7 +67,7 @@ class DebateTrace:
     n_deadlock: int
 
 
-def _compute_metrics(ticks: list[TickRecord]) -> DebateMetrics:
+def _compute_metrics(ticks: list[TickRecord], *, silence_terminated: bool = False) -> DebateMetrics:
     total_ticks = len(ticks)
     collision_count = sum(1 for t in ticks if len(t.audible) >= 2)
     harness_forced_breaks = sum(len(t.break_fired_this_tick) for t in ticks)
@@ -114,6 +131,16 @@ def _compute_metrics(ticks: list[TickRecord]) -> DebateMetrics:
         if t.break_armed_for_next_tick and len(t.audible) < 2
     )
 
+    rollbacks_performed = sum(len(t.rolled_back_this_tick) for t in ticks)
+    # barge text signal is queued on every collision-resolution (independent of
+    # whether the KV rollback actually fired — see module docstring for the
+    # MiniCPMO-side limitation).
+    barge_text_signals_sent = sum(
+        1
+        for i in range(1, len(ticks))
+        if len(ticks[i - 1].audible) >= 2 and ticks[i].break_fired_this_tick
+    )
+
     return DebateMetrics(
         total_ticks=total_ticks,
         collision_count=collision_count,
@@ -126,6 +153,9 @@ def _compute_metrics(ticks: list[TickRecord]) -> DebateMetrics:
         barge_in_successes=barge_in_successes,
         turn_count_per_speaker=turn_count,
         t_max_hits=t_max_hits,
+        silence_terminated=silence_terminated,
+        rollbacks_performed=rollbacks_performed,
+        barge_text_signals_sent=barge_text_signals_sent,
     )
 
 
@@ -136,8 +166,9 @@ class DebateOrchestrator:
         sessions: dict[str, Any],
         *,
         listen_prob_scale: dict[str, float] | None = None,
-        k_grace: int = 2,
+        k_grace: int = 0,
         n_deadlock: int = 8,
+        silence_terminate_ticks: int = 5,
         t_max: int = 0,
         max_ticks: int = 60,
         moderator_seed_audio: np.ndarray | None = None,
@@ -150,6 +181,7 @@ class DebateOrchestrator:
         self._listen_prob_scale = listen_prob_scale or {n: 1.0 for n in sessions}
         self._k_grace = k_grace
         self._n_deadlock = n_deadlock
+        self._silence_terminate_ticks = silence_terminate_ticks
         self._t_max = t_max
         self._max_ticks = max_ticks
         self._moderator_seed_audio = (
@@ -170,11 +202,15 @@ class DebateOrchestrator:
         self._break_armed: set[str] = set()
         self._ticks: list[TickRecord] = []
         self._last_results: dict[str, DuplexTickResult] = {}
+        self._pending_barge_text: dict[str, str | None] = {n: None for n in self._sessions}
+        self._terminate_now: bool = False
 
         for t in range(self._max_ticks):
             self._tick(t)
+            if self._terminate_now:
+                break
 
-        metrics = _compute_metrics(self._ticks)
+        metrics = _compute_metrics(self._ticks, silence_terminated=self._terminate_now)
         return DebateTrace(
             motion=self._motion,
             ticks=self._ticks,
@@ -187,7 +223,11 @@ class DebateOrchestrator:
     def _tick(self, t: int) -> None:
         # PHASE 1: PERCEIVE
         for name, sess in self._sessions.items():
-            if self._plan_b_text_supplier is not None:
+            barge_text = self._pending_barge_text.get(name)
+            if barge_text is not None:
+                self._pending_barge_text[name] = None
+                sess.prefill(self._inbox[name], text_list=[barge_text])
+            elif self._plan_b_text_supplier is not None:
                 text_seed = self._plan_b_text_supplier(self._last_results, name)
                 sess.prefill(self._inbox[name], text_list=[text_seed] if text_seed else None)
             else:
@@ -207,13 +247,12 @@ class DebateOrchestrator:
         audible = sorted(n for n in spoke if spoke[n])
 
         # PHASE 3: ARBITRATE
-        moderator_nudge_fired = False
+        rolled_back: list[str] = []
 
         if not audible:
             self._silence_run += 1
-            if self._silence_run >= self._n_deadlock:
-                moderator_nudge_fired = True
-                self._silence_run = 0
+            if self._silence_run >= self._silence_terminate_ticks:
+                self._terminate_now = True
         elif len(audible) == 1:
             s = audible[0]
             self._silence_run = 0
@@ -231,6 +270,10 @@ class DebateOrchestrator:
             self._turn_len[self._floor] += 1
             if self._overlap[challenger] > self._k_grace:
                 self._arm_break(self._floor)
+                rolled = self._sessions[self._floor].restore_snapshot()
+                if rolled:
+                    rolled_back.append(self._floor)
+                self._pending_barge_text[self._floor] = results[challenger].text
                 self._floor = challenger
 
         if self._t_max and self._floor and spoke.get(self._floor) and self._turn_len[self._floor] >= self._t_max:
@@ -242,13 +285,10 @@ class DebateOrchestrator:
             n: (self._one_sec(results[n].audio_waveform) if spoke[n] else SILENCE.copy())
             for n in results
         }
-        next_inbox = {
+        self._inbox = {
             n: sum((emitted[o] for o in results if o != n), SILENCE.copy())
             for n in results
         }
-        if moderator_nudge_fired:
-            next_inbox = {n: self._moderator_nudge_audio.copy() for n in results}
-        self._inbox = next_inbox
         self._last_results = results
 
         self._ticks.append(TickRecord(
@@ -258,7 +298,7 @@ class DebateOrchestrator:
             break_fired_this_tick=sorted(fired),
             break_armed_for_next_tick=sorted(self._break_armed),
             silence_run=self._silence_run,
-            moderator_nudge_fired=moderator_nudge_fired,
+            moderator_nudge_fired=False,
             per_speaker={
                 n: {
                     "is_listen": r.is_listen,
@@ -268,6 +308,7 @@ class DebateOrchestrator:
                 }
                 for n, r in results.items()
             },
+            rolled_back_this_tick=rolled_back,
         ))
 
     def _arm_break(self, name: str) -> None:
