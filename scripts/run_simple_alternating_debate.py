@@ -29,7 +29,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--max-turn-ticks", type=int, default=4)
     p.add_argument("--first-speaker", default="A")
     p.add_argument("--listen-prob-scale-speaking", type=float, default=0.5)
-    p.add_argument("--listen-prob-scale-listening", type=float, default=10.0)
+    p.add_argument("--max-sentences-per-turn", type=int, default=2)
     p.add_argument("--load-mode", choices=["single", "dual"], default="dual")
     p.add_argument("--ref-voice-a", default="af_bella")
     p.add_argument("--ref-voice-b", default="am_michael")
@@ -154,7 +154,7 @@ def main() -> None:
         max_turn_ticks=args.max_turn_ticks,
         total_turns=args.total_turns,
         listen_prob_scale_speaking=args.listen_prob_scale_speaking,
-        listen_prob_scale_listening=args.listen_prob_scale_listening,
+        max_sentences_per_turn=args.max_sentences_per_turn,
         moderator_seed_audio=seed_audio,
     )
 

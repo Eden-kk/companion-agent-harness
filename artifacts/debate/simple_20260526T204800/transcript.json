@@ -1,0 +1,88 @@
+{
+  "motion": "This house believes social media has done more harm than good to society.",
+  "total_ticks": 21,
+  "transcript_terminated_by_max_turns": true,
+  "turns": [
+    {
+      "audio_chunks_count": 8,
+      "ended_on_sentence": false,
+      "natural_eot": true,
+      "per_tick_texts": [
+        " Social media has deep",
+        " ened societal polar",
+        " ization by creating echo",
+        " chambers where users",
+        " only consume reinforce",
+        " d beliefs, leading",
+        " to increased division and",
+        " mistrust."
+      ],
+      "speaker": "A",
+      "text": "Social media has deep  ened societal polar  ization by creating echo  chambers where users  only consume reinforce  d beliefs, leading  to increased division and  mistrust.",
+      "ticks_consumed": 9,
+      "turn_idx": 0
+    },
+    {
+      "audio_chunks_count": 4,
+      "ended_on_sentence": true,
+      "natural_eot": false,
+      "per_tick_texts": [
+        " Echo chambers exist in all media, but",
+        " social media also enables cross-",
+        " ideological dialogue through private messaging and diverse followings. Without social media, marginalized",
+        " voices would lack these platforms for amplification."
+      ],
+      "speaker": "B",
+      "text": "Echo chambers exist in all media, but  social media also enables cross-  ideological dialogue through private messaging and diverse followings. Without social media, marginalized  voices would lack these platforms for amplification.",
+      "ticks_consumed": 4,
+      "turn_idx": 1
+    },
+    {
+      "audio_chunks_count": 3,
+      "ended_on_sentence": true,
+      "natural_eot": false,
+      "per_tick_texts": [
+        " Echo chambers dominate public discourse",
+        " on social media, overwhelming cross-ideological dialogue with algorithmic amplification of extreme views",
+        " . Amplified outrage culture distorts marginalized voices into performative activism rather than constructive engagement."
+      ],
+      "speaker": "A",
+      "text": "Echo chambers dominate public discourse  on social media, overwhelming cross-ideological dialogue with algorithmic amplification of extreme views  . Amplified outrage culture distorts marginalized voices into performative activism rather than constructive engagement.",
+      "ticks_consumed": 3,
+      "turn_idx": 2
+    },
+    {
+      "audio_chunks_count": 1,
+      "ended_on_sentence": false,
+      "natural_eot": true,
+      "per_tick_texts": [],
+      "speaker": "B",
+      "text": "",
+      "ticks_consumed": 1,
+      "turn_idx": 3
+    },
+    {
+      "audio_chunks_count": 1,
+      "ended_on_sentence": false,
+      "natural_eot": true,
+      "per_tick_texts": [],
+      "speaker": "A",
+      "text": "",
+      "ticks_consumed": 1,
+      "turn_idx": 4
+    },
+    {
+      "audio_chunks_count": 2,
+      "ended_on_sentence": true,
+      "natural_eot": false,
+      "per_tick_texts": [
+        " Algorithms prioritize engagement, which can distort discourse, but they also surface niche issues that might otherwise",
+        " remain invisible, enabling grassroots movements to gain traction before traditional media picks up the story."
+      ],
+      "speaker": "B",
+      "text": "Algorithms prioritize engagement, which can distort discourse, but they also surface niche issues that might otherwise  remain invisible, enabling grassroots movements to gain traction before traditional media picks up the story.",
+      "ticks_consumed": 3,
+      "turn_idx": 5
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+2026-05-26 13:48:00,379 INFO out_dir=/home/yid042/projects/companion-agent-harness/.claude/worktrees/feat+two-minicpm-debate/artifacts/debate/simple_20260526T204800 load_mode=dual
+2026-05-26 13:48:00,379 INFO Loading Kokoro TTS pipeline …
+2026-05-26 13:48:02,673 INFO Kokoro loaded.
+2026-05-26 13:48:02,673 INFO Loading MiniCPM-o model(s) (load_mode=dual) …
+2026-05-26 13:48:15,667 INFO Model load took 13.0s
+2026-05-26 13:48:17,578 INFO Moderator seed audio rendered.
+2026-05-26 13:49:29,589 INFO Sessions ready.
+2026-05-26 13:49:29,591 INFO Starting simple debate: motion='This house believes social media has done more harm than good to society.' total_turns=6 max_turn_ticks=12
