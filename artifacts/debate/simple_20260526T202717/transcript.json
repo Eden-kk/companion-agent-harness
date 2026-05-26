@@ -1,0 +1,75 @@
+{
+  "motion": "This house believes social media has done more harm than good to society.",
+  "total_ticks": 20,
+  "transcript_terminated_by_max_turns": true,
+  "turns": [
+    {
+      "natural_eot": false,
+      "per_tick_texts": [
+        " Social media's algorithm",
+        " s amplify polar",
+        " izing content, creating echo"
+      ],
+      "speaker": "A",
+      "text": "Social media's algorithm  s amplify polar  izing content, creating echo",
+      "ticks_consumed": 4,
+      "turn_idx": 0
+    },
+    {
+      "natural_eot": false,
+      "per_tick_texts": [
+        " Social media",
+        " has democratized voice,",
+        " giving marginalized",
+        " groups platforms"
+      ],
+      "speaker": "B",
+      "text": "Social media  has democratized voice,  giving marginalized  groups platforms",
+      "ticks_consumed": 4,
+      "turn_idx": 1
+    },
+    {
+      "natural_eot": true,
+      "per_tick_texts": [
+        " chambers that",
+        " deepen societal",
+        " divisions."
+      ],
+      "speaker": "A",
+      "text": "chambers that  deepen societal  divisions.",
+      "ticks_consumed": 3,
+      "turn_idx": 2
+    },
+    {
+      "natural_eot": false,
+      "per_tick_texts": [
+        " to share",
+        " stories and mobilize",
+        " change, something traditional",
+        " media often"
+      ],
+      "speaker": "B",
+      "text": "to share  stories and mobilize  change, something traditional  media often",
+      "ticks_consumed": 4,
+      "turn_idx": 3
+    },
+    {
+      "natural_eot": false,
+      "per_tick_texts": [],
+      "speaker": "A",
+      "text": "",
+      "ticks_consumed": 4,
+      "turn_idx": 4
+    },
+    {
+      "natural_eot": true,
+      "per_tick_texts": [
+        " ignored."
+      ],
+      "speaker": "B",
+      "text": "ignored.",
+      "ticks_consumed": 1,
+      "turn_idx": 5
+    }
+  ]
+}

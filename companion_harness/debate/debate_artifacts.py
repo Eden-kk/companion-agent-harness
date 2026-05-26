@@ -13,7 +13,7 @@ import numpy as np
 from companion_harness.debate.debate_orchestrator import DebateTrace
 
 if TYPE_CHECKING:
-    pass
+    from companion_harness.debate.simple_alternating_orchestrator import SimpleDebateTrace
 
 
 def write_transcript(trace: DebateTrace, out_path: Path) -> None:
@@ -94,6 +94,43 @@ def _write_wav(path: Path, pcm: np.ndarray, framerate: int) -> None:
         wf.setsampwidth(2)
         wf.setframerate(framerate)
         wf.writeframes(pcm.tobytes())
+
+
+def write_simple_transcript(trace: "SimpleDebateTrace", out_path: Path) -> None:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    d = dataclasses.asdict(trace)
+    with out_path.open("w") as f:
+        json.dump(d, f, indent=2, sort_keys=True)
+
+
+def render_audio_from_simple_trace(
+    trace: "SimpleDebateTrace",
+    *,
+    kokoro_pipeline,
+    voice_for: dict[str, str],
+    out_wav: Path,
+    inter_turn_gap_s: float = 0.4,
+) -> None:
+    """One Kokoro call per turn (natural-pacing); concatenate sequentially with a gap."""
+    out_wav.parent.mkdir(parents=True, exist_ok=True)
+    SR = 24000
+    gap = np.zeros(int(inter_turn_gap_s * SR), dtype=np.float32)
+    segments: list[np.ndarray] = []
+    for turn in trace.turns:
+        if not turn.text:
+            continue
+        samples, sr = kokoro_pipeline.create(
+            turn.text, voice=voice_for[turn.speaker], speed=1.0, lang="en-us"
+        )
+        assert sr == SR
+        segments.append(np.asarray(samples, dtype=np.float32))
+        segments.append(gap)
+    if not segments:
+        _write_wav(out_wav, np.zeros(SR, dtype=np.int16), SR)
+        return
+    mix = np.concatenate(segments)
+    pcm = (np.clip(mix, -1.0, 1.0) * 32767).astype(np.int16)
+    _write_wav(out_wav, pcm, SR)
 
 
 def _resample_24k_to_16k(audio: np.ndarray) -> np.ndarray:
