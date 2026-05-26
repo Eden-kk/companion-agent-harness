@@ -1,0 +1,8 @@
+{
+  "path_a_manual_save_works": true,
+  "path_a_preconditions_required": "Assign return value of save_speculative_snapshot() to base._speculative_snapshot; no internal flags required.",
+  "path_b_truncate_llm_cache_works": true,
+  "path_c_drop_round_works": false,
+  "recommended_path": "a",
+  "notes": "warmup: is_listen=True | path_a: has_snapshot after manual assign = True | path_a: kv_before=0 kv_after=0 is_listen=True | path_a: restore()=True kv_restored=0 has_after=False | path_a: post-restore generate ok, is_listen=True | path_b: kv_pre=0 kv_post=0 delta=0 | path_b: kv_truncated=0 (target=0) | path_b: post-truncate generate ok, is_listen=True | path_c: _next_round_id before generate = 0 | path_c: duplex streaming_generate doesn't call _finalize_round; _drop_round N/A"
+}

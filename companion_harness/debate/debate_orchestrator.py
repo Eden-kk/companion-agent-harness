@@ -1,16 +1,11 @@
 """DebateOrchestrator — lockstep two-session debate loop.
 
 KV rollback on barge-in is wired through `MiniCPMDuplexSession.restore_snapshot()`,
-which delegates to `base.restore_speculative_snapshot()`. On the real model the
-snapshot path is currently a no-op for our externally-driven duplex flow because
-`MiniCPMODuplex.streaming_generate` strips the `enable_speculative_snapshot`
-kwarg, and manual `base.save_speculative_snapshot()` calls leave
-`has_speculative_snapshot()` False (the save is internally gated by VAD-driven
-speculation state we can't trigger from outside). Effect: `rollbacks_performed`
-will be 0 on real-model runs; barge-in still resolves correctly because the
-break_event fires and the text signal is injected on the next prefill. Fake
-sessions in tests honor the save/restore semantics and exercise the rollback
-path. See artifacts/snapshot_api_verdict.json for the probe details.
+which delegates to `base.restore_speculative_snapshot()`. `generate()` now assigns
+the return of `save_speculative_snapshot()` to `base._speculative_snapshot` before
+each duplex tick (the earlier no-op was discarding the return value).
+Requires dual load-mode (separate base model per session) for per-session isolation.
+See artifacts/snapshot_api_verdict_v2.json for probe details.
 """
 
 from __future__ import annotations

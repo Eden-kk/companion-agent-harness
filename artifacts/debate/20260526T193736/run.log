@@ -1,0 +1,16 @@
+2026-05-26 12:37:36,046 INFO load_mode=dual (dual required for KV rollback) plan_b_engaged=False out_dir=/home/yid042/projects/companion-agent-harness/.claude/worktrees/feat+two-minicpm-debate/artifacts/debate/20260526T193736
+2026-05-26 12:37:36,046 INFO Loading Kokoro TTS pipeline …
+2026-05-26 12:37:38,360 INFO Kokoro loaded.
+2026-05-26 12:37:38,360 INFO Loading MiniCPM-o model(s) (load_mode=dual) …
+2026-05-26 12:37:51,377 INFO Model load took 13.0s
+2026-05-26 12:37:51,378 INFO VRAM allocated after load: 37.73 GB
+2026-05-26 12:37:51,378 INFO Rendering moderator seed audio …
+2026-05-26 12:37:53,296 INFO Moderator seed audio rendered.
+2026-05-26 12:37:53,296 INFO Preparing duplex sessions (force_listen_a=0 force_listen_b=3) …
+2026-05-26 12:39:45,846 INFO Sessions ready.
+2026-05-26 12:39:45,846 INFO Starting debate: motion='This house believes social media has done more harm than good to society.' max_ticks=40
+2026-05-26 12:41:03,880 INFO Debate finished: total_ticks=21
+2026-05-26 12:41:03,881 INFO Writing artifacts to /home/yid042/projects/companion-agent-harness/.claude/worktrees/feat+two-minicpm-debate/artifacts/debate/20260526T193736 …
+2026-05-26 12:41:10,956 INFO Artifacts written.
+2026-05-26 12:41:10,956 INFO SMOKE CHECK PASS: barge_in_successes=2
+2026-05-26 12:41:10,956 INFO FINAL METRICS: total_ticks=21 silence_terminated=True collision_count=2 barge_in_successes=2 rollbacks_performed=2 barge_text_signals_sent=2 harness_forced_breaks=2 self_yields=0

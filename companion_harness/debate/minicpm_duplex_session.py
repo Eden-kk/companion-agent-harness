@@ -52,7 +52,8 @@ class MiniCPMDuplexSession:
                 listen_prob_scale=listen_prob_scale, enable_speculative_snapshot=True
             )
         else:
-            self._duplex.model.save_speculative_snapshot()
+            base = self._duplex.model
+            base._speculative_snapshot = base.save_speculative_snapshot()
             result = self._duplex.streaming_generate(listen_prob_scale=listen_prob_scale)
         current_time = time.monotonic()
         raw = result.get("audio_waveform") if isinstance(result, dict) else getattr(result, "audio_waveform", None)
