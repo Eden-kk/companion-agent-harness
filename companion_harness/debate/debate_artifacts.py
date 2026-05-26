@@ -30,55 +30,61 @@ def render_audio_from_transcript(
     voice_for: dict[str, str],
     out_wav: Path,
 ) -> None:
+    """Render the text trajectory through Kokoro, preserving collision-tick overlap.
+
+    Per-speaker contiguous-tick runs are concatenated and rendered as one Kokoro
+    call each, then placed on the timeline at `start_tick * 1s`. The per-speaker
+    tracks are summed, so when the transcript shows both speakers audible on the
+    same tick their voices play simultaneously in the mix.
+
+    A speaker's own consecutive runs cannot overlap themselves: if a run's
+    natural Kokoro duration spills past the next same-speaker run's start tick,
+    the later run is pushed out with a 200 ms gap.
+    """
     out_wav.parent.mkdir(parents=True, exist_ok=True)
     SR = 24000
-    GAP = np.zeros(int(0.3 * SR), dtype=np.float32)
+    TICK_SAMPLES = SR  # 1 s/tick
 
-    # Collect every speaker's emitted text in tick order. Collision ticks contribute
-    # one chunk per audible speaker; a "run" is a maximal contiguous sequence of
-    # emissions by the same speaker. This preserves all text from the transcript —
-    # including chunks emitted during collisions — at the cost of sequentialising
-    # overlap in the rendered audio.
-    speak_runs: list[tuple[str, list[str]]] = []
+    # Build per-speaker contiguous-tick runs from the transcript.
+    per_speaker_runs: dict[str, list[tuple[int, list[str]]]] = {n: [] for n in voice_for}
     for tick in trace.ticks:
-        for name in sorted(tick.per_speaker):
-            sp = tick.per_speaker[name]
-            if sp["is_listen"]:
+        for name in voice_for:
+            sp = tick.per_speaker.get(name)
+            if sp is None or sp["is_listen"] or not sp["text"]:
                 continue
-            text = sp["text"]
-            if not text:
-                continue
-            if speak_runs and speak_runs[-1][0] == name:
-                speak_runs[-1][1].append(text)
+            runs = per_speaker_runs[name]
+            # contiguous = same speaker on next tick (len(chunks) chunks spans len(chunks) ticks)
+            if runs and runs[-1][0] + len(runs[-1][1]) == tick.tick:
+                runs[-1][1].append(sp["text"])
             else:
-                speak_runs.append((name, [text]))
+                runs.append((tick.tick, [sp["text"]]))
 
-    if not speak_runs:
-        pcm = np.zeros(SR, dtype=np.int16)
-        _write_wav(out_wav, pcm, SR)
+    # Render each run; place on the timeline at start_tick * TICK_SAMPLES with
+    # per-speaker no-self-overlap. Collect (offset_samples, ndarray) tuples.
+    placements: list[tuple[int, np.ndarray]] = []
+    for name, runs in per_speaker_runs.items():
+        next_min_offset = 0
+        for start_tick, chunks in runs:
+            text = " ".join(chunks)
+            samples, sr = kokoro_pipeline.create(
+                text, voice=voice_for[name], speed=1.0, lang="en-us"
+            )
+            assert sr == SR
+            samples = np.asarray(samples, dtype=np.float32)
+            offset = max(start_tick * TICK_SAMPLES, next_min_offset)
+            placements.append((offset, samples))
+            next_min_offset = offset + len(samples) + int(0.2 * SR)
+
+    if not placements:
+        _write_wav(out_wav, np.zeros(SR, dtype=np.int16), SR)
         return
 
-    segments: list[np.ndarray] = []
-    for i, (speaker, chunks) in enumerate(speak_runs):
-        text = " ".join(c for c in chunks if c)
-        if not text:
-            continue
-        samples, sr = kokoro_pipeline.create(
-            text, voice=voice_for[speaker], speed=1.0, lang="en-us"
-        )
-        assert sr == SR
-        samples = np.asarray(samples, dtype=np.float32)
-        if i > 0:
-            segments.append(GAP.copy())
-        segments.append(samples)
+    total_samples = max(off + len(s) for off, s in placements)
+    mix = np.zeros(total_samples, dtype=np.float32)
+    for off, samples in placements:
+        mix[off : off + len(samples)] += samples
 
-    if not segments:
-        pcm = np.zeros(SR, dtype=np.int16)
-        _write_wav(out_wav, pcm, SR)
-        return
-
-    stitched = np.concatenate(segments)
-    pcm = (np.clip(stitched, -1.0, 1.0) * 32767).astype(np.int16)
+    pcm = (np.clip(mix, -1.0, 1.0) * 32767).astype(np.int16)
     _write_wav(out_wav, pcm, SR)
 
 

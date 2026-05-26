@@ -192,3 +192,46 @@ def test_render_includes_collision_tick_text(tmp_path: Path) -> None:
     assert "barge" in rendered_text_per_speaker["voice_b"]   # collision-tick B chunk
     assert "third" in rendered_text_per_speaker["voice_b"]
     assert out.exists()
+
+
+def test_render_preserves_collision_overlap(tmp_path: Path) -> None:
+    """Regression: on collision ticks both voices must play simultaneously in
+    the mix, not be sequentialised. We give each voice a distinguishable
+    constant amplitude with a Kokoro render long enough to extend through the
+    collision region, then assert the mix contains both amplitudes SUMMED
+    where the speakers overlap and exactly one where they don't."""
+    from companion_harness.debate.debate_artifacts import render_audio_from_transcript as _render
+
+    SR = 24000
+    TICK_SAMPLES = SR  # 1 s per tick
+    # Long enough that A's run (start_tick=0, two contiguous ticks) extends
+    # past B's run start (start_tick=1) so [1.0s, render_end) overlaps.
+    CHUNK_LEN = int(2.5 * SR)
+
+    class _FakeKokoro:
+        def create(self, text, *, voice, speed=1.0, lang="en-us"):
+            amp = 0.3 if voice == "voice_a" else 0.4
+            return np.full(CHUNK_LEN, amp, dtype=np.float32), SR
+
+    out = tmp_path / "debate.wav"
+    _render(
+        _make_collision_trace(),   # A speaks t=0,1; B speaks t=1,2
+        kokoro_pipeline=_FakeKokoro(),
+        voice_for={"A": "voice_a", "B": "voice_b"},
+        out_wav=out,
+    )
+
+    with wave.open(str(out), "rb") as wf:
+        raw = wf.readframes(wf.getnframes())
+    mix = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32767.0
+
+    # [0, 1.0s): only A's render is playing (B's track starts at offset 1s).
+    sample_solo_a = mix[int(0.4 * SR)]
+    assert abs(sample_solo_a - 0.3) < 0.01, f"expected A-only 0.3, got {sample_solo_a}"
+
+    # [1.0s, 1.0s + CHUNK_LEN): A is STILL playing (its CHUNK_LEN=2.5s render covers
+    # this range) AND B's render starts here. Mix amplitude must be A + B = 0.7.
+    sample_overlap = mix[TICK_SAMPLES + int(0.2 * SR)]   # 1.2 s in
+    assert abs(sample_overlap - 0.7) < 0.01, (
+        f"collision overlap broken: expected A+B = 0.7 at 1.2 s, got {sample_overlap}"
+    )
