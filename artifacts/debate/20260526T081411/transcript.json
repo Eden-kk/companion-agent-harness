@@ -1,0 +1,772 @@
+{
+  "k_grace": 1,
+  "metrics": {
+    "barge_in_attempts": 2,
+    "barge_in_successes": 2,
+    "collision_count": 8,
+    "deadlocks_detected": 2,
+    "harness_forced_breaks": 3,
+    "max_collision_duration_ticks": 2,
+    "moderator_nudges_fired": 2,
+    "self_yields": 0,
+    "t_max_hits": 0,
+    "total_ticks": 30,
+    "turn_count_per_speaker": {
+      "A": 3,
+      "B": 5
+    }
+  },
+  "motion": "This house believes social media has done more harm than good to society.",
+  "n_deadlock": 4,
+  "t_max": 30,
+  "ticks": [
+    {
+      "audible": [],
+      "break_armed_for_next_tick": [],
+      "break_fired_this_tick": [],
+      "floor": null,
+      "moderator_nudge_fired": false,
+      "per_speaker": {
+        "A": {
+          "current_time": 1573919.373101893,
+          "end_of_turn": false,
+          "is_listen": true,
+          "text": ""
+        },
+        "B": {
+          "current_time": 1573919.412845368,
+          "end_of_turn": false,
+          "is_listen": true,
+          "text": ""
+        }
+      },
+      "silence_run": 1,
+      "tick": 0
+    },
+    {
+      "audible": [
+        "A",
+        "B"
+      ],
+      "break_armed_for_next_tick": [],
+      "break_fired_this_tick": [],
+      "floor": "B",
+      "moderator_nudge_fired": false,
+      "per_speaker": {
+        "A": {
+          "current_time": 1573923.188636252,
+          "end_of_turn": false,
+          "is_listen": false,
+          "text": " Welcome. Social media"
+        },
+        "B": {
+          "current_time": 1573923.802569041,
+          "end_of_turn": false,
+          "is_listen": false,
+          "text": " Social media has democratized"
+        }
+      },
+      "silence_run": 0,
+      "tick": 1
+    },
+    {
+      "audible": [
+        "A",
+        "B"
+      ],
+      "break_armed_for_next_tick": [
+        "B"
+      ],
+      "break_fired_this_tick": [],
+      "floor": "A",
+      "moderator_nudge_fired": false,
+      "per_speaker": {
+        "A": {
+          "current_time": 1573928.099178022,
+          "end_of_turn": false,
+          "is_listen": false,
+          "text": " has turned into a ca"
+        },
+        "B": {
+          "current_time": 1573928.912104603,
+          "end_of_turn": false,
+          "is_listen": false,
+          "text": " voice, allowing marginalized communities to"
+        }
+      },
+      "silence_run": 0,
+      "tick": 2
+    },
+    {
+      "audible": [
+        "A"
+      ],
+      "break_armed_for_next_tick": [],
+      "break_fired_this_tick": [
+        "B"
+      ],
+      "floor": "A",
+      "moderator_nudge_fired": false,
+      "per_speaker": {
+        "A": {
+          "current_time": 1573932.240681559,
+          "end_of_turn": false,
+          "is_listen": false,
+          "text": " lve of echo chambers where"
+        },
+        "B": {
+          "current_time": 1573932.240722856,
+          "end_of_turn": true,
+          "is_listen": true,
+          "text": ""
+        }
+      },
+      "silence_run": 0,
+      "tick": 3
+    },
+    {
+      "audible": [
+        "A",
+        "B"
+      ],
+      "break_armed_for_next_tick": [],
+      "break_fired_this_tick": [],
+      "floor": "A",
+      "moderator_nudge_fired": false,
+      "per_speaker": {
+        "A": {
+          "current_time": 1573936.50192534,
+          "end_of_turn": false,
+          "is_listen": false,
+          "text": " people only see what"
+        },
+        "B": {
+          "current_time": 1573937.567348293,
+          "end_of_turn": false,
+          "is_listen": false,
+          "text": " share their stories and be heard globally."
+        }
+      },
+      "silence_run": 0,
+      "tick": 4
+    },
+    {
+      "audible": [
+        "A",
+        "B"
+      ],
+      "break_armed_for_next_tick": [
+        "A"
+      ],
+      "break_fired_this_tick": [],
+      "floor": "B",
+      "moderator_nudge_fired": false,
+      "per_speaker": {
+        "A": {
+          "current_time": 1573941.802220423,
+          "end_of_turn": false,
+          "is_listen": false,
+          "text": " they already believe,"
+        },
+        "B": {
+          "current_time": 1573942.09521253,
+          "end_of_turn": true,
+          "is_listen": false,
+          "text": ""
+        }
+      },
+      "silence_run": 0,
+      "tick": 5
+    },
+    {
+      "audible": [],
+      "break_armed_for_next_tick": [],
+      "break_fired_this_tick": [
+        "A"
+      ],
+      "floor": "B",
+      "moderator_nudge_fired": false,
+      "per_speaker": {
+        "A": {
+          "current_time": 1573943.371656963,
+          "end_of_turn": true,
+          "is_listen": true,
+          "text": ""
+        },
+        "B": {
+          "current_time": 1573943.41285778,
+          "end_of_turn": false,
+          "is_listen": true,
+          "text": ""
+        }
+      },
+      "silence_run": 1,
+      "tick": 6
+    },
+    {
+      "audible": [
+        "A"
+      ],
+      "break_armed_for_next_tick": [],
+      "break_fired_this_tick": [],
+      "floor": "A",
+      "moderator_nudge_fired": false,
+      "per_speaker": {
+        "A": {
+          "current_time": 1573947.351276435,
+          "end_of_turn": false,
+          "is_listen": false,
+          "text": " which means more polar"
+        },
+        "B": {
+          "current_time": 1573947.800278598,
+          "end_of_turn": false,
+          "is_listen": true,
+          "text": ""
+        }
+      },
+      "silence_run": 0,
+      "tick": 7
+    },
+    {
+      "audible": [
+        "A"
+      ],
+      "break_armed_for_next_tick": [],
+      "break_fired_this_tick": [],
+      "floor": "A",
+      "moderator_nudge_fired": false,
+      "per_speaker": {
+        "A": {
+          "current_time": 1573952.246622423,
+          "end_of_turn": false,
+          "is_listen": false,
+          "text": " ization and less"
+        },
+        "B": {
+          "current_time": 1573952.701572454,
+          "end_of_turn": false,
+          "is_listen": true,
+          "text": ""
+        }
+      },
+      "silence_run": 0,
+      "tick": 8
+    },
+    {
+      "audible": [
+        "A"
+      ],
+      "break_armed_for_next_tick": [],
+      "break_fired_this_tick": [],
+      "floor": "A",
+      "moderator_nudge_fired": false,
+      "per_speaker": {
+        "A": {
+          "current_time": 1573957.081981017,
+          "end_of_turn": false,
+          "is_listen": false,
+          "text": " shared truth in society."
+        },
+        "B": {
+          "current_time": 1573957.1220519,
+          "end_of_turn": false,
+          "is_listen": true,
+          "text": ""
+        }
+      },
+      "silence_run": 0,
+      "tick": 9
+    },
+    {
+      "audible": [
+        "A"
+      ],
+      "break_armed_for_next_tick": [],
+      "break_fired_this_tick": [],
+      "floor": null,
+      "moderator_nudge_fired": false,
+      "per_speaker": {
+        "A": {
+          "current_time": 1573960.505257836,
+          "end_of_turn": true,
+          "is_listen": false,
+          "text": ""
+        },
+        "B": {
+          "current_time": 1573960.747953892,
+          "end_of_turn": false,
+          "is_listen": true,
+          "text": ""
+        }
+      },
+      "silence_run": 0,
+      "tick": 10
+    },
+    {
+      "audible": [],
+      "break_armed_for_next_tick": [],
+      "break_fired_this_tick": [],
+      "floor": null,
+      "moderator_nudge_fired": false,
+      "per_speaker": {
+        "A": {
+          "current_time": 1573963.326573018,
+          "end_of_turn": false,
+          "is_listen": true,
+          "text": ""
+        },
+        "B": {
+          "current_time": 1573963.769396764,
+          "end_of_turn": false,
+          "is_listen": true,
+          "text": ""
+        }
+      },
+      "silence_run": 1,
+      "tick": 11
+    },
+    {
+      "audible": [],
+      "break_armed_for_next_tick": [],
+      "break_fired_this_tick": [],
+      "floor": null,
+      "moderator_nudge_fired": false,
+      "per_speaker": {
+        "A": {
+          "current_time": 1573966.74299648,
+          "end_of_turn": false,
+          "is_listen": true,
+          "text": ""
+        },
+        "B": {
+          "current_time": 1573967.187144042,
+          "end_of_turn": false,
+          "is_listen": true,
+          "text": ""
+        }
+      },
+      "silence_run": 2,
+      "tick": 12
+    },
+    {
+      "audible": [],
+      "break_armed_for_next_tick": [],
+      "break_fired_this_tick": [],
+      "floor": null,
+      "moderator_nudge_fired": false,
+      "per_speaker": {
+        "A": {
+          "current_time": 1573969.977017876,
+          "end_of_turn": false,
+          "is_listen": true,
+          "text": ""
+        },
+        "B": {
+          "current_time": 1573970.421613359,
+          "end_of_turn": false,
+          "is_listen": true,
+          "text": ""
+        }
+      },
+      "silence_run": 3,
+      "tick": 13
+    },
+    {
+      "audible": [],
+      "break_armed_for_next_tick": [],
+      "break_fired_this_tick": [],
+      "floor": null,
+      "moderator_nudge_fired": true,
+      "per_speaker": {
+        "A": {
+          "current_time": 1573973.385960331,
+          "end_of_turn": false,
+          "is_listen": true,
+          "text": ""
+        },
+        "B": {
+          "current_time": 1573973.82741343,
+          "end_of_turn": false,
+          "is_listen": true,
+          "text": ""
+        }
+      },
+      "silence_run": 0,
+      "tick": 14
+    },
+    {
+      "audible": [],
+      "break_armed_for_next_tick": [],
+      "break_fired_this_tick": [],
+      "floor": null,
+      "moderator_nudge_fired": false,
+      "per_speaker": {
+        "A": {
+          "current_time": 1573975.9941217,
+          "end_of_turn": false,
+          "is_listen": true,
+          "text": ""
+        },
+        "B": {
+          "current_time": 1573976.438012907,
+          "end_of_turn": false,
+          "is_listen": true,
+          "text": ""
+        }
+      },
+      "silence_run": 1,
+      "tick": 15
+    },
+    {
+      "audible": [
+        "B"
+      ],
+      "break_armed_for_next_tick": [],
+      "break_fired_this_tick": [],
+      "floor": "B",
+      "moderator_nudge_fired": false,
+      "per_speaker": {
+        "A": {
+          "current_time": 1573979.005299221,
+          "end_of_turn": false,
+          "is_listen": true,
+          "text": ""
+        },
+        "B": {
+          "current_time": 1573980.770039208,
+          "end_of_turn": false,
+          "is_listen": false,
+          "text": " Before social media,"
+        }
+      },
+      "silence_run": 0,
+      "tick": 16
+    },
+    {
+      "audible": [
+        "B"
+      ],
+      "break_armed_for_next_tick": [],
+      "break_fired_this_tick": [],
+      "floor": "B",
+      "moderator_nudge_fired": false,
+      "per_speaker": {
+        "A": {
+          "current_time": 1573983.227943639,
+          "end_of_turn": false,
+          "is_listen": true,
+          "text": ""
+        },
+        "B": {
+          "current_time": 1573986.1879202,
+          "end_of_turn": false,
+          "is_listen": false,
+          "text": " activists often struggled to get attention. Now, movements like #"
+        }
+      },
+      "silence_run": 0,
+      "tick": 17
+    },
+    {
+      "audible": [
+        "B"
+      ],
+      "break_armed_for_next_tick": [],
+      "break_fired_this_tick": [],
+      "floor": "B",
+      "moderator_nudge_fired": false,
+      "per_speaker": {
+        "A": {
+          "current_time": 1573988.760125131,
+          "end_of_turn": false,
+          "is_listen": true,
+          "text": ""
+        },
+        "B": {
+          "current_time": 1573992.803842236,
+          "end_of_turn": false,
+          "is_listen": false,
+          "text": " BlackLivesMatter mobilize millions instantly through viral posts and live streams."
+        }
+      },
+      "silence_run": 0,
+      "tick": 18
+    },
+    {
+      "audible": [
+        "B"
+      ],
+      "break_armed_for_next_tick": [],
+      "break_fired_this_tick": [],
+      "floor": null,
+      "moderator_nudge_fired": false,
+      "per_speaker": {
+        "A": {
+          "current_time": 1573994.657934486,
+          "end_of_turn": false,
+          "is_listen": true,
+          "text": ""
+        },
+        "B": {
+          "current_time": 1573995.761570436,
+          "end_of_turn": true,
+          "is_listen": false,
+          "text": ""
+        }
+      },
+      "silence_run": 0,
+      "tick": 19
+    },
+    {
+      "audible": [],
+      "break_armed_for_next_tick": [],
+      "break_fired_this_tick": [],
+      "floor": null,
+      "moderator_nudge_fired": false,
+      "per_speaker": {
+        "A": {
+          "current_time": 1573997.214245667,
+          "end_of_turn": false,
+          "is_listen": true,
+          "text": ""
+        },
+        "B": {
+          "current_time": 1573997.659783685,
+          "end_of_turn": false,
+          "is_listen": true,
+          "text": ""
+        }
+      },
+      "silence_run": 1,
+      "tick": 20
+    },
+    {
+      "audible": [],
+      "break_armed_for_next_tick": [],
+      "break_fired_this_tick": [],
+      "floor": null,
+      "moderator_nudge_fired": false,
+      "per_speaker": {
+        "A": {
+          "current_time": 1573999.919441162,
+          "end_of_turn": false,
+          "is_listen": true,
+          "text": ""
+        },
+        "B": {
+          "current_time": 1574000.36132612,
+          "end_of_turn": false,
+          "is_listen": true,
+          "text": ""
+        }
+      },
+      "silence_run": 2,
+      "tick": 21
+    },
+    {
+      "audible": [],
+      "break_armed_for_next_tick": [],
+      "break_fired_this_tick": [],
+      "floor": null,
+      "moderator_nudge_fired": false,
+      "per_speaker": {
+        "A": {
+          "current_time": 1574002.617424738,
+          "end_of_turn": false,
+          "is_listen": true,
+          "text": ""
+        },
+        "B": {
+          "current_time": 1574003.06087321,
+          "end_of_turn": false,
+          "is_listen": true,
+          "text": ""
+        }
+      },
+      "silence_run": 3,
+      "tick": 22
+    },
+    {
+      "audible": [],
+      "break_armed_for_next_tick": [],
+      "break_fired_this_tick": [],
+      "floor": null,
+      "moderator_nudge_fired": true,
+      "per_speaker": {
+        "A": {
+          "current_time": 1574005.313096732,
+          "end_of_turn": false,
+          "is_listen": true,
+          "text": ""
+        },
+        "B": {
+          "current_time": 1574005.756162567,
+          "end_of_turn": false,
+          "is_listen": true,
+          "text": ""
+        }
+      },
+      "silence_run": 0,
+      "tick": 23
+    },
+    {
+      "audible": [],
+      "break_armed_for_next_tick": [],
+      "break_fired_this_tick": [],
+      "floor": null,
+      "moderator_nudge_fired": false,
+      "per_speaker": {
+        "A": {
+          "current_time": 1574008.008669559,
+          "end_of_turn": false,
+          "is_listen": true,
+          "text": ""
+        },
+        "B": {
+          "current_time": 1574008.451872601,
+          "end_of_turn": false,
+          "is_listen": true,
+          "text": ""
+        }
+      },
+      "silence_run": 1,
+      "tick": 24
+    },
+    {
+      "audible": [
+        "A",
+        "B"
+      ],
+      "break_armed_for_next_tick": [],
+      "break_fired_this_tick": [],
+      "floor": "B",
+      "moderator_nudge_fired": false,
+      "per_speaker": {
+        "A": {
+          "current_time": 1574012.64959463,
+          "end_of_turn": false,
+          "is_listen": false,
+          "text": " Let's hear from the floor. Social media"
+        },
+        "B": {
+          "current_time": 1574015.090597136,
+          "end_of_turn": false,
+          "is_listen": false,
+          "text": " Social media also connects people across the"
+        }
+      },
+      "silence_run": 0,
+      "tick": 25
+    },
+    {
+      "audible": [
+        "A",
+        "B"
+      ],
+      "break_armed_for_next_tick": [
+        "B"
+      ],
+      "break_fired_this_tick": [],
+      "floor": "A",
+      "moderator_nudge_fired": false,
+      "per_speaker": {
+        "A": {
+          "current_time": 1574018.483228168,
+          "end_of_turn": false,
+          "is_listen": false,
+          "text": " is designed to keep you"
+        },
+        "B": {
+          "current_time": 1574021.60134161,
+          "end_of_turn": false,
+          "is_listen": false,
+          "text": " globe, fostering friendships and cultural exchange that were once"
+        }
+      },
+      "silence_run": 0,
+      "tick": 26
+    },
+    {
+      "audible": [
+        "A"
+      ],
+      "break_armed_for_next_tick": [],
+      "break_fired_this_tick": [
+        "B"
+      ],
+      "floor": "A",
+      "moderator_nudge_fired": false,
+      "per_speaker": {
+        "A": {
+          "current_time": 1574022.900459831,
+          "end_of_turn": false,
+          "is_listen": false,
+          "text": " scrolling with algorithm"
+        },
+        "B": {
+          "current_time": 1574022.900491334,
+          "end_of_turn": true,
+          "is_listen": true,
+          "text": ""
+        }
+      },
+      "silence_run": 0,
+      "tick": 27
+    },
+    {
+      "audible": [
+        "A",
+        "B"
+      ],
+      "break_armed_for_next_tick": [],
+      "break_fired_this_tick": [],
+      "floor": "A",
+      "moderator_nudge_fired": false,
+      "per_speaker": {
+        "A": {
+          "current_time": 1574026.477787526,
+          "end_of_turn": false,
+          "is_listen": false,
+          "text": " s that exploit your"
+        },
+        "B": {
+          "current_time": 1574027.05665886,
+          "end_of_turn": false,
+          "is_listen": false,
+          "text": " impossible at scale."
+        }
+      },
+      "silence_run": 0,
+      "tick": 28
+    },
+    {
+      "audible": [
+        "A",
+        "B"
+      ],
+      "break_armed_for_next_tick": [
+        "A"
+      ],
+      "break_fired_this_tick": [],
+      "floor": "B",
+      "moderator_nudge_fired": false,
+      "per_speaker": {
+        "A": {
+          "current_time": 1574030.428270253,
+          "end_of_turn": false,
+          "is_listen": false,
+          "text": " attention span,"
+        },
+        "B": {
+          "current_time": 1574030.719995453,
+          "end_of_turn": true,
+          "is_listen": false,
+          "text": ""
+        }
+      },
+      "silence_run": 0,
+      "tick": 29
+    }
+  ]
+}
