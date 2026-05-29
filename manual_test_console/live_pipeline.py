@@ -53,6 +53,7 @@ from companion_harness.turn_detector_vad import VADDetector
 from companion_harness.memory_manager import CommitResult, EmbeddingAdapter
 from companion_harness.provenance_minicpm import ProvenanceComputer
 from companion_harness.sleep_time_agent import SleepTimeAgent
+from companion_harness.asr_sidecar import ASRSidecar
 from companion_harness.urgency_scorer import UrgencyScorer, _NullUrgencyScorer
 from manual_test_console.config_schema import ALLOWLIST
 from manual_test_console.config_store import ConfigStore
@@ -792,15 +793,38 @@ class StreamingRawPipeline:
     session_id: str
     driver: Any  # MiniCPMRawStreamingDriver
     vision_sidecar: Any = None  # always None in raw mode
+    _asr_sidecar: Any = None
+    _asr_queue: "asyncio.Queue[tuple[bytes, str]] | None" = None
+    _asr_task: "asyncio.Task[None] | None" = None
 
     async def start(self) -> None:
         await self.driver.start()
+        if self._asr_sidecar is not None:
+            self._asr_task = asyncio.create_task(self._asr_sidecar.run())
 
     async def stop(self) -> None:
+        if self._asr_queue is not None:
+            self._asr_queue.put_nowait((b"", ""))  # sentinel
+        if self._asr_task is not None:
+            # Swallow both Exception and CancelledError (BaseException) so a
+            # cancelled/failed sidecar task can never block driver teardown.
+            try:
+                await self._asr_task
+            except (Exception, asyncio.CancelledError):
+                pass
         await self.driver.stop()
 
-    def push_audio(self, frame_bytes: bytes, raw_audio_event_id: str) -> None:
+    def push_audio(self, frame_bytes: bytes, raw_audio_event_id: str, ts_mono_ms: int = 0) -> None:
+        # ts_mono_ms accepted and ignored here; driver takes 2 args.
         self.driver.push_audio(frame_bytes, raw_audio_event_id)
+        # Sidecar is a READ-ONLY transcript observer — does not gate speech,
+        # consistent with StreamingRawPipeline's SpeakPolicy/audit-gate bypass.
+        if self._asr_queue is not None:
+            try:
+                self._asr_queue.put_nowait((frame_bytes, raw_audio_event_id))
+            except asyncio.QueueFull:
+                self._asr_queue.get_nowait()
+                self._asr_queue.put_nowait((frame_bytes, raw_audio_event_id))
 
 
 def build_streaming_raw_pipeline(
@@ -810,6 +834,7 @@ def build_streaming_raw_pipeline(
     foreground_duplex_model: Any,
     tts_adapter: Any,
     audio_out_broker: AudioOutSinkTarget | None = None,
+    asr_model: Any = None,
 ) -> StreamingRawPipeline:
     """DEMO MODE: bypasses SpeakPolicy + audit gates per spec invariants #2/#4.
 
@@ -837,4 +862,16 @@ def build_streaming_raw_pipeline(
         audio_out_broker=audio_out_broker,
         logger=shielded_logger,
     )
+    if asr_model is not None:
+        queue: asyncio.Queue[tuple[bytes, str]] = asyncio.Queue(maxsize=512)
+        sidecar = ASRSidecar(
+            session_id=session_id,
+            asr_model=asr_model,
+            logger=shielded_logger,
+            config_store=None,
+            queue=queue,
+        )
+        return StreamingRawPipeline(
+            session_id=session_id, driver=driver, _asr_sidecar=sidecar, _asr_queue=queue
+        )
     return StreamingRawPipeline(session_id=session_id, driver=driver)
