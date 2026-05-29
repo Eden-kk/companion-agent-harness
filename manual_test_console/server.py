@@ -690,6 +690,7 @@ async def _handle_ingest_ws(request: web.Request) -> web.WebSocketResponse:
             foreground_duplex_model=foreground_model,
             tts_adapter=request.app[KEY_TTS_ADAPTER],
             audio_out_broker=request.app[KEY_AUDIO_OUT_BROKER],  # type: ignore[arg-type]
+            asr_model=request.app[KEY_ASR_MODEL],
         )
         active_pipelines[session.session_id] = pipeline
         await pipeline.start()
@@ -1607,6 +1608,22 @@ def build_app(
                 from manual_test_console.live_pipeline import NoopTtsAdapter  # noqa: WPS433
                 _app[KEY_TTS_ADAPTER] = NoopTtsAdapter()
                 _app[KEY_TTS_LABEL] = "stub:NoopTtsAdapter"
+            # Load ASR for the read-only USER-dialogue sidecar (build_streaming_raw_pipeline
+            # builds the sidecar only when KEY_ASR_MODEL is non-None). Falls back to no sidecar
+            # on failure. Detectors (VAD/smart_turn/addressing) stay skipped in raw mode.
+            if _app[KEY_ASR_MODEL] is None and asr_model_factory is not None:
+                print("Loading ASR (raw mode, USER-dialogue sidecar)...", flush=True)
+                try:
+                    _app[KEY_ASR_MODEL] = asr_model_factory()
+                    _asr_cls = type(_app[KEY_ASR_MODEL]).__name__
+                    _app[KEY_DETECTOR_LABELS]["asr"] = (
+                        "deepinfra whisper-large-v3 (raw)"
+                        if _asr_cls == "DeepInfraWhisperASRModel"
+                        else "faster-whisper (raw)"
+                    )
+                    print(f"ASR loaded (raw mode): {_app[KEY_DETECTOR_LABELS]['asr']}", flush=True)
+                except Exception as exc:
+                    print(f"ASR load FAILED (raw mode): {type(exc).__name__}: {exc} — USER-dialogue sidecar disabled", flush=True)
             return  # skip detector loading in raw mode
 
         if not _app[KEY_LIVE_PIPELINE_ENABLED] or _app[KEY_USE_STUBS]:
@@ -2293,8 +2310,9 @@ def main(argv: list[str] | None = None) -> int:
                     setattr(args, flag_name, False)
             args.tts_adapter = "native_minicpm"
             print(
-                "WARNING: --minicpm-streaming-raw bypasses SpeakPolicy, ASR, addressing, "
-                "and audit gates. Use only for demo/comparison.",
+                "WARNING: --minicpm-streaming-raw bypasses SpeakPolicy, addressing, "
+                "and audit gates; runs a read-only USER-transcript ASR sidecar (does not gate speech). "
+                "Use only for demo/comparison.",
                 flush=True,
             )
 
@@ -2326,9 +2344,10 @@ def main(argv: list[str] | None = None) -> int:
         smart_turn_factory: Optional[Callable[[], Any]] = None
         backchannel_factory: Optional[Callable[[], Any]] = None
         tts_factory: Optional[Callable[[], Any]] = _native_tts_placeholder
-        asr_factory: Optional[Callable[[], Any]] = None
-    elif args.live_pipeline and not args.use_stubs:
         _asr_lang: str | None = None if args.language == "auto" else args.language
+        asr_factory: Optional[Callable[[], Any]] = lambda: _load_asr_model(_asr_lang, getattr(args, "asr_backend", "faster_whisper"))  # noqa: E731
+    elif args.live_pipeline and not args.use_stubs:
+        _asr_lang = None if args.language == "auto" else args.language
         if args.minicpm_only:
             vad_factory = None
             smart_turn_factory = None
