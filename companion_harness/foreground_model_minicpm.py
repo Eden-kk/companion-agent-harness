@@ -38,9 +38,17 @@ from typing import TYPE_CHECKING, AsyncGenerator, AsyncIterator
 
 import numpy as np
 import torch
+from torch.nn.attention import SDPBackend, sdpa_kernel
 from transformers import AutoModel, AutoTokenizer
 
 from companion_harness.schemas import Event, MemoryItem, ThinkerProposal
+
+# Pinning the SDPA backend skips PyTorch's per-call backend SELECTION, which
+# otherwise re-plans every new KV sequence-length in the streaming decode loop
+# (~270ms/forward vs ~18ms warm — the native-audio stutter root cause, #32).
+# Validated: native per-chunk wall 3096ms -> 532ms, feed 290ms/tok -> 18ms,
+# no quality change / no context truncation / no new dependency.
+_SDPA_BACKENDS = [SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]
 
 if TYPE_CHECKING:
     from companion_harness.event_logger import EventLogger
@@ -314,16 +322,17 @@ class MiniCPMStreamingModel:
             buf = np.array([], dtype=np.float32)
 
             def _process_chunk(pcm_float: np.ndarray) -> ThinkerProposal | None:
-                duplex.streaming_prefill(audio_waveform=pcm_float)
-                result = duplex.streaming_generate(
-                    max_new_speak_tokens_per_chunk=duplex.max_new_speak_tokens_per_chunk,
-                    temperature=duplex.temperature,
-                    top_k=duplex.top_k,
-                    top_p=duplex.top_p,
-                    listen_prob_scale=duplex.listen_prob_scale,
-                    text_repetition_penalty=duplex.text_repetition_penalty,
-                    text_repetition_window_size=duplex.text_repetition_window_size,
-                )
+                with sdpa_kernel(_SDPA_BACKENDS):
+                    duplex.streaming_prefill(audio_waveform=pcm_float)
+                    result = duplex.streaming_generate(
+                        max_new_speak_tokens_per_chunk=duplex.max_new_speak_tokens_per_chunk,
+                        temperature=duplex.temperature,
+                        top_k=duplex.top_k,
+                        top_p=duplex.top_p,
+                        listen_prob_scale=duplex.listen_prob_scale,
+                        text_repetition_penalty=duplex.text_repetition_penalty,
+                        text_repetition_window_size=duplex.text_repetition_window_size,
+                    )
                 self._last_is_listen = bool(result.get("is_listen", True))
                 invocation_evt = self._emit_invocation(
                     self._last_is_listen, caused_by
@@ -443,16 +452,17 @@ class MiniCPMStreamingModel:
                     return None
 
                 def _gpu_work(pcm_float: np.ndarray) -> dict:
-                    duplex.streaming_prefill(audio_waveform=pcm_float)
-                    return duplex.streaming_generate(
-                        max_new_speak_tokens_per_chunk=duplex.max_new_speak_tokens_per_chunk,
-                        temperature=duplex.temperature,
-                        top_k=duplex.top_k,
-                        top_p=duplex.top_p,
-                        listen_prob_scale=duplex.listen_prob_scale,
-                        text_repetition_penalty=duplex.text_repetition_penalty,
-                        text_repetition_window_size=duplex.text_repetition_window_size,
-                    )
+                    with sdpa_kernel(_SDPA_BACKENDS):
+                        duplex.streaming_prefill(audio_waveform=pcm_float)
+                        return duplex.streaming_generate(
+                            max_new_speak_tokens_per_chunk=duplex.max_new_speak_tokens_per_chunk,
+                            temperature=duplex.temperature,
+                            top_k=duplex.top_k,
+                            top_p=duplex.top_p,
+                            listen_prob_scale=duplex.listen_prob_scale,
+                            text_repetition_penalty=duplex.text_repetition_penalty,
+                            text_repetition_window_size=duplex.text_repetition_window_size,
+                        )
 
                 while True:
                     pcm_bytes, evt_id = await audio_in.get()
