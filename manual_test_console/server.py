@@ -1977,12 +1977,17 @@ def _load_native_minicpm_tts_adapter(streaming_model: Any) -> Any:
     return MiniCPMNativeTtsAdapter(streaming_model)
 
 
-def _load_asr_model(language: str | None = None) -> Any:
-    """Lazy import + construct FasterWhisperASRModel. b200 only.
+def _load_asr_model(language: str | None = None, backend: str = "faster_whisper") -> Any:
+    """Lazy import + construct the ASR model for the chosen backend. b200 only.
 
-    Imported here (not at module top) so the server module remains importable
-    on machines without faster_whisper. Mirrors _load_minicpm_streaming_model.
+    backend="faster_whisper" (default): local faster-whisper on the GPU.
+    backend="deepinfra": DeepInfra hosted Whisper large-v3 (no local GPU; key
+    from DEEPINFRA_API_KEY). Imported here (not at module top) so the server
+    module stays importable without the SDKs.
     """
+    if backend == "deepinfra":
+        from companion_harness.asr_deepinfra import DeepInfraWhisperASRModel  # noqa: WPS433
+        return DeepInfraWhisperASRModel(model_id="openai/whisper-large-v3", language=language)
     from companion_harness.asr_faster_whisper import FasterWhisperASRModel  # noqa: WPS433
     return FasterWhisperASRModel(model_id="base", language=language, device="cuda", compute_type="float16")
 
@@ -2031,6 +2036,16 @@ def main(argv: list[str] | None = None) -> int:
             "Load MiniCPM-o with init_vision=True (+~18 GB VRAM) and construct "
             "a per-session VisionSidecar so video frames reach the foreground "
             "model alongside audio. Default OFF — audio-only path unchanged."
+        ),
+    )
+    parser.add_argument(
+        "--asr-backend",
+        dest="asr_backend",
+        choices=["faster_whisper", "deepinfra"],
+        default="faster_whisper",
+        help=(
+            "ASR backend: 'faster_whisper' (local GPU) or 'deepinfra' (hosted "
+            "Whisper large-v3, no local GPU; requires DEEPINFRA_API_KEY)."
         ),
     )
     parser.add_argument(
@@ -2319,7 +2334,7 @@ def main(argv: list[str] | None = None) -> int:
             smart_turn_factory = None
             backchannel_factory = None
             tts_factory = _native_tts_placeholder
-            asr_factory = lambda: _load_asr_model(_asr_lang)
+            asr_factory = lambda: _load_asr_model(_asr_lang, getattr(args, "asr_backend", "faster_whisper"))
         else:
             vad_factory = _load_silero_vad_model
             smart_turn_factory = _load_pipecat_smart_turn_model
@@ -2333,7 +2348,7 @@ def main(argv: list[str] | None = None) -> int:
                 ),
             }
             tts_factory = _tts_factory_map[args.tts_adapter]
-            asr_factory = lambda: _load_asr_model(_asr_lang)
+            asr_factory = lambda: _load_asr_model(_asr_lang, getattr(args, "asr_backend", "faster_whisper"))
     else:
         vad_factory = smart_turn_factory = backchannel_factory = tts_factory = asr_factory = None
 
