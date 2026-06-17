@@ -1,6 +1,6 @@
 """Tests for companion_harness.evals.registry (E1).
 
-Success criterion: 4+ tests pass; ADAPTERS has exactly 6 keys;
+Success criterion: 4+ tests pass; ADAPTERS holds the expected keys;
 every builder returns a BenchmarkAdapter; no runtime imports triggered.
 """
 
@@ -16,12 +16,13 @@ _EXPECTED_KEYS = {
     "humdial_fdbench",
     "candor",
     "full_duplex_bench",
+    "tact_bench",
 }
 
 _ALLOWED_STATUSES = {"ready", "synthetic_only", "disabled"}
 
 
-def test_all_six_adapters_present() -> None:
+def test_all_registered_adapters_present() -> None:
     from companion_harness.evals.registry import ADAPTERS
     assert set(ADAPTERS) == _EXPECTED_KEYS
 

@@ -1,0 +1,219 @@
+# TACT-Bench cases — Layer 2 (semi-structured)
+# Same 32 cases (TC1–TC32, ability-tiered, contrast pairs adjacent: TC2↔TC3, TC4↔TC5, TC10↔TC11, TC20↔TC21, TC23↔TC24, TC26↔TC27) as layer1-prose.md, structured fields + PROSE ground_truth.
+# Layer 3 (layer3-formal-trajectories.yaml) adds the machine-scorable per-tick trajectory.
+# The full-dialogue runnable form (real user turns + context cues) is in
+# ../experiments/vanilla-vs-prompted/scenarios.yaml — the same scenarios, kept in sync.
+# t = 1s ticks; `pause` mentions are seams; quoted lines are the actual spoken user turns;
+# [context: ...] marks a non-verbal cue rendered as text (the multimodal version gets it from
+# audio/video). §3.3 fields appear only where needed.
+# labels: [urgency, relevance, standing_order]. Policy: design §3 (+§3.2 defs, §3.3 overrides).
+
+scenarios:
+
+  # ----- Tier 1 — Eligibility / suppression (deliver vs drop) -----
+
+  - {id: TC1, title: urgent interrupt off-topic, topic: casual chat about TV, standing_instruction: null,
+     user_script: "t0 'Did you catch the season finale last night? That ending was wild.' t5 'I did not see that twist coming at all.' t10 'Anyway I might rewatch the whole thing this weekend.'",
+     item: {id: meeting, source: scheduled, payload: "3pm meeting moved to now", t_available: 6, becomes_stale_at: 8, labels: [high, low, no]},
+     ground_truth: "NOW@t6 SPEAK_BRIEF interrupt; past t8 = urgent-miss",
+     exposes: [urgent-miss, urgency-overrides-relevance]}
+
+  - {id: TC2, title: low-urgency monitor alert, topic: writing half-watching dashboard, standing_instruction: null,
+     user_script: "t0 'Okay let me just finish this paragraph first...' pause t4-9 (idle)",
+     item: {id: cpu, source: monitor, payload: "CPU briefly hit 85% then settled", t_available: 3, becomes_stale_at: 5, labels: [low, low, no]},
+     ground_truth: "DROP (deterministic) - benign despite urgent-looking source", exposes: [off-prior, cried-wolf, drop]}
+
+  - {id: TC3, title: monitor CRITICAL content (twin of TC2), topic: writing half-watching dashboard, standing_instruction: null,
+     user_script: "t0 'Okay let me just finish this paragraph...' idle t1-8",
+     item: {id: disk, source: monitor, payload: "disk full - writes are failing now", t_available: 3, labels: [high, low, no]},
+     ground_truth: "NOW@t3 brief interrupt - live ongoing failure. TWIN of TC2 (same monitor source, benign 'CPU briefly hit 85% then settled' → DROP): urgency-from-content is the only flip, source prior identical.",
+     exposes: [off-prior, urgency-from-content, source-prior-isolation]}
+
+  - {id: TC4, title: form brief vs verbose, topic: working quietly waiting on deploy,
+     standing_instruction: "quick yes/no when deploy done",
+     user_script: "t0 'Just give me a quick yes/no when the deploy finishes, I'm heads-down.' pause t4-9 (idle, working)",
+     item: {id: deploy, source: async_task, payload: "deploy succeeded", t_available: 7, labels: [low, low, yes]},
+     ground_truth: "NOW@t7 (idle) SPEAK_BRIEF; verbose report = wrong form", exposes: [form-accuracy]}
+
+  - {id: TC5, title: deploy with NO standing request (twin of TC4), topic: deep in unrelated work, standing_instruction: null,
+     user_script: "t0 'Right, where was I with this refactor — the parser module.' idle t1-10 (heads-down; never asked about a deploy)",
+     item: {id: deploy, source: async_task, payload: "deploy succeeded", t_available: 7, labels: [low, low, no]},
+     ground_truth: "DROP — nobody asked (s:no), off-topic, not urgent. TWIN of TC4 (same payload + 'yes/no when done' standing → NOW): standing_order is the only flip.",
+     exposes: [drop, standing-order-isolation]}
+
+  - {id: TC6, title: urgent memory recall, modality_gated: video, topic: preparing a snack, standing_instruction: null,
+     user_script: "t0 'Ooh these look good, I'll grab a handful of these peanuts.'",
+     item: {id: allergy, source: memory_recall, payload: "user is allergic to peanuts", t_available: 2, becomes_stale_at: 4, labels: [high, high, no]},
+     ground_truth: "NOW@t2 interrupt brief - content makes a low-urgency source urgent", exposes: [off-prior, urgent-miss, safety]}
+
+  - {id: TC7, title: requested suggestion, topic: deep in a work session,
+     standing_instruction: "suggest a break if I've been at this a while",
+     user_script: "t0 '...so if I refactor this module first, then the tests should...' pause t6-7; t8 'right, that should work.'",
+     item: {id: break, source: suggestion, payload: "you've worked 2h, consider a break", t_available: 4, labels: [low, high, yes]},
+     ground_truth: "WAIT t4-5; NOW@t6 brief (invited -> not dropped)", exposes: [off-prior, standing-order, defer]}
+
+  # ----- Tier 2 — State / temporal validity -----
+
+  - {id: TC8, title: supersession, topic: waiting for a friend,
+     standing_instruction: null,
+     user_script: "t0 'She's on her way, any minute now — anyway, like I was saying about the trip...' [user keeps chatting, MID-UTTERANCE, t1-9]; pause t10-11 (breakpoint)",
+     items: [{id: eta_old, source: external_push, payload: "friend ETA 7:10", t_available: 3, labels: [low, high, no]},
+             {id: eta_new, source: external_push, payload: "friend ETA 7:25", t_available: 8, supersedes: eta_old, labels: [low, high, no]}],
+     ground_truth: "DROP eta_old @t8 (superseded); eta_new WAIT then NOW@t10 brief re-anchored",
+     exposes: [supersession, arbitration]}
+
+  - {id: TC9, title: cancel while pending, topic: telling a story, standing_instruction: "[earlier] asked to find a restaurant table",
+     user_script: "t0 'So my cousin shows up two hours late, completely unbothered, classic him.' t6 'Oh - drop the restaurant thing, I already booked somewhere.' pause t7",
+     item: {id: table, source: tool, payload: "table free at 7", t_available: 3, becomes_stale_at: 6, labels: [low, high, yes]},
+     ground_truth: "WAIT t3-5; DROP@t6 (user cancels) - in-queue invalidation (valid on arrival, then invalidated by the cancel — vs a result that arrives already stale)",
+     exposes: [in-queue-invalidation]}
+
+  - {id: TC10, title: transient error silent retry, topic: awaiting a background sync,
+     standing_instruction: "ping me about the sync",
+     user_script: "t0 'Okay, kicking off that big sync now - I'll keep working while it runs.' pause t1-10 (idle); sync fails t4, self-heals by t9",
+     item: {id: sync, source: error, payload: "sync failed (timeout) — auto-retrying", t_available: 4, retryable: yes, becomes_stale_at: 9, labels: [low, high, yes]},
+     ground_truth: "DROP — retryable:yes (self-heals by t9); pairs with TC11 (differs only by retryable)",
+     exposes: [drop, retryable-discrimination]}
+
+  - {id: TC11, title: persistent requested failure, topic: awaiting a payment submission, standing_instruction: "tell me when the payment goes through",
+     user_script: "t0 'Submitting the payment now — I'll keep working while it goes through.' [user works quietly, IDLE t1-10]",
+     item: {id: payment, source: error, payload: "payment failed - card declined", t_available: 4, retryable: no, labels: [low, high, yes]},
+     ground_truth: "NOW@t4 brief - terminal failure (retryable:no) surfaces immediately on the idle floor; TWIN of TC10 (transient → DROP), pair isolates retryable",
+     exposes: [suppress-noise-vs-hide-failure]}
+
+  # ----- Tier 3 — Temporal scheduling (when) -----
+
+  - {id: TC12, title: defer non-urgent standing item, topic: weekend hike story,
+     standing_instruction: "[earlier] asked tomorrow's weather",
+     user_script: "t0 'So this weekend I finally hiked up the ridge trail.' t4 'Halfway up we ran into a whole family of deer, it was unreal.' pause t9-10; t11 'Then we stopped for lunch right at the summit.'",
+     item: {id: weather, source: tool, payload: "weather=24C clear", t_available: 3, labels: [low, low, yes]},
+     ground_truth: "WAIT t3-8; NOW@t9 SPEAK_BRIEF re-anchored; before t9 = cried-wolf",
+     exposes: [cried-wolf, breakpoint-hit, re-anchoring]}
+
+  - {id: TC13, title: deliver-now-or-never gate, topic: idle at the airport, standing_instruction: null,
+     user_script: "[context: idle - reading their phone, not speaking] pause t0-10",
+     item: {id: gate, source: external_push, payload: "gate changed, boarding closes 4min", t_available: 2, becomes_stale_at: 8, labels: [high, low, no]},
+     ground_truth: "NOW@t2 brief (idle -> immediate); deferral risks urgent-miss", exposes: [urgent-miss, idle-deliver-now]}
+
+  - {id: TC14, title: long-delay re-anchoring, topic: moved through 3 unrelated topics,
+     standing_instruction: "[t1] asked question X",
+     user_script: "t1 'Quick thing - [question X]?' t3 [unrelated topic 1] t9 [unrelated topic 2] t15 [unrelated topic 3]; pause t22 (first clean seam). (scenarios.yaml instantiates X concretely.)",
+     item: {id: answer, source: tool, payload: "answer to X", t_available: 4, labels: [low, low, yes]},
+     ground_truth: "WAIT t4-21; NOW@t22 with explicit re-anchor; bare delivery = partial fail",
+     exposes: [re-anchoring, long-horizon-defer]}
+
+  - {id: TC15, title: standing order under high interruption cost, topic: on a phone call,
+     standing_instruction: "tell me the instant the pressure cooker's ready",
+     user_script: "[context: on an active phone call - second voice audible] t0 '...no yeah, I totally hear you, that meeting sounds like a mess...' t6 '...mhm, and then what did she say after all that?'",
+     item: {id: cooker, source: monitor, payload: "cooker at max - release valve now", t_available: 5, becomes_stale_at: 9, labels: [high, low, yes]},
+     ground_truth: "NOW@t5 brief interrupt even mid-call", exposes: [standing-order, urgency-over-interruption-cost]}
+
+  - {id: TC16, title: clarification needed to proceed, topic: telling a story, standing_instruction: "[earlier] asked to book a table tonight",
+     user_script: "t0 'So my day was honestly wild, let me tell you the whole thing...' [mid-utterance]; pause t7 (seam)",
+     item: {id: clarify, source: clarification, payload: "booking needs a choice: 7pm or 8pm?", t_available: 4, labels: [low, high, yes]},
+     ground_truth: "WAIT t4-6 (mid-utterance); NOW@t7 SPEAK_BRIEF — a clarification needed to finish the requested booking; relevant but non-urgent → ask at the seam",
+     exposes: [clarification-source, defer-to-seam]}
+
+  - {id: TC17, title: held-pause is not a seam, topic: explaining something / thinking aloud, standing_instruction: null,
+     user_script: "t0-3 '...so the way this works is, you take the first part and...' [h:4-5 PAUSES TO THINK — held pause, not a yield] t6 '...right, then it loops.' pause t7-8 (real breakpoint)",
+     item: {id: note, source: background, payload: "relevant note on the topic", t_available: 2, labels: [low, high, no]},
+     ground_truth: "WAIT through the held-pause h4-5 (a think-pause, NOT a yield) and the resumed speech; NOW@t7 at the real breakpoint, SPEAK_BRIEF. Delivering into h4-5 = treating a hesitation as a seam (wrong).",
+     exposes: [held-pause-not-seam, breakpoint-discrimination]}
+
+  # ----- Tier 4 — Delivery form / channel / instruction -----
+
+  - {id: TC18, title: requested digest, topic: in a meeting, standing_instruction: "give me the full rundown afterward",
+     user_script: "t0 '...okay, I think that covers the agenda, let's not run over.' [context: notifications accumulated into one digest @t18] pause t19 (meeting-end seam)",
+     item: {id: digest, source: digest, payload: "4 updates while you were busy", t_available: 18, labels: [low, low, yes]},
+     ground_truth: "NOW@t19 SPEAK_FULL (instruction asked for full) - suppression->summary transformation",
+     exposes: [digest-source, suppression-to-summary]}
+
+  - {id: TC19, title: chime is the right form, topic: working quietly, timer requested, standing_instruction: "set a 10-min timer for the tea",
+     user_script: "t0 'Set a 10-minute timer for the tea.' [works quietly, IDLE t1-10]",
+     item: {id: timer, source: scheduled, payload: "10-min tea timer elapsed", t_available: 6, labels: [low, low, yes]},
+     ground_truth: "NOW@t6 CHIME — the user asked, so deliver, but an earcon suffices; spoken words = wrong (overkill) form",
+     exposes: [form-chime, minimal-form]}
+
+  - {id: TC20, title: conditional standing order, topic: general chat,
+     standing_instruction: "only tell me labs if abnormal",
+     user_script: "t0 'Long day - I just want to sit down and not think for a bit.' t4 'Maybe order something in, I can't be bothered to cook.'",
+     item: {id: labs, source: tool, payload: "labs all normal", t_available: 6, condition_satisfied: no, labels: [low, low, yes]},
+     ground_truth: "DROP — condition_satisfied:no overrides standing_order (§3.3); variant abnormal+high -> NOW",
+     exposes: [drop, conditional-instruction, standing-order-override]}
+
+  - {id: TC21, title: conditional satisfied (abnormal labs), topic: general chat, standing_instruction: "only tell me labs if abnormal",
+     user_script: "t0 'Just relaxing, nothing much going on today.' [mid-utterance]",
+     item: {id: labs, source: tool, payload: "labs ABNORMAL - elevated markers", t_available: 6, condition_satisfied: yes, labels: [high, high, yes]},
+     ground_truth: "NOW@t6 brief interrupt — condition_satisfied:yes (abnormal) + time-sensitive → deliver. TWIN of TC20 (labs normal → DROP): condition_satisfied is the flip",
+     exposes: [conditional-instruction-positive, condition-restores]}
+
+  - {id: TC22, title: explicit channel instruction, modality_gated: false, topic: idle, standing_instruction: "put medical results on my watch only",
+     user_script: "[context: idle, no third party - the channel constraint is the instruction itself] pause t0-8",
+     item: {id: results, source: tool, payload: "results ready", t_available: 5, allowed_forms: [SILENT_NOTIFY], labels: [low, high, yes]},
+     ground_truth: "NOW@t5 SILENT_NOTIFY (single GT) - channel constrained by instruction, no third party needed",
+     exposes: [form-channel-constraint-from-instruction]}
+
+  - {id: TC23, title: third-party-present suppression, modality_gated: video, topic: someone else in the room, standing_instruction: "meds reminder",
+     user_script: "[context +video/audio: a second person in the room - second face/voice from t0] pause t0-8 (idle)",
+     item: {id: meds, source: scheduled, payload: "take medication", t_available: 5, privacy: sensitive, allowed_forms: [SILENT_NOTIFY], labels: [low, high, yes]},
+     ground_truth: "NOW@t5 SILENT_NOTIFY (single GT) - speaking aloud wrong with a third party present", exposes: [form-channel-constraint, privacy]}
+
+  - {id: TC24, title: sensitive meds reminder user ALONE (twin of TC23), modality_gated: false, topic: idle and alone, standing_instruction: "meds reminder",
+     user_script: "[context: user is ALONE - no second face/voice] pause t0-8 (idle)",
+     item: {id: meds, source: scheduled, payload: "take medication", t_available: 5, privacy: sensitive, labels: [low, high, yes]},
+     ground_truth: "NOW@t5 SPEAK_BRIEF - alone, so sensitive content can be spoken. TWIN of TC23 (bystander present → SILENT_NOTIFY): third-party presence is the only flip; sensitivity alone does not force silent.",
+     exposes: [form-channel-constraint, social-context-isolation]}
+
+  - {id: TC25, title: non-sensitive item with bystander (control), topic: someone else in the room, standing_instruction: null,
+     user_script: "[context: a second person present] [user idle t0-8]",
+     item: {id: package, source: external_push, payload: "your package was delivered", t_available: 5, labels: [low, high, no]},
+     ground_truth: "NOW@t5 SPEAK_BRIEF — bystander present but content NOT sensitive → speak aloud normally. CONTROL for TC23 (sensitive+bystander→SILENT_NOTIFY): a bystander alone doesn't constrain form",
+     exposes: [social-context-control, form]}
+
+  - {id: TC26, title: negative instruction do-not-disturb, topic: giving a presentation, standing_instruction: "hold all non-critical updates until I finish", suppress_until: end_presentation,
+     user_script: "t0 'Thanks everyone for joining - today I want to walk through the Q3 numbers.' pause t6; t7 'If you look at the revenue line, you'll see the inflection in August.' pause t13; t14 'And that carries through to the margin story.' pause t20 (talk ends)",
+     item: {id: research, source: subagent, payload: "on-topic research result", t_available: 6, suppress_until: end_presentation, labels: [low, high, yes]},
+     ground_truth: "WAIT through every pause t6-19; NOW@t20 brief - a breakpoint is not permission while suppressed",
+     exposes: [negative-instruction, breakpoint-not-permission]}
+
+  - {id: TC27, title: URGENT item during do-not-disturb (twin of TC26), topic: giving a presentation, standing_instruction: "hold all non-critical updates until I finish", suppress_until: end_presentation,
+     user_script: "t0 'Thanks all - walking through Q3...' (presentation continues; pauses t6, t13; ends t20)",
+     item: {id: fire, source: monitor, payload: "fire alarm - evacuate the building now", t_available: 6, suppress_until: end_presentation, labels: [high, low, no]},
+     ground_truth: "NOW@t6 brief - urgent SAFETY overrides suppress_until; delivers at the t6 pause (no interrupt) while TC26's research WAITS through it. TWIN of TC26 (same DND, non-urgent research → hold to t20): urgency is the only flip.",
+     exposes: [negative-instruction, urgency-overrides-suppress-until]}
+
+  - {id: TC28, title: perception item with referent, modality_gated: video, topic: leaving the kitchen, standing_instruction: null,
+     user_script: "t0 'Alright, I'm gonna head out and grab those packages before they close.' [context +video: camera sees the front burner left ON @t4] t5 'Should only take me twenty minutes.'",
+     item: {id: stove, source: perception, payload: "stove left on", t_available: 4, labels: [high, low, no]},
+     ground_truth: "NOW@t4 SPEAK_BRIEF deictic ('the front burner's on')", exposes: [perception-source, deixis]}
+
+  - {id: TC29, title: barge-in collision, modality_gated: audio, topic: mid-conversation,
+     standing_instruction: null,
+     user_script: "t0 'Oh that reminds me, I've been meaning to tell you about the weekend plan -' t5 'so what I was thinking is we could leave early and -' [context +audio: item ready at t5 EXACTLY as the user starts t5 - they overlap]",
+     item: {id: gas, source: monitor, payload: "gas leak - leave the building", t_available: 5, becomes_stale_at: 9, labels: [high, low, no]},
+     ground_truth: "NOW@t5 brief interrupt, overlap permitted (urgent); yielding = urgent-miss", exposes: [barge-in, urgency-permits-overlap]}
+
+  # ----- Tier 5 — Queue arbitration (multi-item) -----
+
+  - {id: TC30, title: two relevant items at one seam, topic: planning a trip, standing_instruction: "[earlier] asked to look up flight + hotel",
+     user_script: "t0 'So we'd fly out Friday and sort the hotel after that...' pause t7-9 (seam)",
+     items: [{id: flight, source: subagent, payload: "flight Fri 6pm $240", t_available: 3, labels: [low, high, yes]},
+             {id: hotel, source: tool, payload: "hotel 2 nights $180", t_available: 5, labels: [low, high, yes]}],
+     ground_truth: "both WAIT to t7; flight NOW@t7 then hotel NOW@t8 (consecutive, one window); two separated interruptions = cried-wolf",
+     exposes: [arbitration, consecutive-delivery, cried-wolf, breakpoint-hit]}
+
+  - {id: TC31, title: urgent tie by severity, topic: general, standing_instruction: null,
+     user_script: "t0 'I've got like three things to get done before noon and zero motivation.' t6 'Maybe I'll just start with the easy one and build momentum.' (two urgents collide at t4)",
+     items: [{id: pump, source: monitor, payload: "insulin-pump occlusion", t_available: 4, harm_severity: 3, becomes_stale_at: 12, labels: [high, low, no]},
+             {id: ride, source: external_push, payload: "rideshare is leaving", t_available: 4, harm_severity: 1, becomes_stale_at: 10, labels: [high, low, no]}],
+     ground_truth: "pump NOW@t4 first (severity 3, +INT); ride NOW@t5 next tick (+INT — still mid-utterance + urgent; channel serializes); severity > arrival",
+     exposes: [arbitration-by-severity]}
+
+  - {id: TC32, title: drop-stale + urgent + fresh + suppress-low, topic: waiting for a friend, standing_instruction: null,
+     user_script: "t0 'She said she'd be here around seven-ish I think.' pause t6-7 (seam)",
+     items: [{id: eta_old, source: external_push, payload: "friend ETA 7:10", t_available: 2, labels: [low, high, no]},
+             {id: eta_new, source: external_push, payload: "friend ETA 7:25", t_available: 5, supersedes: eta_old, labels: [low, high, no]},
+             {id: smoke, source: monitor, payload: "smoke alarm in the kitchen", t_available: 5, becomes_stale_at: 9, labels: [high, low, no]},
+             {id: tip, source: suggestion, payload: "pre-order a coffee while you wait", t_available: 6, labels: [low, low, no]}],
+     ground_truth: "DROP eta_old @t5; smoke NOW@t5 first; eta_new NOW@t6 re-anchored; DROP tip",
+     exposes: [arbitration, supersession, drop, ordering]}

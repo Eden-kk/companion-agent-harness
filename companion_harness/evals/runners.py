@@ -273,6 +273,19 @@ def _run_fdb(
     return 1 if has_error else 0
 
 
+def _run_tact(output: str, split: str, input_mode: str, arm: str, judge: str) -> int:
+    from companion_harness.evals.adapters.tact_bench import build_tact_bench, run_tact_suite
+
+    run_id = f"tact-{int(time.time())}-{uuid.uuid4().hex[:6]}"
+    output_dir = Path(output) / run_id
+    adapter = build_tact_bench(input_mode=input_mode, arm=arm, with_judge=(judge != "none"))
+    print(f"run_id={run_id}")
+    summary = asyncio.run(run_tact_suite(adapter, output_dir, split))
+    print(f"[eval] wrote {output_dir}/ (run.json, metrics.json, report.md, event_logs/)")
+    print(f"[eval] metrics: {summary['metrics']}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m companion_harness.evals",
@@ -319,6 +332,25 @@ def main(argv: list[str] | None = None) -> int:
         metavar="N",
         help="Cap the number of cases processed (per adapter). Omit for full corpus.",
     )
+    run_p.add_argument(
+        "--input-mode",
+        default="text",
+        choices=["text", "audio"],
+        dest="input_mode",
+        help="tact_bench: text (silence-clock, no echo) or audio.",
+    )
+    run_p.add_argument(
+        "--arm",
+        default="prompted",
+        choices=["vanilla", "prompted", "prompted_terse"],
+        help="tact_bench: system-prompt arm.",
+    )
+    run_p.add_argument(
+        "--judge",
+        default="openai",
+        choices=["openai", "none"],
+        help="tact_bench: run the delivery judge (needs OPENAI_API_KEY) or skip (PENDING metrics).",
+    )
 
     args = parser.parse_args(argv)
 
@@ -340,6 +372,8 @@ def main(argv: list[str] | None = None) -> int:
             return _run_fdb(output, split, mode, limit, version="v1")
         elif args.adapter == "full_duplex_bench_v1_5":
             return _run_fdb(output, split, mode, limit, version="v1.5")
+        elif args.adapter == "tact_bench":
+            return _run_tact(output, split, args.input_mode, args.arm, args.judge)
         else:
             from companion_harness.evals.registry import ADAPTERS
             info = ADAPTERS.get(args.adapter)
