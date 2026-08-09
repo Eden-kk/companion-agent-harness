@@ -74,6 +74,8 @@ EXPECTED_EVENT_TYPES = {
     "policy_decision",
     # ContinuousOrchestrator PR3b: model-native barge-in stop signal
     "model_native_barge_in",
+    # ContinuousOrchestrator PR3c: barge-in suppressed by backchannel classifier
+    "barge_in_suppressed_backchannel",
 }
 
 

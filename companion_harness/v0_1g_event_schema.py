@@ -357,4 +357,22 @@ EVENT_TYPE_SCHEMAS: dict[str, StageSixEventSchema] = {
             "caused_by[] closes through the raw_audio_chunk event_id (invariant #1)."
         ),
     ),
+
+    # ContinuousOrchestrator PR3c: barge-in suppressed by backchannel classifier.
+    # Emitted when is_listen=True + bc_score >= threshold; no stop issued.
+    # caused_by: [raw_audio_chunk.event_id].
+    "barge_in_suppressed_backchannel": StageSixEventSchema(
+        payload_kind="signal",
+        subject_class="self",
+        sensitivity="safe",
+        retention_policy_id="signal_default_30d",
+        required_fields=("backchannel_score",),
+        notes=(
+            "Emitted by ContinuousOrchestrator when a model-native barge-in is "
+            "suppressed because bc_score >= _BACKCHANNEL_THRESHOLD (user is "
+            "backchannelling, not interrupting). No request_stop is issued; "
+            "the assistant keeps the floor. caused_by[] closes through the "
+            "raw_audio_chunk event_id (invariant #1)."
+        ),
+    ),
 }
